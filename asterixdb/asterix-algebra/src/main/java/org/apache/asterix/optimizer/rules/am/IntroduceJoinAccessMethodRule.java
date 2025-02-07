@@ -44,11 +44,7 @@ import org.apache.hyracks.algebricks.core.algebra.expressions.IAlgebricksConstan
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
 import org.apache.hyracks.algebricks.core.algebra.expressions.ScalarFunctionCallExpression;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractBinaryJoinOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.InnerJoinOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.LeftOuterJoinOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
 import org.apache.hyracks.algebricks.core.algebra.util.OperatorManipulationUtil;
 import org.apache.hyracks.algebricks.core.algebra.util.OperatorPropertiesUtil;
 
@@ -271,9 +267,21 @@ public class IntroduceJoinAccessMethodRule extends AbstractIntroduceAccessMethod
 
         // Recursively check the plan and try to optimize it. We first check the children of the given operator
         // to make sure an earlier join in the path is optimized first.
-        for (Mutable<ILogicalOperator> inputOpRef : op.getInputs()) {
-            joinFoundAndOptimizationApplied = checkAndApplyJoinTransformation(inputOpRef, context, checkApplicableOnly,
-                    chosenIndexes, analyzedAMs);
+
+        for (int i = 0; i < op.getInputs().size(); i++) {
+            Mutable<ILogicalOperator> inputOpRef = op.getInputs().get(i);
+            ILogicalOperator inputOp = inputOpRef.getValue();
+
+            // Skip the right child of pre-existing UnionAllOperators
+            if (op.getOperatorTag() == LogicalOperatorTag.UNIONALL) {
+                UnionAllOperator unionAllOp = (UnionAllOperator) op;
+                if (Boolean.TRUE.equals(unionAllOp.getAnnotations().get("PreExistingUnionAll")) &&context.getPhysicalOptimizationConfig().getInteractiveMode()&& i == 1) {
+                    continue;
+                }
+            }
+
+            joinFoundAndOptimizationApplied = checkAndApplyJoinTransformation(inputOpRef, context,
+                    checkApplicableOnly, chosenIndexes, analyzedAMs);
             if (joinFoundAndOptimizationApplied) {
                 return true;
             }

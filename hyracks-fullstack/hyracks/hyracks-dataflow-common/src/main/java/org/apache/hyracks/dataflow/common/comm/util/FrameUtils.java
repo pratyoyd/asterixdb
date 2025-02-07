@@ -193,6 +193,39 @@ public class FrameUtils {
 
     /**
      * @param writer
+     * @param tupleAppender
+     * @param fieldEndOffsets
+     * @param byteArray
+     * @param start
+     * @param size
+     * @param isEndOfKey for interactive processing
+     * @return the number of bytes that have been flushed, 0 if not get flushed.
+     * @throws HyracksDataException
+     */
+    public static int appendToWriter(IFrameWriter writer, IFrameTupleAppender tupleAppender, int[] fieldEndOffsets,
+                                     byte[] byteArray, int start, int size, boolean isEndOfKey) throws HyracksDataException {
+        int flushedBytes = 0;
+
+        // If isEndOfKey is true, flush the current frame before appending the tuple
+        if (isEndOfKey && tupleAppender.getTupleCount() > 0) {
+            flushedBytes = tupleAppender.getBuffer().capacity();
+            tupleAppender.write(writer, true);
+        }
+
+        if (!tupleAppender.append(fieldEndOffsets, byteArray, start, size)) {
+            flushedBytes = tupleAppender.getBuffer().capacity();
+            tupleAppender.write(writer, true);
+
+            if (!tupleAppender.append(fieldEndOffsets, byteArray, start, size)) {
+                throw HyracksDataException.create(ErrorCode.TUPLE_CANNOT_FIT_INTO_EMPTY_FRAME, size);
+            }
+        }
+
+        return flushedBytes;
+    }
+
+    /**
+     * @param writer
      * @param frameTupleAppender
      * @param accessor0
      * @param tIndex0

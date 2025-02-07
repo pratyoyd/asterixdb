@@ -241,33 +241,37 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
             }
             // The partitioning property of reqdProperties[childIndex] could be updated here because
             // rqd.getPartitioningProperty() is the same object instance as requiredProperty.getPartitioningProperty().
-            IPhysicalPropertiesVector diff = delivered.getUnsatisfiedPropertiesFrom(rqd,
-                    mayExpandPartitioningProperties, context.getEquivalenceClassMap(child), context.getFDList(child));
 
-            if (isRedundantSort(opRef, delivered, diff, context)) {
-                opIsRedundantSort = true;
-            }
+            //if(!op.getAnnotations().containsKey("right_Side_of_Union")) {
+                IPhysicalPropertiesVector diff = delivered.getUnsatisfiedPropertiesFrom(rqd,
+                        mayExpandPartitioningProperties, context.getEquivalenceClassMap(child), context.getFDList(child));
 
-            if (diff != null) {
-                changed = true;
-                addEnforcers(op, childIndex, diff, rqd, delivered, childrenDomain, nestedPlan, context);
 
-                AbstractLogicalOperator newChild = (AbstractLogicalOperator) op.getInputs().get(childIndex).getValue();
+                if (isRedundantSort(opRef, delivered, diff, context)) {
+                    opIsRedundantSort = true;
+                }
 
-                if (newChild != child) {
-                    delivered = newChild.getDeliveredPhysicalProperties();
-                    IPhysicalPropertiesVector newDiff =
-                            newPropertiesDiff(newChild, rqd, mayExpandPartitioningProperties, context);
-                    if (loggerTraceEnabled) {
-                        AlgebricksConfig.ALGEBRICKS_LOGGER.trace(">>>> New properties diff: " + newDiff + "\n");
-                    }
+                if (diff != null) {
+                    changed = true;
+                    addEnforcers(op, childIndex, diff, rqd, delivered, childrenDomain, nestedPlan, context);
 
-                    if (isRedundantSort(opRef, delivered, newDiff, context)) {
-                        opIsRedundantSort = true;
-                        break;
+                    AbstractLogicalOperator newChild = (AbstractLogicalOperator) op.getInputs().get(childIndex).getValue();
+
+                    if (newChild != child) {
+                        delivered = newChild.getDeliveredPhysicalProperties();
+                        IPhysicalPropertiesVector newDiff =
+                                newPropertiesDiff(newChild, rqd, mayExpandPartitioningProperties, context);
+                        if (loggerTraceEnabled) {
+                            AlgebricksConfig.ALGEBRICKS_LOGGER.trace(">>>> New properties diff: " + newDiff + "\n");
+                        }
+
+                        if (isRedundantSort(opRef, delivered, newDiff, context)) {
+                            opIsRedundantSort = true;
+                            break;
+                        }
                     }
                 }
-            }
+            //}
 
             if (firstDeliveredPartitioning == null) {
                 firstDeliveredPartitioning = delivered.getPartitioningProperty();
@@ -449,7 +453,7 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
         if (op.getOperatorTag() != LogicalOperatorTag.ORDER
                 || (op.getPhysicalOperator().getOperatorTag() != PhysicalOperatorTag.STABLE_SORT
                         && op.getPhysicalOperator().getOperatorTag() != PhysicalOperatorTag.MICRO_STABLE_SORT)
-                || delivered.getLocalProperties() == null) {
+                || delivered.getLocalProperties() == null || (context.getPhysicalOptimizationConfig().getInteractiveMode() && op.getAnnotations().containsKey("left_Side_of_Union"))) {
             return false;
         }
         AbstractStableSortPOperator sortOp = (AbstractStableSortPOperator) op.getPhysicalOperator();
@@ -463,6 +467,7 @@ public class EnforceStructuralPropertiesRule implements IAlgebraicRewriteRule {
             IPhysicalPropertiesVector diffPropertiesVector, IPhysicalPropertiesVector required,
             IPhysicalPropertiesVector deliveredByChild, INodeDomain domain, boolean nestedPlan,
             IOptimizationContext context) throws AlgebricksException {
+
         IPartitioningProperty pp = diffPropertiesVector.getPartitioningProperty();
         if (pp == null || pp.getPartitioningType() == PartitioningType.UNPARTITIONED) {
             addLocalEnforcers(op, childIndex, diffPropertiesVector.getLocalProperties(), nestedPlan, context);

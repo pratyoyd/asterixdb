@@ -50,6 +50,10 @@ public class DistributeResultOperator extends AbstractLogicalOperator {
         return expressions;
     }
 
+    public void setExpressions(List<Mutable<ILogicalExpression>> expressions) {
+        this.expressions = expressions;
+    }
+
     public IDataSink getDataSink() {
         return dataSink;
     }

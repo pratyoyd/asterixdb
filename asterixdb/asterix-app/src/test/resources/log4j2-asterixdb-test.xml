@@ -43,6 +43,7 @@
     <Logger name="org.apache.hyracks" level="DEBUG"/>
     <Logger name="org.apache.asterix" level="DEBUG"/>
     <Logger name="org.apache.hyracks.test" level="INFO">
+    <Logger name="org.apache.hyracks.algebricks" level="TRACE"> 
       <AppenderRef ref="ConsoleTest"/>
     </Logger>
     <Logger name="org.apache.asterix.test" level="INFO">

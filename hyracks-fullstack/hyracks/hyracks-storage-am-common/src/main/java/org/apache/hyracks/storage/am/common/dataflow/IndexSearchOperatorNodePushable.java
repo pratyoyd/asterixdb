@@ -21,15 +21,13 @@ package org.apache.hyracks.storage.am.common.dataflow;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 import org.apache.hyracks.api.comm.VSizeFrame;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.dataflow.IIntrospectingOperator;
-import org.apache.hyracks.api.dataflow.value.IMissingWriter;
-import org.apache.hyracks.api.dataflow.value.IMissingWriterFactory;
-import org.apache.hyracks.api.dataflow.value.ITuplePartitioner;
-import org.apache.hyracks.api.dataflow.value.ITuplePartitionerFactory;
-import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
+import org.apache.hyracks.api.dataflow.value.*;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.job.profiling.IOperatorStats;
 import org.apache.hyracks.api.job.profiling.NoOpOperatorStats;
@@ -121,6 +119,9 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
     protected final ITuplePartitioner tuplePartitioner;
     protected final int[] partitions;
     protected final Int2IntMap storagePartitionId2Index = new Int2IntOpenHashMap();
+    private boolean endOfKeyReached;
+    //private byte[] lastKey;  // Store the last encountered key
+
 
     public IndexSearchOperatorNodePushable(IHyracksTaskContext ctx, RecordDescriptor inputRecDesc, int partition,
             int[] minFilterFieldIndexes, int[] maxFilterFieldIndexes, IIndexDataflowHelperFactory indexHelperFactory,
@@ -199,6 +200,8 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
         writer.open();
         ISearchOperationCallback[] searchCallbacks = new ISearchOperationCallback[partitions.length];
         IIndexAccessParameters[] iaps = new IndexAccessParameters[partitions.length];
+        endOfKeyReached = false;
+        lastKey = null;
 
         for (int i = 0; i < partitions.length; i++) {
             indexHelpersOpen[i] = true;
@@ -255,10 +258,33 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
 
     protected void writeSearchResults(int tupleIndex, IIndexCursor cursor) throws Exception {
         long matchingTupleCount = 0;
+        byte[] currentKey = null;
+        boolean firstTuple = false;
+
+        //ISerializerDeserializer<String> deserializer = UTF8StringSerializerDeserializer.INSTANCE;
+
         while (cursor.hasNext()) {
+            boolean isEndOfKey = false;
             cursor.next();
             matchingTupleCount++;
             ITupleReference tuple = cursor.getTuple();
+            int keyFieldIndex = 0; // Adjust this to match your key's field index
+            byte[] keyData = tuple.getFieldData(keyFieldIndex);
+            int keyStart = tuple.getFieldStart(keyFieldIndex);
+            int keyLength = tuple.getFieldLength(keyFieldIndex);
+            byte[] extractedKey = Arrays.copyOfRange(keyData, keyStart, keyStart + keyLength);
+
+           // String key = deserializer.deserialize(keyData, keyStart, keyLength).toString();
+
+            if (!firstTuple && (currentKey == null || Arrays.compare(extractedKey, currentKey) > 0)) {
+                isEndOfKey = true;
+                // Write "END_OF_KEY" marker before switching to new key
+               // writeEndOfKeyMarker();
+            }
+            currentKey = extractedKey;
+            firstTuple = false;
+
+
             tb.reset();
 
             if (retainInput) {
@@ -290,7 +316,7 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
                 writeFilterTupleToOutput(((ILSMIndexCursor) cursor).getFilterMinTuple());
                 writeFilterTupleToOutput(((ILSMIndexCursor) cursor).getFilterMaxTuple());
             }
-            FrameUtils.appendToWriter(writer, appender, tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize());
+            FrameUtils.appendToWriter(writer, appender, tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize(), isEndOfKey);
             if (outputLimit >= 0 && ++outputCount >= outputLimit) {
                 finished = true;
                 break;
@@ -304,6 +330,21 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
                     nonMatchTupleBuild.getSize());
         }
     }
+    private void writeEndOfKeyMarker() throws IOException, HyracksDataException {
+        tb.reset();
+        String marker = "END_OF_KEY";
+
+        // Convert marker to bytes
+        byte[] markerBytes = marker.getBytes(StandardCharsets.UTF_8);
+
+        // Write marker to tuple builder
+        dos.write(markerBytes);
+        tb.addFieldEndOffset();
+
+        // Append marker tuple to the output
+        FrameUtils.appendToWriter(writer, appender, tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize());
+    }
+
 
     @Override
     public void nextFrame(ByteBuffer buffer) throws HyracksDataException {

@@ -61,9 +61,16 @@ public class ResponsePrinter implements IResponsePrinter {
         footers.add(printer);
     }
 
+
+
     @Override
     public void printHeaders() throws HyracksDataException {
         print(headers);
+        headersPrinted = !headers.isEmpty();
+    }
+
+    public void printIncrementalHeaders() throws HyracksDataException {
+        printIncremental(headers);
         headersPrinted = !headers.isEmpty();
     }
 
@@ -76,10 +83,25 @@ public class ResponsePrinter implements IResponsePrinter {
         }
         results.clear();
     }
+@Override
+    public void printIncrementalResults() throws HyracksDataException {
+        sessionOutput.release();
+        printIncremental(results);
+        if (!resultsPrinted) {
+            resultsPrinted = !results.isEmpty();
+        }
+        results.clear();
+    }
+
+
 
     @Override
     public void printFooters() throws HyracksDataException {
         print(footers);
+    }
+@Override
+    public void printIncrementalFooters() throws HyracksDataException {
+        printIncremental(footers);
     }
 
     @Override
@@ -102,6 +124,25 @@ public class ResponsePrinter implements IResponsePrinter {
             }
         }
     }
+
+    private void printIncremental(List<IResponseFieldPrinter> printers) throws HyracksDataException {
+        final int fieldsCount = printers.size();
+        for (int i = 0; i < printers.size(); i++) {
+            IResponseFieldPrinter printer = printers.get(i);
+
+            // Print the field immediately
+            printer.print(sessionOutput.out());
+
+            // Print a field separator if not the last field
+            if (i + 1 != fieldsCount) {
+                printFieldSeparator(sessionOutput.out());
+            }
+
+            // Flush the output after each field for interactivity
+            sessionOutput.out().flush();
+        }
+    }
+
 
     public static void printFieldSeparator(PrintWriter pw) {
         pw.print(",\n");

@@ -23,6 +23,7 @@ import org.apache.hyracks.api.dataflow.IOperatorNodePushable;
 import org.apache.hyracks.api.job.profiling.IOperatorStats;
 
 public abstract class AbstractOperatorNodePushable implements IOperatorNodePushable, IIntrospectingOperator {
+    protected byte[] lastKey;
     @Override
     public String getDisplayName() {
         return toString();

@@ -80,6 +80,11 @@ public class LSMInvertedIndexAccessor implements ILSMIndexAccessor, IInvertedInd
     }
 
     @Override
+    public void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled) throws HyracksDataException {
+
+    }
+
+    @Override
     public IIndexCursor createSearchCursor(boolean exclusive) {
         return new LSMInvertedIndexSearchCursor();
     }

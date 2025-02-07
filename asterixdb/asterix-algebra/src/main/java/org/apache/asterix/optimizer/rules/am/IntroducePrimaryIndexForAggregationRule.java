@@ -304,7 +304,7 @@ public class IntroducePrimaryIndexForAggregationRule implements IAlgebraicRewrit
         return null;
     }
 
-    private Set<LogicalVariable> getVariablesProducedByScanOp(AbstractScanOperator scanOperator, int startPosition,
+    public Set<LogicalVariable> getVariablesProducedByScanOp(AbstractScanOperator scanOperator, int startPosition,
             int endPosition) {
         Set<LogicalVariable> variableSet = new HashSet<>();
         // starting after PK, collect the produced variables

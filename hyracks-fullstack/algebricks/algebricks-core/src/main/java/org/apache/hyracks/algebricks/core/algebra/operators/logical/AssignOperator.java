@@ -51,6 +51,11 @@ public class AssignOperator extends AbstractAssignOperator {
         this.expressions.add(expr);
     }
 
+    public void setExpressions(List<Mutable<ILogicalExpression>> exprs) {
+        this.expressions.clear();
+        this.expressions.addAll(exprs);
+    }
+
     @Override
     public LogicalOperatorTag getOperatorTag() {
         return LogicalOperatorTag.ASSIGN;

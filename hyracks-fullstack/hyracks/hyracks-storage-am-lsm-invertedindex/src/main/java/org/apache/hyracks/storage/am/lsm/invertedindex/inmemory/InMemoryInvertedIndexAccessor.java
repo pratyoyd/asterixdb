@@ -84,6 +84,11 @@ public class InMemoryInvertedIndexAccessor implements IInvertedIndexAccessor {
     }
 
     @Override
+    public void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled) throws HyracksDataException {
+
+    }
+
+    @Override
     public IInvertedListCursor createInvertedListCursor() {
         return index.createInvertedListCursor(ctx);
     }

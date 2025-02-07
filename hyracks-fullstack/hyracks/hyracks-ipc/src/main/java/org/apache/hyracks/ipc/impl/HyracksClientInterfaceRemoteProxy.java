@@ -130,6 +130,12 @@ public class HyracksClientInterfaceRemoteProxy implements IHyracksClientInterfac
         rpci.call(ipcHandle, wfcf);
     }
 
+    public void waitForCompletion(JobId jobId, JobId jobId2) throws Exception {
+        HyracksClientInterfaceFunctions.WaitForCompletionFunction wfcf =
+                new HyracksClientInterfaceFunctions.WaitForCompletionFunction(jobId, jobId2);
+        rpci.call(ipcHandle, wfcf);
+    }
+
     @Override
     public List<IOperatorStats> waitForCompletion(JobId jobId, List<String> statOperatorNames) throws Exception {
         HyracksClientInterfaceFunctions.WaitForCompletionFunction wfcf =

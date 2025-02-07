@@ -435,7 +435,8 @@ public class LogicalOperatorDeepCopyWithNewVariablesVisitor
 
     @Override
     public ILogicalOperator visitSplitOperator(SplitOperator op, ILogicalOperator arg) throws AlgebricksException {
-        SplitOperator opCopy = new SplitOperator(op.getOutputArity(), op.getBranchingExpression());
+        Mutable<ILogicalExpression> branchingExpression = exprDeepCopyVisitor.deepCopyExpressionReference(op.getBranchingExpression());
+        SplitOperator opCopy = new SplitOperator(op.getOutputArity(), branchingExpression);
         deepCopyInputsAnnotationsAndExecutionMode(op, arg, opCopy);
         return opCopy;
     }

@@ -201,6 +201,15 @@ public final class HyracksConnection implements Closeable, IHyracksClientConnect
             throw e;
         }
     }
+    public void waitForCompletion(JobId jobId, JobId jobId2) throws Exception {
+        try {
+            hci.waitForCompletion(jobId,jobId2);
+        } catch (InterruptedException e) {
+            // Cancels an on-going job if the current thread gets interrupted.
+            cancelJob(jobId);
+            throw e;
+        }
+    }
 
     @Override
     public List<IOperatorStats> waitForCompletion(JobId jobId, List<String> statOperatorNames) throws Exception {

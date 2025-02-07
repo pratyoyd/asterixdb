@@ -229,5 +229,13 @@
       <groupId>it.unimi.dsi</groupId>
       <artifactId>fastutil</artifactId>
     </dependency>
+      <dependency>
+          <groupId>org.apache.hyracks</groupId>
+          <artifactId>algebricks-rewriter</artifactId>
+      </dependency>
+      <dependency>
+          <groupId>org.apache.hyracks</groupId>
+          <artifactId>algebricks-rewriter</artifactId>
+      </dependency>
   </dependencies>
 </project>

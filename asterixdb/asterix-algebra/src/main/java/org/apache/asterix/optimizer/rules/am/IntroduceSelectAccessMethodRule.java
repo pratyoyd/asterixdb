@@ -31,6 +31,7 @@ import org.apache.asterix.common.config.DatasetConfig;
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.metadata.declared.MetadataProvider;
+import org.apache.asterix.metadata.entities.Dataset;
 import org.apache.asterix.metadata.entities.Index;
 import org.apache.asterix.optimizer.rules.am.array.IIntroduceAccessMethodRuleLocalRewrite;
 import org.apache.asterix.optimizer.rules.am.array.MergedSelectRewrite;
@@ -49,13 +50,8 @@ import org.apache.hyracks.algebricks.core.algebra.expressions.AbstractFunctionCa
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
 import org.apache.hyracks.algebricks.core.algebra.expressions.VariableReferenceExpression;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator.ExecutionMode;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.DelegateOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.DistinctOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.IntersectOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.SelectOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.visitors.VariableUtilities;
 import org.apache.hyracks.algebricks.core.algebra.prettyprint.IPlanPrettyPrinter;
 import org.apache.hyracks.algebricks.core.algebra.util.OperatorPropertiesUtil;
@@ -67,7 +63,7 @@ import org.apache.hyracks.algebricks.core.algebra.util.OperatorPropertiesUtil;
  * This rule seeks to change the following patterns.
  * For the secondary-index searches, a SELECT operator is followed by one or more ASSIGN / UNNEST operators.
  * A DATASOURCE_SCAN operator should be placed before these operators.
- * For the primary-index search, a SELECT operator is followed by DATASOURE_SCAN operator since no ASSIGN / UNNEST
+ * For the primary-index search, a SELECT operator is followed by DATASOURCE_SCAN operator since no ASSIGN / UNNEST
  * operator is required to get the primary key fields (they are already stored fields in the BTree tuples).
  * If the above pattern is found, this rule replaces the pattern with the following pattern.
  * If the given plan is both a secondary-index search and an index-only plan, it builds two paths.
@@ -119,6 +115,56 @@ import org.apache.hyracks.algebricks.core.algebra.util.OperatorPropertiesUtil;
  * The detailed documentation of intersecting multiple secondary indexes is here:
  * https://cwiki.apache.org/confluence/display/ASTERIXDB/Intersect+multiple+secondary+index
  */
+
+/**
+ * This rule optimizes query execution plans by leveraging primary and secondary indexes for efficient data retrieval.
+ * It rewrites query plans based on the presence of indexes, distinguishing between index-only plans and non-index-only plans.
+ *
+ * Index-Only Plans:
+ * -----------------
+ * - Avoid traversing the primary index after fetching results from the secondary index.
+ * - Applicable when:
+ *   1. The search predicate is fully covered by the secondary index.
+ *   2. The query returns only primary key (PK) and/or secondary key (SK) fields.
+ * - Execution Flow:
+ *   1. For each <SK, PK> pair fetched by the secondary index, an `instantTryLock` is attempted on the PK:
+ *      - If successful, the <SK, PK> pair is returned directly (right path).
+ *      - If unsuccessful, the primary index is traversed for full verification (left path).
+ *   2. Results from both paths are combined using a UNIONALL operator.
+ * - Key Benefit:
+ *   - Eliminates unnecessary primary index lookups when the secondary index alone satisfies the query.
+ *
+ * Non-Index-Only Plans:
+ * ---------------------
+ * - Used when:
+ *   1. The search predicate is not fully covered by the secondary index.
+ *   2. The query returns fields beyond those stored in the secondary index.
+ * - Execution Flow:
+ *   1. A SELECT operator remains at the top of the plan.
+ *   2. Secondary index search is performed via an UNNEST-MAP operator, followed by a DATASOURCE_SCAN for primary index traversal.
+ *   3. Sorting may be introduced before primary index traversal, depending on the access method implementation.
+ * - Final verification is always performed with the original SELECT condition.
+ *
+ * Steps for Applying the Rule:
+ * ----------------------------
+ * 1. Identify patterns involving SELECT, ASSIGN, UNNEST, and DATASOURCE_SCAN operators.
+ * 2. Analyze the SELECT condition for optimizable functions supported by the access method.
+ * 3. Check metadata for applicable indexes:
+ *    - If multiple secondary indexes are available, intersect results to get relevant PKs.
+ * 4. Rewrite the plan to incorporate index usage, either as an index-only or non-index-only plan.
+ *
+ * Special Case: Intersecting Multiple Secondary Indexes
+ * -----------------------------------------------------
+ * - When multiple secondary indexes are available, their results can be intersected to retrieve relevant PKs.
+ * - This approach does not rely on index-only conditions.
+ * - For details: https://cwiki.apache.org/confluence/display/ASTERIXDB/Intersect+multiple+secondary+index
+ *
+ * Summary:
+ * --------
+ * By distinguishing between index-only and non-index-only plans, this rule minimizes primary index access,
+ * reduces redundant operations, and improves query execution efficiency.
+ */
+
 public class IntroduceSelectAccessMethodRule extends AbstractIntroduceAccessMethodRule {
 
     // Operators representing the patterns to be matched:
@@ -184,6 +230,8 @@ public class IntroduceSelectAccessMethodRule extends AbstractIntroduceAccessMeth
         Map<IAccessMethod, AccessMethodAnalysisContext> analyzedAMs = null;
         boolean planTransformed =
                 checkAndApplyTheSelectTransformation(opRef, context, false, chosenIndexes, analyzedAMs);
+        
+       // if(context.getPhysicalOptimizationConfig().getInteractiveMode())optimizeInteractiveArm(opRef, context);
 
         if (selectOp != null) {
             // We found an optimization here. Don't need to optimize this operator again.
@@ -198,6 +246,85 @@ public class IntroduceSelectAccessMethodRule extends AbstractIntroduceAccessMeth
 
         return planTransformed;
     }
+
+    private boolean optimizeInteractiveArm(Mutable<ILogicalOperator> opRef, IOptimizationContext context) throws AlgebricksException {
+        ILogicalOperator op = opRef.getValue();
+        if(op.getOperatorTag() == LogicalOperatorTag.EMPTYTUPLESOURCE) {return false;}
+        if(op.getOperatorTag() == LogicalOperatorTag.UNIONALL) {
+            Mutable<ILogicalOperator> inputOpRef = op.getInputs().get(0);
+             return optimizeWRTGroupBy(inputOpRef, context);
+        }
+        for (Mutable<ILogicalOperator> inputOpRef : op.getInputs()) {
+           return optimizeInteractiveArm(inputOpRef, context);
+        }
+        return false;
+
+
+
+
+    }
+
+    private boolean optimizeWRTGroupBy(Mutable<ILogicalOperator> opRef, IOptimizationContext context) throws AlgebricksException {
+        ILogicalOperator op = opRef.getValue();
+        if(op.getOperatorTag() == LogicalOperatorTag.EMPTYTUPLESOURCE) {return false;}
+        if(op.getOperatorTag() == LogicalOperatorTag.GROUP){
+            GroupByOperator groupByOp = (GroupByOperator) op;
+            List<LogicalVariable> gbyList = groupByOp.getGroupByVarList();
+            //Dealing with one group by operator for now
+            LogicalVariable gbyVar = gbyList.get(0);
+            // Assuming you have a GroupByOperator and its input operator
+            Mutable<ILogicalOperator> groupByInput = groupByOp.getInputs().get(0);
+
+
+
+
+        // Initialize the subtree using the input operator
+            subTree.initFromSubTree(groupByInput);
+
+
+        }
+
+        return false;
+    }
+
+    protected Index hasBTreeIndexForGroupByVariable(OptimizableOperatorSubTree subTree, LogicalVariable groupByVar, IOptimizationContext context) throws AlgebricksException {
+        // Step 1: Ensure the subtree has a DataSourceScan (required to associate variables to a dataset)
+
+
+        // Step 2: Get the dataset associated with the subtree
+        Dataset dataset = subTree.getDataset();
+        if (dataset == null || dataset.getDatasetType() != DatasetConfig.DatasetType.INTERNAL) {
+            return null; // Only internal datasets can have indexes
+        }
+
+        // Step 3: Retrieve all indexes associated with the dataset
+        MetadataProvider mp = (MetadataProvider) context.getMetadataProvider();
+        List<Index> indexes = mp.getDatasetIndexes(dataset.getDatabaseName(), dataset.getDataverseName(), dataset.getDatasetName());
+
+
+        // Step 4: Retrieve the field names associated with the groupByVar
+        String fieldName = groupByVar.toString().substring(2);
+        if (fieldName == null || fieldName.isEmpty()) {
+            return null; // No field name mapping for this variable
+        }
+
+        // Step 5: Check each index to see if it is a B-Tree index and matches the groupByFieldName
+        for (Index index : indexes) {
+            if (index.getIndexType() == DatasetConfig.IndexType.BTREE) {
+                Index.ValueIndexDetails indexDetails = (Index.ValueIndexDetails) index.getIndexDetails();
+                List<List<String>> keyFieldNames = indexDetails.getKeyFieldNames();
+
+                if(fieldName.equals(keyFieldNames.get(0))) return index;
+
+                // Check if the groupByFieldName matches any of the key field names
+
+            }
+        }
+
+        // No matching B-Tree index found
+        return null;
+    }
+
 
     public boolean checkApplicable(Mutable<ILogicalOperator> opRef, IOptimizationContext context,
             List<Pair<IAccessMethod, Index>> chosenIndexes, Map<IAccessMethod, AccessMethodAnalysisContext> analyzedAMs)
@@ -475,7 +602,18 @@ public class IntroduceSelectAccessMethodRule extends AbstractIntroduceAccessMeth
 
         // Recursively check the plan and try to optimize it. We first check the children of the given operator
         // to make sure an earlier select in the path is optimized first.
-        for (Mutable<ILogicalOperator> inputOpRef : op.getInputs()) {
+        for (int i = 0; i < op.getInputs().size(); i++) {
+            Mutable<ILogicalOperator> inputOpRef = op.getInputs().get(i);
+            ILogicalOperator inputOp = inputOpRef.getValue();
+
+            // Skip the right child of pre-existing UnionAllOperators
+            if (op.getOperatorTag() == LogicalOperatorTag.UNIONALL) {
+                UnionAllOperator unionAllOp = (UnionAllOperator) op;
+                if (Boolean.TRUE.equals(unionAllOp.getAnnotations().get("PreExistingUnionAll")) &&context.getPhysicalOptimizationConfig().getInteractiveMode()&& i == 1) {
+                    continue;
+                }
+            }
+
             selectFoundAndOptimizationApplied = checkAndApplyTheSelectTransformation(inputOpRef, context,
                     checkApplicableOnly, chosenIndexes, analyzedAMs);
             if (selectFoundAndOptimizationApplied) {

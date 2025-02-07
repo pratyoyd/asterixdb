@@ -58,6 +58,7 @@ public class HeuristicOptimizer {
             return;
         }
 
+
         logPlanAt("Plan Before Optimization", Level.TRACE);
         sanityCheckBeforeOptimization(plan);
         runLogicalOptimizationSets(plan, logicalRewrites);

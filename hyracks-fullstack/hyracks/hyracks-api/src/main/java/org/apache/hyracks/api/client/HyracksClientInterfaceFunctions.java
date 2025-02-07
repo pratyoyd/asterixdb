@@ -349,17 +349,29 @@ public class HyracksClientInterfaceFunctions {
         private static final long serialVersionUID = 2L;
 
         private final JobId jobId;
+        private final JobId jobId2;
 
         private final List<String> statOperatorNames;
 
         public WaitForCompletionFunction(JobId jobId) {
-            this(jobId, null);
+            this.jobId = jobId;
+            this.jobId2 = null;
+            this.statOperatorNames = null;
         }
+        public WaitForCompletionFunction(JobId jobId, JobId jobId2) {
+            this.jobId = jobId;
+            this.jobId2 = jobId2;
+            this.statOperatorNames = null;
+        }
+
 
         public WaitForCompletionFunction(JobId jobId, List<String> statOperatorNames) {
             this.jobId = jobId;
+            this.jobId2 = null;
             this.statOperatorNames = statOperatorNames;
         }
+
+
 
         @Override
         public FunctionId getFunctionId() {
@@ -374,6 +386,8 @@ public class HyracksClientInterfaceFunctions {
             return statOperatorNames;
         }
     }
+
+
 
     public static class GetNodeControllersInfoFunction extends Function {
         private static final long serialVersionUID = 1L;

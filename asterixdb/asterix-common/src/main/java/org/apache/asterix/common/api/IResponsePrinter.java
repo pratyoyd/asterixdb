@@ -72,5 +72,8 @@ public interface IResponsePrinter {
     /**
      * Performs any operations required after printing the response fields.
      */
+    void printIncrementalHeaders() throws HyracksDataException;
+    void printIncrementalResults() throws HyracksDataException;
+    void printIncrementalFooters() throws HyracksDataException;
     void end();
 }

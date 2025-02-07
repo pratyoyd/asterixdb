@@ -102,4 +102,6 @@ public interface IIndexAccessor extends IDestroyable {
      *             If the BufferCache throws while un/pinning or un/latching.
      */
     void search(IIndexCursor cursor, ISearchPredicate searchPred) throws HyracksDataException;
+
+    void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled) throws HyracksDataException;
 }

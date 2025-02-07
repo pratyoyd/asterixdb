@@ -48,4 +48,5 @@ public class AlgebricksConfig {
     public static final boolean COLUMN_FILTER_DEFAULT = true;
     public static final boolean ORDERED_FIELDS = false;
     public static final int MAX_VARIABLE_OCCURRENCES_INLINING_DEFAULT = 128;
+    public static final boolean INTERACTIVE_MODE_DEFAULT = false;
 }

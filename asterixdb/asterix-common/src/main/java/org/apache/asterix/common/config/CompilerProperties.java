@@ -68,7 +68,7 @@ public class CompilerProperties extends AbstractProperties {
                 "The memory budget (in bytes) for an external scan operator instance in a partition"),
         COMPILER_FRAMESIZE(
                 INTEGER_BYTE_UNIT,
-                StorageUtil.getIntSizeInBytes(32, KILOBYTE),
+                StorageUtil.getIntSizeInBytes(1, KILOBYTE),
                 "The page size (in bytes) for computation"),
         COMPILER_MIN_SORTMEMORY(
                 LONG_BYTE_UNIT,
@@ -157,7 +157,8 @@ public class CompilerProperties extends AbstractProperties {
                 getRangedIntegerType(0, Integer.MAX_VALUE),
                 128,
                 "Maximum occurrences of a variable allowed in an expression for inlining"),
-        COMPILER_ORDERFIELDS(BOOLEAN, AlgebricksConfig.ORDERED_FIELDS, "Enable/disable select order list");
+        COMPILER_ORDERFIELDS(BOOLEAN, AlgebricksConfig.ORDERED_FIELDS, "Enable/disable select order list"),
+        COMPILER_INTERACTIVE_MODE(BOOLEAN, AlgebricksConfig.INTERACTIVE_MODE_DEFAULT, "Enable/disable interactive mode");
 
         private final IOptionType type;
         private final Object defaultValue;
@@ -243,6 +244,8 @@ public class CompilerProperties extends AbstractProperties {
             Option.COMPILER_MAX_VARIABLE_OCCURRENCES_INLINING.ini();
 
     public static final String COMPILER_ORDERFIELDS_KEY = Option.COMPILER_ORDERFIELDS.ini();
+
+    public static final String COMPILER_INTERACTIVE_MODE = Option.COMPILER_INTERACTIVE_MODE.ini();
 
     public static final int COMPILER_PARALLELISM_AS_STORAGE = 0;
 

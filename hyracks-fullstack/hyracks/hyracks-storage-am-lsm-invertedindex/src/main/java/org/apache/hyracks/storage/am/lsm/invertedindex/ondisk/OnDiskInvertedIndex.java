@@ -537,6 +537,11 @@ public class OnDiskInvertedIndex implements IInPlaceInvertedIndex {
         }
 
         @Override
+        public void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled) throws HyracksDataException {
+
+        }
+
+        @Override
         public IInvertedListCursor createInvertedListCursor() throws HyracksDataException {
             return index.createInvertedListCursor(ctx);
         }

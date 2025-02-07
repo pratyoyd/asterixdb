@@ -34,14 +34,14 @@ import org.apache.hyracks.util.LogRedactionUtil;
 
 public abstract class AbstractRuleController {
 
-    protected final boolean isTraceEnabled;
+    protected boolean isTraceEnabled = true;
 
     protected boolean isSanityCheckEnabled;
 
     protected IOptimizationContext context;
 
     public AbstractRuleController() {
-        isTraceEnabled = AlgebricksConfig.ALGEBRICKS_LOGGER.isTraceEnabled();
+        isTraceEnabled = true;// AlgebricksConfig.ALGEBRICKS_LOGGER.isTraceEnabled();
     }
 
     public void setContext(IOptimizationContext context) {
@@ -186,9 +186,9 @@ public abstract class AbstractRuleController {
 
     private void printRuleApplication(IAlgebraicRewriteRule rule, String status, String beforePlan, String afterPlan) {
         if (isTraceEnabled) {
-            AlgebricksConfig.ALGEBRICKS_LOGGER.trace(">> Rule " + rule.getClass().getName() + " " + status + "\n");
-            AlgebricksConfig.ALGEBRICKS_LOGGER.trace(">> Before plan\n" + LogRedactionUtil.userData(beforePlan) + "\n");
-            AlgebricksConfig.ALGEBRICKS_LOGGER.trace(">> After plan\n" + LogRedactionUtil.userData(afterPlan) + "\n");
+            AlgebricksConfig.ALGEBRICKS_LOGGER.info(">> Rule " + rule.getClass().getName() + " " + status + "\n");
+            AlgebricksConfig.ALGEBRICKS_LOGGER.info(">> Before plan\n" + LogRedactionUtil.userData(beforePlan) + "\n");
+            AlgebricksConfig.ALGEBRICKS_LOGGER.info(">> After plan\n" + LogRedactionUtil.userData(afterPlan) + "\n");
         }
     }
 }

@@ -109,9 +109,28 @@ public class ResultWriterOperatorDescriptor extends AbstractSingleActivityOperat
                                     frameOutputStream.getLength());
                         }
                     }
+                    //.flush(resultPartitionWriter);
                     frameOutputStream.reset();
                 }
             }
+//@Override
+//public void nextFrame(ByteBuffer buffer) throws HyracksDataException {
+//    frameTupleAccessor.reset(buffer);
+//    for (int tIndex = 0; tIndex < frameTupleAccessor.getTupleCount(); tIndex++) {
+//        resultSerializer.appendTuple(frameTupleAccessor, tIndex);
+//        if (!frameOutputStream.appendTuple()) {
+//            frameOutputStream.flush(resultPartitionWriter);
+//            frameOutputStream.reset();
+//            if (!frameOutputStream.appendTuple()) {
+//                throw HyracksDataException.create(ErrorCode.TUPLE_CANNOT_FIT_INTO_EMPTY_FRAME,
+//                        frameOutputStream.getLength());
+//            }
+//        }
+//    }
+//    // Force flush after processing the frame
+//    frameOutputStream.flush(resultPartitionWriter);
+//}
+
 
             @Override
             public void fail() throws HyracksDataException {

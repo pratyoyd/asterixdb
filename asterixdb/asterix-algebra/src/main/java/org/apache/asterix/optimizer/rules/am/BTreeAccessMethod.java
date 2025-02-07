@@ -187,6 +187,7 @@ public class BTreeAccessMethod implements IAccessMethod {
         Quadruple<Boolean, Boolean, Boolean, Boolean> indexOnlyPlanInfo =
                 new Quadruple<>(isIndexOnlyPlan, false, requireVerificationAfterSIdxSearch, false);
 
+
         if (dataset.getDatasetType() == DatasetType.INTERNAL && !chosenIndex.isPrimaryIndex()) {
             AccessMethodUtils.indexOnlyPlanCheck(afterSelectRefs, selectRef, subTree, null, chosenIndex, analysisCtx,
                     context, indexOnlyPlanInfo);

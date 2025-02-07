@@ -811,6 +811,11 @@ public class RTree extends AbstractTreeIndex {
         }
 
         @Override
+        public void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled) throws HyracksDataException {
+
+        }
+
+        @Override
         public ITreeIndexCursor createDiskOrderScanCursor() {
             return new TreeIndexDiskOrderScanCursor(leafFrameFactory.createFrame());
         }

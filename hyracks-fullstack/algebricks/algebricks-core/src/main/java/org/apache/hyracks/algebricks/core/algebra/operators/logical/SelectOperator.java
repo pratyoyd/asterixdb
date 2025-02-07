@@ -79,6 +79,8 @@ public class SelectOperator extends AbstractLogicalOperator {
         return condition;
     }
 
+
+
     public IAlgebricksConstantValue getRetainMissingAsValue() {
         return retainMissingAsValue;
     }

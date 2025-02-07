@@ -63,13 +63,13 @@ public class PhysicalOptimizationConfig {
     private static final String MIN_GROUP_FRAMES = "MIN_GROUP_FRAMES";
     private static final String MIN_WINDOW_FRAMES = "MIN_WINDOW_FRAMES";
     private static final String MAX_VARIABLE_OCCURRENCES_INLINING = "MAX_VARIABLE_OCCURRENCES_INLINING";
-
+    private static final String INTERACTIVEMODE = "INTERACTIVEMODE";
     private static final String ORDER_FIELDS = "ORDER_FIELDS";
 
     private final Properties properties = new Properties();
 
     public PhysicalOptimizationConfig() {
-        int frameSize = 32768;
+        int frameSize = 1024;//32768;
         setInt(FRAMESIZE, frameSize);
         setInt(MAX_FRAMES_EXTERNAL_SORT, (int) (((long) 32 * MB) / frameSize));
         setInt(MAX_FRAMES_EXTERNAL_GROUP_BY, (int) (((long) 32 * MB) / frameSize));
@@ -86,7 +86,7 @@ public class PhysicalOptimizationConfig {
     }
 
     public int getFrameSize() {
-        return getInt(FRAMESIZE, 32768);
+        return getInt(FRAMESIZE, 1024);//32768);
     }
 
     public void setFrameSize(int frameSize) {
@@ -437,4 +437,8 @@ public class PhysicalOptimizationConfig {
         String value = properties.getProperty(property);
         return value == null ? defaultValue : value;
     }
+
+    public boolean getInteractiveMode(){return  getBoolean(INTERACTIVEMODE, AlgebricksConfig.INTERACTIVE_MODE_DEFAULT);}
+
+    public void setInteractiveMode(boolean interactiveMode){ setBoolean(INTERACTIVEMODE, interactiveMode);}
 }

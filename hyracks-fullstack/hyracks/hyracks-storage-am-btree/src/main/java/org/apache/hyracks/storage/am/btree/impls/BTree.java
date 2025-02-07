@@ -883,6 +883,12 @@ public class BTree extends AbstractTreeIndex {
         }
 
         @Override
+        public void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled) throws HyracksDataException {
+            ctx.setOperation(IndexOperation.SEARCH);
+            btree.search((ITreeIndexCursor) cursor, searchPred, ctx);
+        }
+
+        @Override
         public ITreeIndexCursor createDiskOrderScanCursor() {
             IBTreeLeafFrame leafFrame = (IBTreeLeafFrame) btree.getLeafFrameFactory().createFrame();
             return new TreeIndexDiskOrderScanCursor(leafFrame);

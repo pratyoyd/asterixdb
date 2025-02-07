@@ -104,6 +104,7 @@ import org.apache.asterix.optimizer.rules.am.IntroduceJoinAccessMethodRule;
 import org.apache.asterix.optimizer.rules.am.IntroduceLSMComponentFilterRule;
 import org.apache.asterix.optimizer.rules.am.IntroducePrimaryIndexForAggregationRule;
 import org.apache.asterix.optimizer.rules.am.IntroduceSelectAccessMethodRule;
+import org.apache.asterix.optimizer.rules.am.array.smartrabbit.InteractiveSortRule;
 import org.apache.asterix.optimizer.rules.cbo.EnumerateJoinsRule;
 import org.apache.asterix.optimizer.rules.cbo.JoinEnum;
 import org.apache.asterix.optimizer.rules.subplan.AsterixMoveFreeVariableOperatorOutOfSubplanRule;
@@ -112,51 +113,7 @@ import org.apache.asterix.optimizer.rules.temporal.TranslateIntervalExpressionRu
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalOperatorTag;
 import org.apache.hyracks.algebricks.core.rewriter.base.HeuristicOptimizer;
 import org.apache.hyracks.algebricks.core.rewriter.base.IAlgebraicRewriteRule;
-import org.apache.hyracks.algebricks.rewriter.rules.BreakSelectIntoConjunctsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ComplexUnnestToProductRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ConsolidateAssignsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ConsolidateLeftOuterJoinSelectsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ConsolidateSelectsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.CopyLimitDownRule;
-import org.apache.hyracks.algebricks.rewriter.rules.EliminateGroupByEmptyKeyRule;
-import org.apache.hyracks.algebricks.rewriter.rules.EnforceOrderByAfterSubplan;
-import org.apache.hyracks.algebricks.rewriter.rules.EnforceStructuralPropertiesRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ExtractCommonExpressionsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ExtractCommonOperatorsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ExtractGbyExpressionsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ExtractGroupByDecorVariablesRule;
-import org.apache.hyracks.algebricks.rewriter.rules.FactorRedundantGroupAndDecorVarsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.HybridToInMemoryHashJoinRule;
-import org.apache.hyracks.algebricks.rewriter.rules.InferTypesRule;
-import org.apache.hyracks.algebricks.rewriter.rules.InlineAssignIntoAggregateRule;
-import org.apache.hyracks.algebricks.rewriter.rules.InlineSingleReferenceVariablesRule;
-import org.apache.hyracks.algebricks.rewriter.rules.InsertProjectBeforeUnionRule;
-import org.apache.hyracks.algebricks.rewriter.rules.IntroJoinInsideSubplanRule;
-import org.apache.hyracks.algebricks.rewriter.rules.IntroduceAggregateCombinerRule;
-import org.apache.hyracks.algebricks.rewriter.rules.IntroduceProjectsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.IsolateHyracksOperatorsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.PopulateResultMetadataRule;
-import org.apache.hyracks.algebricks.rewriter.rules.PullSelectOutOfEqJoin;
-import org.apache.hyracks.algebricks.rewriter.rules.PushGroupByIntoSortRule;
-import org.apache.hyracks.algebricks.rewriter.rules.PushMapOperatorDownThroughProductRule;
-import org.apache.hyracks.algebricks.rewriter.rules.PushNestedOrderByUnderPreSortedGroupByRule;
-import org.apache.hyracks.algebricks.rewriter.rules.PushProjectDownRule;
-import org.apache.hyracks.algebricks.rewriter.rules.PushSelectDownRule;
-import org.apache.hyracks.algebricks.rewriter.rules.PushSelectIntoJoinRule;
-import org.apache.hyracks.algebricks.rewriter.rules.PushSortDownRule;
-import org.apache.hyracks.algebricks.rewriter.rules.PushSubplanWithAggregateDownThroughProductRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ReinferAllTypesRule;
-import org.apache.hyracks.algebricks.rewriter.rules.RemoveCartesianProductWithEmptyBranchRule;
-import org.apache.hyracks.algebricks.rewriter.rules.RemoveRedundantGroupByDecorVarsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.RemoveRedundantVariablesInUnionRule;
-import org.apache.hyracks.algebricks.rewriter.rules.RemoveRedundantVariablesRule;
-import org.apache.hyracks.algebricks.rewriter.rules.RemoveRedundantWindowOperatorsRule;
-import org.apache.hyracks.algebricks.rewriter.rules.RemoveUnnecessarySortMergeExchange;
-import org.apache.hyracks.algebricks.rewriter.rules.RemoveUnusedAssignAndAggregateRule;
-import org.apache.hyracks.algebricks.rewriter.rules.ReuseWindowAggregateRule;
-import org.apache.hyracks.algebricks.rewriter.rules.SetExecutionModeRule;
-import org.apache.hyracks.algebricks.rewriter.rules.SimpleUnnestToProductRule;
-import org.apache.hyracks.algebricks.rewriter.rules.SwitchInnerJoinBranchRule;
+import org.apache.hyracks.algebricks.rewriter.rules.*;
 import org.apache.hyracks.algebricks.rewriter.rules.subplan.EliminateIsomorphicSubplanRule;
 import org.apache.hyracks.algebricks.rewriter.rules.subplan.EliminateSubplanRule;
 import org.apache.hyracks.algebricks.rewriter.rules.subplan.EliminateSubplanWithInputCardinalityOneRule;
@@ -177,7 +134,9 @@ public final class RuleCollections {
     }
 
     public static List<IAlgebraicRewriteRule> buildTypeInferenceRuleCollection() {
+
         List<IAlgebraicRewriteRule> typeInfer = new LinkedList<>();
+        //typeInfer.add(new IntroduceUnionOperatorRule());
         typeInfer.add(new InlineUnnestFunctionRule());
         typeInfer.add(new InferTypesRule());
         typeInfer.add(new CheckFilterExpressionTypeRule());
@@ -196,6 +155,7 @@ public final class RuleCollections {
 
     public static List<IAlgebraicRewriteRule> buildNormalizationRuleCollection(ICcApplicationContext appCtx) {
         List<IAlgebraicRewriteRule> normalization = new LinkedList<>();
+        normalization.add(new IntroduceUnionOperatorRule());
         normalization.add(new CheckInsertUpsertReturningRule());
         normalization.add(new NormalizeWritingPathRule(appCtx));
         normalization.add(new IntroduceUnnestForCollectionToSequenceRule());
@@ -329,6 +289,7 @@ public final class RuleCollections {
         List<IAlgebraicRewriteRule> accessMethod = new LinkedList<>();
         accessMethod.add(new IntroduceSelectAccessMethodRule());
         accessMethod.add(new IntroduceJoinAccessMethodRule());
+        //accessMethod.add(new IntroduceUnionForEagerAggregation());
         accessMethod.add(new IntroduceLSMComponentFilterRule());
         accessMethod.add(new IntroducePrimaryIndexForAggregationRule());
         accessMethod.add(new IntroduceSecondaryIndexInsertDeleteRule());
@@ -367,6 +328,9 @@ public final class RuleCollections {
         // introducing an assign operator in ExtractSimilarVariablesInJoinRule
         planCleanupRules.add(new ExtractRedundantVariablesInJoinRule());
         planCleanupRules.add(new CleanupWriteOperatorRule());
+        //planCleanupRules.add(new IntroduceUnionForEagerAggregation());
+       // planCleanupRules.add(new AddDynamicFiltersRule());
+
 
         // Needs to invoke ByNameToByIndexFieldAccessRule as the last logical optimization rule because
         // some rules can push a FieldAccessByName to a place where the name it tries to access is in the closed part.
@@ -433,6 +397,7 @@ public final class RuleCollections {
         // remove assigns that could become unused after PushLimitIntoPrimarySearchRule
         physicalRewritesTopLevel.add(new RemoveUnusedAssignAndAggregateRule());
         physicalRewritesTopLevel.add(new IntroduceProjectsRule());
+
         //Infer the types for the pushed down condition
         physicalRewritesTopLevel.add(new InferTypesRule());
         /*
@@ -444,6 +409,7 @@ public final class RuleCollections {
         physicalRewritesTopLevel.add(new IntroduceRapidFrameFlushProjectAssignRule());
         physicalRewritesTopLevel.add(new SetExecutionModeRule());
         physicalRewritesTopLevel.add(new IntroduceRandomPartitioningFeedComputationRule());
+        //physicalRewritesTopLevel.add(new InteractiveSortRule());
         return physicalRewritesTopLevel;
     }
 
@@ -455,7 +421,7 @@ public final class RuleCollections {
         prepareForJobGenRewrites
                 .add(new IsolateHyracksOperatorsRule(HeuristicOptimizer.hyraxOperatorsBelowWhichJobGenIsDisabled));
         prepareForJobGenRewrites.add(new FixReplicateOperatorOutputsRule());
-        prepareForJobGenRewrites.add(new ExtractCommonOperatorsRule());
+        //prepareForJobGenRewrites.add(new ExtractCommonOperatorsRule());
         // Re-infer all types, so that, e.g., the effect of not-is-null is propagated
         prepareForJobGenRewrites.add(new ReinferAllTypesRule());
         prepareForJobGenRewrites.add(new PushGroupByIntoSortRule());

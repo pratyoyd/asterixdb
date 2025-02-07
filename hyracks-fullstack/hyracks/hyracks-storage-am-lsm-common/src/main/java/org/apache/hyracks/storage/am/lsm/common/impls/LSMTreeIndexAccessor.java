@@ -119,6 +119,11 @@ public class LSMTreeIndexAccessor implements ILSMIndexAccessor {
     }
 
     @Override
+    public void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled) throws HyracksDataException {
+
+    }
+
+    @Override
     public void flush(ILSMIOOperation operation) throws HyracksDataException {
         lsmHarness.flush(operation);
     }

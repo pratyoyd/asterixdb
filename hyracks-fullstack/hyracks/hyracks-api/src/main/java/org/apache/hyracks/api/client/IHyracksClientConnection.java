@@ -194,7 +194,7 @@ public interface IHyracksClientConnection extends IClusterInfoCollector {
      * @throws Exception
      */
     void waitForCompletion(JobId jobId) throws Exception;
-
+    void waitForCompletion(JobId jobId, JobId JobId2) throws Exception;
     /**
      * Waits until the specified job has completed, either successfully or has
      * encountered a permanent failure.

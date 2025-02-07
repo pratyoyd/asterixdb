@@ -56,6 +56,8 @@ public interface IHyracksClientInterface {
 
     public void waitForCompletion(JobId jobId) throws Exception;
 
+    public void waitForCompletion(JobId jobId, JobId jobId2) throws Exception;
+
     public List<IOperatorStats> waitForCompletion(JobId jobId, List<String> statOperatorNames) throws Exception;
 
     public Map<String, NodeControllerInfo> getNodeControllersInfo() throws Exception;

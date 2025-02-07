@@ -25,6 +25,7 @@ import static org.apache.asterix.lang.common.statement.CreateFullTextFilterState
 
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.rmi.RemoteException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -60,6 +61,7 @@ import org.apache.asterix.app.cc.GlobalTxManager;
 import org.apache.asterix.app.external.ExternalLibraryJobUtils;
 import org.apache.asterix.app.result.ExecutionError;
 import org.apache.asterix.app.result.ResultHandle;
+import org.apache.asterix.app.result.ResultPrinter;
 import org.apache.asterix.app.result.ResultReader;
 import org.apache.asterix.app.result.fields.ErrorsPrinter;
 import org.apache.asterix.app.result.fields.ResultHandlePrinter;
@@ -229,23 +231,13 @@ import org.apache.asterix.runtime.fulltext.StopwordsFullTextFilterDescriptor;
 import org.apache.asterix.runtime.operators.DatasetStreamStats;
 import org.apache.asterix.transaction.management.service.transaction.DatasetIdFactory;
 import org.apache.asterix.transaction.management.service.transaction.GlobalTxInfo;
-import org.apache.asterix.translator.AbstractLangTranslator;
-import org.apache.asterix.translator.ClientRequest;
-import org.apache.asterix.translator.CompiledStatements;
+import org.apache.asterix.translator.*;
 import org.apache.asterix.translator.CompiledStatements.CompiledCopyFromFileStatement;
 import org.apache.asterix.translator.CompiledStatements.CompiledDeleteStatement;
 import org.apache.asterix.translator.CompiledStatements.CompiledInsertStatement;
 import org.apache.asterix.translator.CompiledStatements.CompiledLoadFromFileStatement;
 import org.apache.asterix.translator.CompiledStatements.CompiledUpsertStatement;
 import org.apache.asterix.translator.CompiledStatements.ICompiledDmlStatement;
-import org.apache.asterix.translator.ExecutionPlans;
-import org.apache.asterix.translator.ExecutionPlansHtmlPrintUtil;
-import org.apache.asterix.translator.IRequestParameters;
-import org.apache.asterix.translator.IStatementExecutor;
-import org.apache.asterix.translator.SchedulableClientRequest;
-import org.apache.asterix.translator.SessionConfig;
-import org.apache.asterix.translator.SessionOutput;
-import org.apache.asterix.translator.TypeTranslator;
 import org.apache.asterix.translator.util.ValidateUtil;
 import org.apache.asterix.utils.DataverseUtil;
 import org.apache.asterix.utils.FeedOperations;
@@ -263,6 +255,7 @@ import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
 import org.apache.hyracks.algebricks.core.algebra.util.OperatorPropertiesUtil;
 import org.apache.hyracks.api.client.IClusterInfoCollector;
 import org.apache.hyracks.api.client.IHyracksClientConnection;
+import org.apache.hyracks.api.comm.IFrameReader;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.IWarningCollector;
 import org.apache.hyracks.api.exceptions.SourceLocation;
@@ -271,11 +264,14 @@ import org.apache.hyracks.api.io.FileSplit;
 import org.apache.hyracks.api.job.JobFlag;
 import org.apache.hyracks.api.job.JobId;
 import org.apache.hyracks.api.job.JobSpecification;
+import org.apache.hyracks.api.job.JobStatus;
 import org.apache.hyracks.api.job.profiling.IOperatorStats;
+import org.apache.hyracks.api.result.IResultPartitionManager;
 import org.apache.hyracks.api.result.IResultSet;
 import org.apache.hyracks.api.result.ResultSetId;
 import org.apache.hyracks.control.cc.ClusterControllerService;
 import org.apache.hyracks.control.common.controllers.CCConfig;
+import org.apache.hyracks.ipc.impl.HyracksConnection;
 import org.apache.hyracks.storage.am.common.dataflow.IndexDropOperatorDescriptor.DropOption;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMMergePolicyFactory;
 import org.apache.hyracks.storage.am.lsm.common.dataflow.LSMTreeIndexInsertUpdateDeleteOperatorDescriptor;
@@ -5299,6 +5295,7 @@ public class QueryTranslator extends AbstractLangTranslator implements IStatemen
 
     private interface IResultPrinter {
         void print(JobId jobId) throws HyracksDataException, AlgebricksException;
+       // void print(JobId jobId, JobId jobId2) throws HyracksDataException, AlgebricksException;
     }
 
     private interface IStatementCompiler {
@@ -5376,10 +5373,10 @@ public class QueryTranslator extends AbstractLangTranslator implements IStatemen
             case IMMEDIATE:
                 createAndRunJob(hcc, jobFlags, null, compiler, locker, resultDelivery, id -> {
                     final ResultReader resultReader = new ResultReader(resultSet, id, resultSetId);
-                    updateJobStats(id, stats, metadataProvider.getResultSetId(), clientRequest);
+                    //updateJobStats(id, stats, metadataProvider.getResultSetId(), clientRequest);
                     responsePrinter.addResultPrinter(new ResultsPrinter(appCtx, resultReader,
                             metadataProvider.findOutputRecordType(), stats, sessionOutput));
-                    responsePrinter.printResults();
+                    responsePrinter.printIncrementalResults();
                 }, requestParameters, cancellable, appCtx, metadataProvider, atomicStmt);
                 break;
             case DEFERRED:
@@ -5487,15 +5484,21 @@ public class QueryTranslator extends AbstractLangTranslator implements IStatemen
             clientRequest.markCancellable();
         }
         locker.lock();
-        JobId jobId = null;
+        JobId jobId =null;//, jobId2 = null;
         boolean atomic = false;
         try {
             final JobSpecification jobSpec = compiler.compile();
+           //final JobSpecification jobSpec1 = compiler.compile();
             if (jobSpec == null) {
                 return;
             }
+//            if (jobSpec1 == null) {
+//                return;
+//            }
             final SchedulableClientRequest schedulableRequest =
-                    SchedulableClientRequest.of(clientRequest, requestParameters, metadataProvider, jobSpec);
+                   SchedulableClientRequest.of(clientRequest, requestParameters, metadataProvider, jobSpec);
+//           final SchedulableClientRequestInteractive schedulableRequest =
+//                    SchedulableClientRequestInteractive.of(clientRequest, requestParameters, metadataProvider, jobSpec, jobSpec1);
             appCtx.getReceptionist().ensureSchedulable(schedulableRequest);
             // ensure request not cancelled before running job
             ensureNotCancelled(clientRequest);
@@ -5518,6 +5521,7 @@ public class QueryTranslator extends AbstractLangTranslator implements IStatemen
             }
 
             jobId = runTrackJob(hcc, jobSpec, jobFlags, reqId, requestParameters.getClientContextId(), clientRequest);
+            //jobId2 = runTrackJob(hcc, jobSpec1, jobFlags, reqId, requestParameters.getClientContextId(), clientRequest);
             if (jId != null) {
                 jId.setValue(jobId);
             }
@@ -5525,9 +5529,10 @@ public class QueryTranslator extends AbstractLangTranslator implements IStatemen
                 printer.print(jobId);
                 hcc.waitForCompletion(jobId);
             } else {
-                hcc.waitForCompletion(jobId);
-                ensureNotCancelled(clientRequest);
+                //hcc.waitForCompletion(jobId);//,jobId2);
+               ensureNotCancelled(clientRequest);
                 printer.print(jobId);
+                //printer.print(jobId2);
             }
             if (atomic) {
                 globalTxManager.commitTransaction(jobId);
@@ -5550,6 +5555,24 @@ public class QueryTranslator extends AbstractLangTranslator implements IStatemen
         }
     }
 
+//    private void processResultsIncrementally(JobId jobId, IResultPrinter printer, IHyracksClientConnection hcc) throws Exception {
+//        // Fetch the result partition manager
+//        IResultPartitionManager resultPartitionManager = hcc.getResultPartitionManager();
+//
+//        // Create a result reader for the job and result set
+//        IFrameReader resultReader = resultPartitionManager.createResultReader(jobId, resultSetId);
+//
+//        resultReader.open(); // Open the reader to start fetching frames
+//        try {
+//            ByteBuffer buffer;
+//            while ((buffer = resultReader.readNextFrame()) != null) {
+//                // Pass each frame to the printer for processing
+//                printer.printFrame(buffer);
+//            }
+//        } finally {
+//            resultReader.close(); // Ensure the reader is closed properly
+//        }
+//    }
     protected void handleCreateNodeGroupStatement(MetadataProvider metadataProvider, Statement stmt) throws Exception {
         NodegroupDecl stmtCreateNodegroup = (NodegroupDecl) stmt;
         SourceLocation sourceLoc = stmtCreateNodegroup.getSourceLocation();

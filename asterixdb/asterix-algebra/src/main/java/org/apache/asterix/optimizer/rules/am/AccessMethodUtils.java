@@ -1001,7 +1001,7 @@ public class AccessMethodUtils {
 
     /**
      * In case of a left outer join we look for a special GroupBy above the join operator
-     * (see {@link IntroduceJoinAccessMethodRule#checkAndApplyJoinTransformation(Mutable, IOptimizationContext, boolean)}.
+     * (see .
      * A "Special GroupBy" is a GroupBy that eliminates unjoined duplicates that might be produced by the secondary
      * index probe. We probe secondary indexes on each index partition and return a tuple with a right branch variable
      * set to MISSING (or NULL) if there's no match on that partition. Therefore if there's more than one partition
@@ -1202,6 +1202,8 @@ public class AccessMethodUtils {
         primaryIndexUnnestMapOp.setExecutionMode(ExecutionMode.PARTITIONED);
         return primaryIndexUnnestMapOp;
     }
+
+
 
     private static ILogicalOperator createFinalIndexOnlySearchPlan(List<Mutable<ILogicalOperator>> afterTopOpRefs,
             Mutable<ILogicalOperator> topOpRef, Mutable<ILogicalExpression> conditionRef,
@@ -1837,6 +1839,7 @@ public class AccessMethodUtils {
         } else if (!isArrayIndex) {
             // Index-only plan case: creates a UNIONALL operator that has two paths after the secondary unnest-map op,
             // and returns it.
+
             return createFinalIndexOnlySearchPlan(afterTopOpRefs, topOpRef, conditionRef, assignsBeforeTopOpRef,
                     dataset, recordType, metaRecordType, inputOp, context, retainInput, retainMissing,
                     requiresBroadcast, secondaryIndex, analysisCtx, indexSubTree, newMissingPlaceHolderForLOJ,

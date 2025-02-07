@@ -72,6 +72,11 @@ public class TestLSMIndexAccessor implements ILSMIndexAccessor {
     }
 
     @Override
+    public void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled) throws HyracksDataException {
+
+    }
+
+    @Override
     public void destroy() throws HyracksDataException {
     }
 
