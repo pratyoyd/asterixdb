@@ -162,7 +162,17 @@ public class CompilerProperties extends AbstractProperties {
                 BOOLEAN,
                 AlgebricksConfig.INTERACTIVE_MODE_DEFAULT,
                 "Enable/disable interactive mode"),
-        COMPILER_BLOCKING_MODE(BOOLEAN, AlgebricksConfig.BLOCKING_MODE_DEFAULT, "Enable/disable blocking mode");
+        COMPILER_BLOCKING_MODE(BOOLEAN, AlgebricksConfig.BLOCKING_MODE_DEFAULT, "Enable/disable blocking mode"),
+        COMPILER_PLAQUE_ENABLED(BOOLEAN, AlgebricksConfig.PLAQUE_ENABLED_DEFAULT,
+                "Enable/disable PLAQUE filter optimization"),
+        COMPILER_PLAQUE_PROPAGATION(BOOLEAN, AlgebricksConfig.PLAQUE_PROPAGATION_DEFAULT,
+                "Enable/disable cross-node PLAQUE threshold propagation"),
+        COMPILER_PLAQUE_PROPAGATION_INTERVAL(INTEGER, AlgebricksConfig.PLAQUE_PROPAGATION_INTERVAL_DEFAULT,
+                "Tuples between cross-node propagation attempts"),
+        COMPILER_PLAQUE_PUSH_THROUGH_JOIN(BOOLEAN, AlgebricksConfig.PLAQUE_PUSH_THROUGH_JOIN_DEFAULT,
+                "Push PLAQUE filter below hash-partition exchange through joins"),
+        COMPILER_PLAQUE_EAGER_BATCH_SIZE(INTEGER, AlgebricksConfig.PLAQUE_EAGER_BATCH_SIZE_DEFAULT,
+                "Number of outer frames per eager flush in theta join mismatch detection");
 
         private final IOptionType type;
         private final Object defaultValue;
@@ -251,6 +261,14 @@ public class CompilerProperties extends AbstractProperties {
 
     public static final String COMPILER_INTERACTIVE_MODE = Option.COMPILER_INTERACTIVE_MODE.ini();
     public static final String COMPILER_BLOCKING_MODE = Option.COMPILER_BLOCKING_MODE.ini();
+    public static final String COMPILER_PLAQUE_ENABLED_KEY = Option.COMPILER_PLAQUE_ENABLED.ini();
+    public static final String COMPILER_PLAQUE_PROPAGATION_KEY = Option.COMPILER_PLAQUE_PROPAGATION.ini();
+    public static final String COMPILER_PLAQUE_PROPAGATION_INTERVAL_KEY =
+            Option.COMPILER_PLAQUE_PROPAGATION_INTERVAL.ini();
+    public static final String COMPILER_PLAQUE_PUSH_THROUGH_JOIN_KEY =
+            Option.COMPILER_PLAQUE_PUSH_THROUGH_JOIN.ini();
+    public static final String COMPILER_PLAQUE_EAGER_BATCH_SIZE_KEY =
+            Option.COMPILER_PLAQUE_EAGER_BATCH_SIZE.ini();
 
     public static final int COMPILER_PARALLELISM_AS_STORAGE = 0;
 

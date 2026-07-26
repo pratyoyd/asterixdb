@@ -211,6 +211,7 @@ public class QueryColumnMetadata extends AbstractColumnImmutableReadMetadata {
         if (context != null) {
             FilterAccessorProvider accessorProvider =
                     new FilterAccessorProvider(root, clipperVisitor, readerFactory, valueGetterFactory);
+            accessorProvider.setTaskContext(context);
             // Min/Max filters in page0
             normalizedFilterEvaluator = normalizedEvaluatorFactory.create(accessorProvider);
             filterValueAccessors = accessorProvider.getFilterAccessors();

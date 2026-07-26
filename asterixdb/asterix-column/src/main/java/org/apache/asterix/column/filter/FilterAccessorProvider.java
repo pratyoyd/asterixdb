@@ -58,6 +58,7 @@ public class FilterAccessorProvider {
     private final List<IColumnRangeFilterValueAccessor> filterAccessors;
     private final List<IColumnValuesReader> filterColumnReaders;
     private final IValueGetterFactory valueGetterFactory;
+    private org.apache.hyracks.api.context.IHyracksTaskContext taskContext;
 
     public FilterAccessorProvider(ObjectSchemaNode root, SchemaClipperVisitor clipperVisitor,
             IColumnValuesReaderFactory readerFactory, IValueGetterFactory valueGetterFactory) {
@@ -75,6 +76,14 @@ public class FilterAccessorProvider {
         cachedNodes = new HashMap<>();
         filterAccessors = new ArrayList<>();
         filterColumnReaders = new ArrayList<>();
+    }
+
+    public void setTaskContext(org.apache.hyracks.api.context.IHyracksTaskContext taskContext) {
+        this.taskContext = taskContext;
+    }
+
+    public org.apache.hyracks.api.context.IHyracksTaskContext getTaskContext() {
+        return taskContext;
     }
 
     public void reset() {

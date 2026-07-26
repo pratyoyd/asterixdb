@@ -67,16 +67,44 @@ public class NestedLoopJoin {
     private final boolean isReversed;
     private final BufferInfo tempInfo = new BufferInfo(null, -1, -1);
     private final BitSet outerMatchLOJ;
+    private final INLJMismatchWriter mismatchWriter;
+    // Tracks which outer tuples matched at least one inner tuple (for mismatch detection).
+    // For inner joins with a mismatch writer, this is a dedicated BitSet.
+    // For left-outer joins with a mismatch writer, we reuse outerMatchLOJ.
+    private final BitSet outerMatchedForMismatch;
+    // Eager mismatch: when inner is memory-resident, flush every eagerBatchSize frames
+    // to learn the PLAQUE threshold mid-stream instead of at the end.
+    private final int eagerBatchSize;
+    private int cachedInnerTupleCount;
+    private boolean eagerMismatchEnabled;
 
     public NestedLoopJoin(IHyracksJobletContext jobletContext, FrameTupleAccessor accessorOuter,
             FrameTupleAccessor accessorInner, int memBudgetInFrames, boolean isLeftOuter,
             IMissingWriter[] missingWriters) throws HyracksDataException {
-        this(jobletContext, accessorOuter, accessorInner, memBudgetInFrames, isLeftOuter, missingWriters, false);
+        this(jobletContext, accessorOuter, accessorInner, memBudgetInFrames, isLeftOuter, missingWriters, false,
+                null, 0);
     }
 
     public NestedLoopJoin(IHyracksJobletContext jobletContext, FrameTupleAccessor accessorOuter,
             FrameTupleAccessor accessorInner, int memBudgetInFrames, boolean isLeftOuter,
             IMissingWriter[] missingWriters, boolean isReversed) throws HyracksDataException {
+        this(jobletContext, accessorOuter, accessorInner, memBudgetInFrames, isLeftOuter, missingWriters, isReversed,
+                null, 0);
+    }
+
+    public NestedLoopJoin(IHyracksJobletContext jobletContext, FrameTupleAccessor accessorOuter,
+            FrameTupleAccessor accessorInner, int memBudgetInFrames, boolean isLeftOuter,
+            IMissingWriter[] missingWriters, boolean isReversed, INLJMismatchWriter mismatchWriter)
+            throws HyracksDataException {
+        this(jobletContext, accessorOuter, accessorInner, memBudgetInFrames, isLeftOuter, missingWriters, isReversed,
+                mismatchWriter, 0);
+    }
+
+    public NestedLoopJoin(IHyracksJobletContext jobletContext, FrameTupleAccessor accessorOuter,
+            FrameTupleAccessor accessorInner, int memBudgetInFrames, boolean isLeftOuter,
+            IMissingWriter[] missingWriters, boolean isReversed, INLJMismatchWriter mismatchWriter,
+            int eagerBatchSize)
+            throws HyracksDataException {
         this.accessorInner = accessorInner;
         this.accessorOuter = accessorOuter;
         this.appender = new FrameTupleAppender();
@@ -114,6 +142,22 @@ public class NestedLoopJoin {
             outerMatchLOJ = null;
         }
         this.isReversed = isReversed;
+        this.mismatchWriter = mismatchWriter;
+        if (mismatchWriter != null) {
+            if (isLeftOuter) {
+                // Reuse the LOJ BitSet — it tracks the same matched/unmatched info
+                outerMatchedForMismatch = outerMatchLOJ;
+            } else {
+                // Need a dedicated BitSet for inner joins
+                int cardinalityEstimate = outerBufferMngrMemBudgetInBytes / ESTIMATE_AVG_TUPLE_SIZE;
+                outerMatchedForMismatch = new BitSet(Math.max(cardinalityEstimate, 1));
+            }
+        } else {
+            outerMatchedForMismatch = null;
+        }
+        this.eagerBatchSize = eagerBatchSize;
+        this.cachedInnerTupleCount = 0;
+        this.eagerMismatchEnabled = false;
 
         FileReference file =
                 jobletContext.createManagedWorkspaceFile(this.getClass().getSimpleName() + this.toString());
@@ -125,6 +169,7 @@ public class NestedLoopJoin {
         accessorInner.reset(buffer);
         if (accessorInner.getTupleCount() > 0) {
             runFileWriter.nextFrame(buffer);
+            cachedInnerTupleCount += accessorInner.getTupleCount();
         }
     }
 
@@ -149,6 +194,12 @@ public class NestedLoopJoin {
                 throw new HyracksDataException("The given outer frame of size:" + outerBuffer.capacity()
                         + " is too big to cache in the buffer. Please choose a larger buffer memory size");
             }
+        } else if (eagerMismatchEnabled && outerBufferMngr.getNumFrames() >= eagerBatchSize) {
+            // Eager flush: inner is memory-resident, flush small batch to learn threshold mid-stream.
+            // multiBlockJoin() will re-read the inner run file (cheap — 1 frame, OS page cached)
+            // and call notifyUnmatchedOuterTuples() + flushBatch() to publish the threshold.
+            multiBlockJoin(writer);
+            outerBufferMngr.reset();
         }
     }
 
@@ -162,6 +213,9 @@ public class NestedLoopJoin {
             runFileReader.open();
             if (isLeftOuter) {
                 outerMatchLOJ.clear();
+            }
+            if (outerMatchedForMismatch != null) {
+                outerMatchedForMismatch.clear();
             }
             while (runFileReader.nextFrame(innerBuffer)) {
                 int outerTupleRunningCount = 0;
@@ -186,8 +240,39 @@ public class NestedLoopJoin {
                     outerTupleRunningCount += outerFrameTupleCount;
                 }
             }
+            if (mismatchWriter != null && outerMatchedForMismatch != null) {
+                notifyUnmatchedOuterTuples(outerBufferFrameCount);
+                mismatchWriter.flushBatch();
+            }
         } finally {
             runFileReader.close();
+        }
+    }
+
+    private void notifyUnmatchedOuterTuples(int outerBufferFrameCount) throws HyracksDataException {
+        int outerTupleRunningCount = 0;
+        int totalUnmatched = 0;
+        int totalOuter = 0;
+        for (int i = 0; i < outerBufferFrameCount; i++) {
+            BufferInfo outerBufferInfo = outerBufferMngr.getFrame(i, tempInfo);
+            accessorOuter.reset(outerBufferInfo.getBuffer(), outerBufferInfo.getStartOffset(),
+                    outerBufferInfo.getLength());
+            int tupleCount = accessorOuter.getTupleCount();
+            totalOuter += tupleCount;
+            int limit = outerTupleRunningCount + tupleCount;
+            for (int t = outerMatchedForMismatch.nextClearBit(outerTupleRunningCount); t < limit;
+                    t = outerMatchedForMismatch.nextClearBit(t + 1)) {
+                int localIdx = t - outerTupleRunningCount;
+                mismatchWriter.onUnmatchedOuterTuple(accessorOuter, localIdx);
+                totalUnmatched++;
+            }
+            outerTupleRunningCount += tupleCount;
+        }
+        if (totalUnmatched > 0 || totalOuter > 0) {
+            System.out.println("PLAQUE_NLJ_NOTIFY: outerFrames=" + outerBufferFrameCount
+                    + " totalOuter=" + totalOuter + " unmatched=" + totalUnmatched
+                    + " matched=" + (totalOuter - totalUnmatched)
+                    + " bitsetCard=" + outerMatchedForMismatch.cardinality());
         }
     }
 
@@ -203,8 +288,13 @@ public class NestedLoopJoin {
                     appendToResults(i, j, writer);
                 }
             }
-            if (isLeftOuter && matchFound) {
-                outerMatchLOJ.set(outerTupleStartPos + i);
+            if (matchFound) {
+                if (isLeftOuter) {
+                    outerMatchLOJ.set(outerTupleStartPos + i);
+                }
+                if (outerMatchedForMismatch != null) {
+                    outerMatchedForMismatch.set(outerTupleStartPos + i);
+                }
             }
         }
     }
@@ -241,6 +331,14 @@ public class NestedLoopJoin {
         if (runFileWriter != null) {
             runFileWriter.close();
         }
+        // Enable eager flushing when inner is small and mismatch observer is active.
+        // With broadcast exchange, the inner may arrive in multiple frames from multiple senders
+        // but still be tiny (e.g., 6 tuples across 4 senders = 4 frames). We check tuple count
+        // rather than frame count. Re-reading a small run file is free (OS page cache).
+        // Threshold: inner fits in one frame worth of tuples (~1600 for 32KB frames).
+        int maxInnerTuplesForEager = Math.max(innerBuffer.getFrameSize() / ESTIMATE_AVG_TUPLE_SIZE, 64);
+        eagerMismatchEnabled = (mismatchWriter != null) && (eagerBatchSize > 0)
+                && (cachedInnerTupleCount > 0) && (cachedInnerTupleCount <= maxInnerTuplesForEager);
     }
 
     public void completeJoin(IFrameWriter writer) throws HyracksDataException {
@@ -250,6 +348,9 @@ public class NestedLoopJoin {
             runFileWriter.eraseClosed();
         }
         appender.write(writer, true);
+        if (mismatchWriter != null) {
+            mismatchWriter.close();
+        }
     }
 
     public void releaseMemory() throws HyracksDataException {

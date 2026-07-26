@@ -44,7 +44,7 @@ public class DoubleColumnFilterWriter extends AbstractColumnFilterWriter {
 
     @Override
     public void reset() {
-        min = Double.MIN_VALUE;
-        max = Double.MAX_VALUE;
+        min = Double.MAX_VALUE;
+        max = -Double.MAX_VALUE;
     }
 }

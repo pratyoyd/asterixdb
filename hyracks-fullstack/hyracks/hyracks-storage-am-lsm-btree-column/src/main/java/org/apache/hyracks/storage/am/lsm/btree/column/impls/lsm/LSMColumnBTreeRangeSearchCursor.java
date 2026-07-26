@@ -93,6 +93,20 @@ public class LSMColumnBTreeRangeSearchCursor extends LSMBTreeRangeSearchCursor {
     }
 
     @Override
+    public void doOpen(org.apache.hyracks.storage.common.ICursorInitialState initialState,
+            org.apache.hyracks.storage.common.ISearchPredicate searchPred) throws HyracksDataException {
+        super.doOpen(initialState, searchPred);
+        // Enable physical page skipping when scanning a single disk component (no merge needed)
+        System.out.println("PLAQUE_PHYS_SKIP: includeMutable=" + includeMutableComponent
+                + " componentTupleList.size=" + componentTupleList.size()
+                + " operationalComponents=" + operationalComponents.size());
+        if (!includeMutableComponent && componentTupleList.size() == 1) {
+            componentTupleList.get(0).setSkipPrimaryKeysOnFilteredPages(true);
+            System.out.println("PLAQUE_PHYS_SKIP: ENABLED on single disk component");
+        }
+    }
+
+    @Override
     protected void setPriorityQueueComparator() {
         if (!includeMutableComponent) {
             cmp = new ColumnAwareDiskOnlyMultiComparator(cmp);

@@ -73,6 +73,9 @@ import org.apache.asterix.optimizer.rules.LoadRecordFieldsRule;
 import org.apache.asterix.optimizer.rules.MetaFunctionToMetaVariableRule;
 import org.apache.asterix.optimizer.rules.NestGroupByRule;
 import org.apache.asterix.optimizer.rules.NormalizeWritingPathRule;
+import org.apache.asterix.optimizer.rules.PlaqueCrossExprJobGenRule;
+import org.apache.asterix.optimizer.rules.PlaquePageFilterRule;
+import org.apache.asterix.optimizer.rules.PlaqueRewriteRule;
 import org.apache.asterix.optimizer.rules.PullSelectOutOfSpatialJoin;
 import org.apache.asterix.optimizer.rules.PushAggFuncIntoStandaloneAggregateRule;
 import org.apache.asterix.optimizer.rules.PushAggregateIntoNestedSubplanRule;
@@ -268,6 +271,7 @@ public final class RuleCollections {
         // The following rule should run after RewriteDistinctAggregateRule
         consolidation.add(new AsterixIntroduceGroupByCombinerRule());
         consolidation.add(new IntroduceAggregateCombinerRule());
+        consolidation.add(new PlaqueRewriteRule());
         // Re-infer all types after introducing aggregate combiners
         consolidation.add(new ReinferAllTypesRule());
         consolidation.add(new CountVarToCountOneRule());
@@ -416,6 +420,8 @@ public final class RuleCollections {
             SetAsterixPhysicalOperatorsRule.CostMethodsFactory cmf) {
         List<IAlgebraicRewriteRule> prepareForJobGenRewrites = new LinkedList<>();
 
+        prepareForJobGenRewrites.add(new PlaquePageFilterRule());
+        prepareForJobGenRewrites.add(new PlaqueCrossExprJobGenRule());
         prepareForJobGenRewrites.add(new InsertProjectBeforeUnionRule());
         prepareForJobGenRewrites.add(new AnnotateBtreeScanRule());
         prepareForJobGenRewrites.add(new AnnotateDynamicFilterRule());

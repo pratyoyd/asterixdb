@@ -36,6 +36,16 @@ public class ColumnDatasetProjectionFiltrationInfo extends ExternalDatasetProjec
     private final ARecordType metaProjectedType;
     private final ILogicalExpression rangeFilterExpression;
 
+    // PLAQUE page-level filter metadata (set by PlaquePageFilterRule, nullable)
+    private String plaqueHandle;
+    private boolean plaqueIsMax;
+    private ARecordType plaqueColumnPath;
+
+    // PLAQUE cross-expression page filter metadata (nullable)
+    private String plaqueCrossExprBuildHandle;
+    private String plaqueCrossExprCombineOp;
+    private String plaqueCrossExprFilterDirection;
+
     public ColumnDatasetProjectionFiltrationInfo(ARecordType recordRequestedType, ARecordType metaProjectedType,
             Map<String, FunctionCallInformation> sourceInformationMap, Map<ILogicalExpression, ARecordType> filterPaths,
             ILogicalExpression filterExpression, ILogicalExpression rangeFilterExpression) {
@@ -49,6 +59,12 @@ public class ColumnDatasetProjectionFiltrationInfo extends ExternalDatasetProjec
                 cloneExpression(other.filterExpression), false);
         metaProjectedType = other.metaProjectedType;
         rangeFilterExpression = cloneExpression(other.rangeFilterExpression);
+        plaqueHandle = other.plaqueHandle;
+        plaqueIsMax = other.plaqueIsMax;
+        plaqueColumnPath = other.plaqueColumnPath;
+        plaqueCrossExprBuildHandle = other.plaqueCrossExprBuildHandle;
+        plaqueCrossExprCombineOp = other.plaqueCrossExprCombineOp;
+        plaqueCrossExprFilterDirection = other.plaqueCrossExprFilterDirection;
     }
 
     @Override
@@ -124,6 +140,42 @@ public class ColumnDatasetProjectionFiltrationInfo extends ExternalDatasetProjec
 
     public ILogicalExpression getRangeFilterExpression() {
         return rangeFilterExpression;
+    }
+
+    public void setPlaqueInfo(String handle, boolean isMax, ARecordType columnPath) {
+        this.plaqueHandle = handle;
+        this.plaqueIsMax = isMax;
+        this.plaqueColumnPath = columnPath;
+    }
+
+    public String getPlaqueHandle() {
+        return plaqueHandle;
+    }
+
+    public boolean isPlaqueIsMax() {
+        return plaqueIsMax;
+    }
+
+    public ARecordType getPlaqueColumnPath() {
+        return plaqueColumnPath;
+    }
+
+    public void setPlaqueCrossExprInfo(String buildHandle, String combineOp, String filterDirection) {
+        this.plaqueCrossExprBuildHandle = buildHandle;
+        this.plaqueCrossExprCombineOp = combineOp;
+        this.plaqueCrossExprFilterDirection = filterDirection;
+    }
+
+    public String getPlaqueCrossExprBuildHandle() {
+        return plaqueCrossExprBuildHandle;
+    }
+
+    public String getPlaqueCrossExprCombineOp() {
+        return plaqueCrossExprCombineOp;
+    }
+
+    public String getPlaqueCrossExprFilterDirection() {
+        return plaqueCrossExprFilterDirection;
     }
 
     @Override

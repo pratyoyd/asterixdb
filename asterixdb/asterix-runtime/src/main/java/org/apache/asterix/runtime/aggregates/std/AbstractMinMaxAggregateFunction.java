@@ -46,7 +46,7 @@ public abstract class AbstractMinMaxAggregateFunction extends AbstractAggregateF
     private static final String FUN_NAME = "min/max";
     private final ArrayBackedValueStorage resultStorage = new ArrayBackedValueStorage();
     private final IPointable inputVal = new VoidPointable();
-    private final ArrayBackedValueStorage outputVal = new ArrayBackedValueStorage();
+    protected final ArrayBackedValueStorage outputVal = new ArrayBackedValueStorage();
     private final ArrayBackedValueStorage tempValForCasting = new ArrayBackedValueStorage();
     private final TaggedValueReference value1 = new TaggedValueReference();
     private final TaggedValueReference value2 = new TaggedValueReference();
@@ -98,6 +98,7 @@ public abstract class AbstractMinMaxAggregateFunction extends AbstractAggregateF
             aggType = typeTag;
             cmp = ComparatorUtil.createLogicalComparator(aggFieldType, aggFieldType, false);
             outputVal.assign(inputVal);
+            onMinMaxChanged();
         } else if (!ATypeHierarchy.isCompatible(typeTag, aggType)) {
             handleIncompatibleInput(typeTag);
         } else {
@@ -186,12 +187,13 @@ public abstract class AbstractMinMaxAggregateFunction extends AbstractAggregateF
             case LT:
                 if (isMin) {
                     currentVal.assign(newVal);
+                    onMinMaxChanged();
                 }
                 break;
             case GT:
                 if (!isMin) {
-                    // update the current value with the new maximum
                     currentVal.assign(newVal);
+                    onMinMaxChanged();
                 }
                 break;
             case MISSING:
@@ -208,6 +210,10 @@ public abstract class AbstractMinMaxAggregateFunction extends AbstractAggregateF
                 // EQ, do nothing
                 break;
         }
+    }
+
+    protected void onMinMaxChanged() throws HyracksDataException {
+        // no-op in base. Overridden by PLAQUE wrappers to push threshold into shared state.
     }
 
     private static void castValue(ITypeConvertComputer typeConverter, IPointable inputValue,

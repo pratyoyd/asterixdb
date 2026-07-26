@@ -41,11 +41,25 @@ public class HybridTopKSortRunGenerator extends HeapSortRunGenerator {
     private static final int SWITCH_TO_FRAME_SORTER_THRESHOLD = 2;
     private IFrameSorter frameSorter = null;
     private int tupleSorterFlushedTimes = 0;
+    private ITopKThresholdObserver pendingObserver;
 
     public HybridTopKSortRunGenerator(IHyracksTaskContext ctx, int frameLimit, int topK, int[] sortFields,
             INormalizedKeyComputerFactory[] keyNormalizerFactories, IBinaryComparatorFactory[] comparatorFactories,
             RecordDescriptor recordDescriptor) {
         super(ctx, frameLimit, topK, sortFields, keyNormalizerFactories, comparatorFactories, recordDescriptor);
+    }
+
+    @Override
+    public void setThresholdObserver(ITopKThresholdObserver observer) {
+        this.pendingObserver = observer;
+    }
+
+    @Override
+    public void open() throws HyracksDataException {
+        super.open();
+        if (pendingObserver != null) {
+            super.setThresholdObserver(pendingObserver);
+        }
     }
 
     @Override

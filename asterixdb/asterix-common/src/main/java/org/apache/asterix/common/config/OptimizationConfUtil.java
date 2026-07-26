@@ -102,6 +102,16 @@ public class OptimizationConfUtil {
         boolean IsInteractiveMode =
                 (getBoolean(querySpecificConfig, CompilerProperties.COMPILER_INTERACTIVE_MODE, false));
         boolean IsBlockingMode = (getBoolean(querySpecificConfig, CompilerProperties.COMPILER_BLOCKING_MODE, false));
+        boolean plaqueEnabled = getBoolean(querySpecificConfig,
+                CompilerProperties.COMPILER_PLAQUE_ENABLED_KEY, false);
+        boolean plaquePropagation = getBoolean(querySpecificConfig,
+                CompilerProperties.COMPILER_PLAQUE_PROPAGATION_KEY, true);
+        int plaquePropagationInterval = getInt(querySpecificConfig,
+                CompilerProperties.COMPILER_PLAQUE_PROPAGATION_INTERVAL_KEY, 5000);
+        boolean plaquePushThroughJoin = getBoolean(querySpecificConfig,
+                CompilerProperties.COMPILER_PLAQUE_PUSH_THROUGH_JOIN_KEY, true);
+        int plaqueEagerBatchSize = getInt(querySpecificConfig,
+                CompilerProperties.COMPILER_PLAQUE_EAGER_BATCH_SIZE_KEY, 32);
 
         PhysicalOptimizationConfig physOptConf = new PhysicalOptimizationConfig();
         physOptConf.setFrameSize(frameSize);
@@ -134,6 +144,11 @@ public class OptimizationConfUtil {
         physOptConf.setOrderFields(orderFields);
         physOptConf.setInteractiveMode(IsInteractiveMode);
         physOptConf.setBlockingMode(IsBlockingMode);
+        physOptConf.setPlaqueEnabled(plaqueEnabled);
+        physOptConf.setPlaquePropagation(plaquePropagation);
+        physOptConf.setPlaquePropagationInterval(plaquePropagationInterval);
+        physOptConf.setPlaquePushThroughJoin(plaquePushThroughJoin);
+        physOptConf.setPlaqueEagerBatchSize(plaqueEagerBatchSize);
 
         // We should have already validated the parameter names at this point...
         Set<String> filteredParameterNames = new HashSet<>(parameterNames);
@@ -219,6 +234,14 @@ public class OptimizationConfUtil {
         String valueInQuery = (String) queryConfig.get(queryConfigKey);
         if (valueInQuery != null) {
             return OptionTypes.BOOLEAN.parse(valueInQuery);
+        }
+        return defaultValue;
+    }
+
+    private static int getInt(Map<String, Object> queryConfig, String queryConfigKey, int defaultValue) {
+        String valueInQuery = (String) queryConfig.get(queryConfigKey);
+        if (valueInQuery != null) {
+            return OptionTypes.INTEGER.parse(valueInQuery);
         }
         return defaultValue;
     }

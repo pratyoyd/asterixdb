@@ -19,6 +19,7 @@
 package org.apache.hyracks.dataflow.std.group.sort;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -52,94 +53,98 @@ import org.apache.hyracks.dataflow.std.util.SmartRabbitHybridExecutionDirResolve
  */
 public class ExternalSortGroupByRunMerger extends AbstractExternalSortRunMerger {
 
+    private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+    private static final String B2I_LOG_FILENAME = "B2I_stdout.log";
+
     private final RecordDescriptor inputRecordDesc;
     private final RecordDescriptor partialAggRecordDesc;
     private final RecordDescriptor outRecordDesc;
+
     private final int[] groupFields;
     private final IAggregatorDescriptorFactory mergeAggregatorFactory;
     private final IAggregatorDescriptorFactory partialAggregatorFactory;
     private final boolean localSide;
+
     private final int[] mergeSortFields;
     private final int[] mergeGroupFields;
     private final IBinaryComparator[] groupByComparators;
-    private boolean isGlobalGBY;
+
+    private final boolean isGlobalGBY;
+
+    // SmartRabbit signaling/logging
     private final Path hybridDir;
-    private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+    private final Path b2iLogPath;
 
     public ExternalSortGroupByRunMerger(IHyracksTaskContext ctx, List<GeneratedRunFileReader> runs, int[] sortFields,
             RecordDescriptor inRecordDesc, RecordDescriptor partialAggRecordDesc, RecordDescriptor outRecordDesc,
             int framesLimit, int[] groupFields, INormalizedKeyComputer nmk, IBinaryComparator[] comparators,
             IAggregatorDescriptorFactory partialAggregatorFactory, IAggregatorDescriptorFactory aggregatorFactory,
             boolean localStage, boolean isGlobalGBY) throws IOException {
+
         super(ctx, runs, comparators, nmk, partialAggRecordDesc, framesLimit);
+
         this.inputRecordDesc = inRecordDesc;
         this.partialAggRecordDesc = partialAggRecordDesc;
         this.outRecordDesc = outRecordDesc;
+
         this.groupFields = groupFields;
         this.mergeAggregatorFactory = aggregatorFactory;
         this.partialAggregatorFactory = partialAggregatorFactory;
         this.localSide = localStage;
+
         this.isGlobalGBY = isGlobalGBY;
+
         this.hybridDir = SmartRabbitHybridExecutionDirResolver.resolve(ctx);
+        this.b2iLogPath = hybridDir.resolve(B2I_LOG_FILENAME);
+
+        // Signal only when asked (e.g., global group-by stage)
         maybeSendB2ISignalAndWait(isGlobalGBY);
 
-        //create merge sort fields
+        // Create merge sort fields: output of merge uses [0..numSortFields-1]
         int numSortFields = sortFields.length;
-        mergeSortFields = new int[numSortFields];
+        this.mergeSortFields = new int[numSortFields];
         for (int i = 0; i < numSortFields; i++) {
             mergeSortFields[i] = i;
         }
 
-        //create merge group fields
+        // Create merge group fields: output of partial agg uses [0..numGroupFields-1]
         int numGroupFields = groupFields.length;
-        mergeGroupFields = new int[numGroupFields];
+        this.mergeGroupFields = new int[numGroupFields];
         for (int i = 0; i < numGroupFields; i++) {
             mergeGroupFields[i] = i;
         }
 
-        //setup comparators for grouping
-        groupByComparators = new IBinaryComparator[Math.min(mergeGroupFields.length, comparators.length)];
-        for (int i = 0; i < groupByComparators.length; i++) {
+        // Setup comparators for grouping (first k comparators correspond to group prefix)
+        int k = Math.min(mergeGroupFields.length, comparators.length);
+        this.groupByComparators = new IBinaryComparator[k];
+        for (int i = 0; i < k; i++) {
             groupByComparators[i] = comparators[i];
         }
     }
 
+    /**
+     * Backward-compatible constructor: no signaling by default.
+     * (Equivalent to isGlobalGBY = false)
+     */
     public ExternalSortGroupByRunMerger(IHyracksTaskContext ctx, List<GeneratedRunFileReader> runs, int[] sortFields,
             RecordDescriptor inRecordDesc, RecordDescriptor partialAggRecordDesc, RecordDescriptor outRecordDesc,
             int framesLimit, int[] groupFields, INormalizedKeyComputer nmk, IBinaryComparator[] comparators,
             IAggregatorDescriptorFactory partialAggregatorFactory, IAggregatorDescriptorFactory aggregatorFactory,
             boolean localStage) throws IOException {
-        super(ctx, runs, comparators, nmk, partialAggRecordDesc, framesLimit);
-        this.inputRecordDesc = inRecordDesc;
-        this.partialAggRecordDesc = partialAggRecordDesc;
-        this.outRecordDesc = outRecordDesc;
-        this.groupFields = groupFields;
-        this.mergeAggregatorFactory = aggregatorFactory;
-        this.partialAggregatorFactory = partialAggregatorFactory;
-        this.localSide = localStage;
+        this(ctx, runs, sortFields, inRecordDesc, partialAggRecordDesc, outRecordDesc, framesLimit, groupFields, nmk,
+                comparators, partialAggregatorFactory, aggregatorFactory, localStage, false);
+    }
 
-        this.hybridDir = SmartRabbitHybridExecutionDirResolver.resolve(ctx);
-        maybeSendB2ISignalAndWait(isGlobalGBY);
-        //create merge sort fields
+    private void logBoth(String msg) {
+        System.out.println(msg);
 
-        //create merge sort fields
-        int numSortFields = sortFields.length;
-        mergeSortFields = new int[numSortFields];
-        for (int i = 0; i < numSortFields; i++) {
-            mergeSortFields[i] = i;
-        }
-
-        //create merge group fields
-        int numGroupFields = groupFields.length;
-        mergeGroupFields = new int[numGroupFields];
-        for (int i = 0; i < numGroupFields; i++) {
-            mergeGroupFields[i] = i;
-        }
-
-        //setup comparators for grouping
-        groupByComparators = new IBinaryComparator[Math.min(mergeGroupFields.length, comparators.length)];
-        for (int i = 0; i < groupByComparators.length; i++) {
-            groupByComparators[i] = comparators[i];
+        // Best-effort append. No locks, no synchronization.
+        try {
+            Files.createDirectories(b2iLogPath.getParent());
+            Files.writeString(b2iLogPath, msg + System.lineSeparator(), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
@@ -151,14 +156,17 @@ public class ExternalSortGroupByRunMerger extends AbstractExternalSortRunMerger 
         final Path b2iPath = hybridDir.resolve("B2ISignal");
         final Instant startTime = Instant.now();
 
-        System.out.println("This is when a B2I Signal goes out at " + LocalDateTime.now().format(TS_FMT));
-        System.out.println("Sent signal to " + b2iPath.toAbsolutePath() + " to stop interactive processing at "
+        logBoth("This is when a B2I Signal goes out at " + LocalDateTime.now().format(TS_FMT));
+        logBoth("Sent signal to " + b2iPath.toAbsolutePath() + " to stop interactive processing at "
                 + LocalDateTime.now().format(TS_FMT));
 
         // Match ResultWriter's check for B2ISignal: "Yes."
-        Files.writeString(b2iPath, "Yes.", StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        final String b2iPayload = "Yes.";
+        Files.writeString(b2iPath, b2iPayload, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        logBoth("Wrote B2ISignal payload '" + b2iPayload + "' to " + b2iPath.toAbsolutePath() + " at "
+                + LocalDateTime.now().format(TS_FMT));
 
-        final int requiredAcks = 1; // your existing code breaks at >= 1, so keep it consistent
+        final int requiredAcks = 1; // keep consistent with your current behavior
         final Set<Path> confirmedFiles = new HashSet<>();
 
         while (true) {
@@ -174,7 +182,8 @@ public class ExternalSortGroupByRunMerger extends AbstractExternalSortRunMerger 
                         // ResultWriter writes "Yes" (no dot) to I2BSignal
                         if ("Yes".equals(content)) {
                             confirmedFiles.add(path);
-                            System.out.println("Received ok from: " + path.getFileName());
+                            logBoth("Received ok from: " + path.getFileName() + " at "
+                                    + LocalDateTime.now().format(TS_FMT));
                         }
                     } catch (IOException e) {
                         e.printStackTrace();
@@ -183,11 +192,14 @@ public class ExternalSortGroupByRunMerger extends AbstractExternalSortRunMerger 
             }
 
             if (confirmedFiles.size() >= requiredAcks) {
-                System.out.println("Received " + confirmedFiles.size() + " 'Yes' signal(s) from interactive plan.");
+                logBoth("Received " + confirmedFiles.size() + " 'Yes' signal(s) from interactive plan at "
+                        + LocalDateTime.now().format(TS_FMT));
                 break;
             }
 
             if (Duration.between(startTime, Instant.now()).getSeconds() > 180) {
+                logBoth("Timeout: Did not receive " + requiredAcks + " 'Yes' signal(s) within 3 minutes. ("
+                        + LocalDateTime.now().format(TS_FMT) + ")");
                 throw new IOException(
                         "Timeout: Did not receive " + requiredAcks + " 'Yes' signal(s) within 3 minutes.");
             }
@@ -196,6 +208,7 @@ public class ExternalSortGroupByRunMerger extends AbstractExternalSortRunMerger 
                 Thread.sleep(500);
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
+                logBoth("Interrupted while waiting for I2BSignal at " + LocalDateTime.now().format(TS_FMT));
                 throw new IOException("Interrupted while waiting for I2BSignal", ie);
             }
         }
@@ -217,6 +230,7 @@ public class ExternalSortGroupByRunMerger extends AbstractExternalSortRunMerger 
     @Override
     protected IFrameWriter prepareIntermediateMergeResultWriter(RunFileWriter mergeFileWriter)
             throws HyracksDataException {
+        // Note: original logic preserved
         IAggregatorDescriptorFactory aggregatorFactory = localSide ? mergeAggregatorFactory : partialAggregatorFactory;
         return new PreclusteredGroupWriter(ctx, mergeGroupFields, groupByComparators, aggregatorFactory,
                 partialAggRecordDesc, partialAggRecordDesc, mergeFileWriter, true);

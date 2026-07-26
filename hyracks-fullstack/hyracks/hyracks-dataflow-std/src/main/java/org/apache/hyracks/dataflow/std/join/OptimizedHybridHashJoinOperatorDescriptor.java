@@ -139,6 +139,7 @@ public class OptimizedHybridHashJoinOperatorDescriptor extends AbstractOperatorD
 
     private final boolean isLeftOuter;
     private final IMissingWriterFactory[] nonMatchWriterFactories;
+    private final IBuildSideObserverFactory buildSideObserverFactory;
 
     //Flags added for test purpose
     private boolean skipInMemoryHJ = false;
@@ -155,6 +156,31 @@ public class OptimizedHybridHashJoinOperatorDescriptor extends AbstractOperatorD
             ITuplePairComparatorFactory tupPaircomparatorFactory10, IPredicateEvaluatorFactory predEvalFactory0,
             IPredicateEvaluatorFactory predEvalFactory1, boolean isLeftOuter,
             IMissingWriterFactory[] nonMatchWriterFactories) {
+        this(spec, memSizeInFrames, inputsize0, factor, keys0, keys1, propHashFunctionFactories,
+                buildHashFunctionFactories, recordDescriptor, tupPaircomparatorFactory01, tupPaircomparatorFactory10,
+                predEvalFactory0, predEvalFactory1, isLeftOuter, nonMatchWriterFactories, null);
+    }
+
+    public OptimizedHybridHashJoinOperatorDescriptor(IOperatorDescriptorRegistry spec, int memSizeInFrames,
+            int inputsize0, double factor, int[] keys0, int[] keys1,
+            IBinaryHashFunctionFamily[] propHashFunctionFactories,
+            IBinaryHashFunctionFamily[] buildHashFunctionFactories, RecordDescriptor recordDescriptor,
+            ITuplePairComparatorFactory tupPaircomparatorFactory01,
+            ITuplePairComparatorFactory tupPaircomparatorFactory10, IPredicateEvaluatorFactory predEvalFactory0,
+            IPredicateEvaluatorFactory predEvalFactory1) {
+        this(spec, memSizeInFrames, inputsize0, factor, keys0, keys1, propHashFunctionFactories,
+                buildHashFunctionFactories, recordDescriptor, tupPaircomparatorFactory01, tupPaircomparatorFactory10,
+                predEvalFactory0, predEvalFactory1, false, null, null);
+    }
+
+    public OptimizedHybridHashJoinOperatorDescriptor(IOperatorDescriptorRegistry spec, int memSizeInFrames,
+            int inputsize0, double factor, int[] keys0, int[] keys1,
+            IBinaryHashFunctionFamily[] propHashFunctionFactories,
+            IBinaryHashFunctionFamily[] buildHashFunctionFactories, RecordDescriptor recordDescriptor,
+            ITuplePairComparatorFactory tupPaircomparatorFactory01,
+            ITuplePairComparatorFactory tupPaircomparatorFactory10, IPredicateEvaluatorFactory predEvalFactory0,
+            IPredicateEvaluatorFactory predEvalFactory1, boolean isLeftOuter,
+            IMissingWriterFactory[] nonMatchWriterFactories, IBuildSideObserverFactory buildSideObserverFactory) {
         super(spec, 2, 1);
         this.memSizeInFrames = memSizeInFrames;
         this.inputsize0 = inputsize0;
@@ -170,18 +196,7 @@ public class OptimizedHybridHashJoinOperatorDescriptor extends AbstractOperatorD
         this.buildPredEvalFactory = predEvalFactory1;
         this.isLeftOuter = isLeftOuter;
         this.nonMatchWriterFactories = nonMatchWriterFactories;
-    }
-
-    public OptimizedHybridHashJoinOperatorDescriptor(IOperatorDescriptorRegistry spec, int memSizeInFrames,
-            int inputsize0, double factor, int[] keys0, int[] keys1,
-            IBinaryHashFunctionFamily[] propHashFunctionFactories,
-            IBinaryHashFunctionFamily[] buildHashFunctionFactories, RecordDescriptor recordDescriptor,
-            ITuplePairComparatorFactory tupPaircomparatorFactory01,
-            ITuplePairComparatorFactory tupPaircomparatorFactory10, IPredicateEvaluatorFactory predEvalFactory0,
-            IPredicateEvaluatorFactory predEvalFactory1) {
-        this(spec, memSizeInFrames, inputsize0, factor, keys0, keys1, propHashFunctionFactories,
-                buildHashFunctionFactories, recordDescriptor, tupPaircomparatorFactory01, tupPaircomparatorFactory10,
-                predEvalFactory0, predEvalFactory1, false, null);
+        this.buildSideObserverFactory = buildSideObserverFactory;
     }
 
     @Override
@@ -305,6 +320,10 @@ public class OptimizedHybridHashJoinOperatorDescriptor extends AbstractOperatorD
                             state.numOfPartitions, PROBE_REL, BUILD_REL, probeRd, buildRd, probeHpc, buildHpc,
                             probePredEval, buildPredEval, isLeftOuter, nonMatchWriterFactories);
                     state.hybridHJ.setOperatorStats(stats);
+                    if (buildSideObserverFactory != null) {
+                        state.hybridHJ.setBuildSideObserver(
+                                buildSideObserverFactory.createObserver(ctx, partition));
+                    }
 
                     state.hybridHJ.initBuild();
                     if (LOGGER.isTraceEnabled()) {

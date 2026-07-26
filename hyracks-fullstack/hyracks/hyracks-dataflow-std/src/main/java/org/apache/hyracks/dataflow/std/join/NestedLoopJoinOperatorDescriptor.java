@@ -52,16 +52,35 @@ public class NestedLoopJoinOperatorDescriptor extends AbstractOperatorDescriptor
     private final int memSize;
     private final boolean isLeftOuter;
     private final IMissingWriterFactory[] nullWriterFactories1;
+    private final INLJMismatchWriterFactory mismatchWriterFactory;
+    private final int eagerBatchSize;
 
     public NestedLoopJoinOperatorDescriptor(IOperatorDescriptorRegistry spec,
             ITuplePairComparatorFactory comparatorFactory, RecordDescriptor recordDescriptor, int memSize,
             boolean isLeftOuter, IMissingWriterFactory[] nullWriterFactories1) {
+        this(spec, comparatorFactory, recordDescriptor, memSize, isLeftOuter, nullWriterFactories1, null, 0);
+    }
+
+    public NestedLoopJoinOperatorDescriptor(IOperatorDescriptorRegistry spec,
+            ITuplePairComparatorFactory comparatorFactory, RecordDescriptor recordDescriptor, int memSize,
+            boolean isLeftOuter, IMissingWriterFactory[] nullWriterFactories1,
+            INLJMismatchWriterFactory mismatchWriterFactory) {
+        this(spec, comparatorFactory, recordDescriptor, memSize, isLeftOuter, nullWriterFactories1,
+                mismatchWriterFactory, 0);
+    }
+
+    public NestedLoopJoinOperatorDescriptor(IOperatorDescriptorRegistry spec,
+            ITuplePairComparatorFactory comparatorFactory, RecordDescriptor recordDescriptor, int memSize,
+            boolean isLeftOuter, IMissingWriterFactory[] nullWriterFactories1,
+            INLJMismatchWriterFactory mismatchWriterFactory, int eagerBatchSize) {
         super(spec, 2, 1);
         this.comparatorFactory = comparatorFactory;
         this.outRecDescs[0] = recordDescriptor;
         this.memSize = memSize;
         this.isLeftOuter = isLeftOuter;
         this.nullWriterFactories1 = nullWriterFactories1;
+        this.mismatchWriterFactory = mismatchWriterFactory;
+        this.eagerBatchSize = eagerBatchSize;
     }
 
     @Override
@@ -120,8 +139,11 @@ public class NestedLoopJoinOperatorDescriptor extends AbstractOperatorDescriptor
                 @Override
                 public void open() throws HyracksDataException {
                     state = new JoinCacheTaskState(jobletCtx.getJobId(), new TaskId(getActivityId(), partition));
+                    INLJMismatchWriter mw = mismatchWriterFactory != null
+                            ? mismatchWriterFactory.createWriter(ctx) : null;
                     state.joiner = new NestedLoopJoin(jobletCtx, new FrameTupleAccessor(rd0),
-                            new FrameTupleAccessor(rd1), memSize, isLeftOuter, nullWriters1);
+                            new FrameTupleAccessor(rd1), memSize, isLeftOuter, nullWriters1, false, mw,
+                            eagerBatchSize);
                 }
 
                 @Override

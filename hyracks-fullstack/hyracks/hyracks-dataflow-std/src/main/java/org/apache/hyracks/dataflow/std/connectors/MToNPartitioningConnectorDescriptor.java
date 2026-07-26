@@ -30,16 +30,28 @@ import org.apache.hyracks.dataflow.std.base.AbstractMToNConnectorDescriptor;
 public class MToNPartitioningConnectorDescriptor extends AbstractMToNConnectorDescriptor {
     private static final long serialVersionUID = 1L;
     protected ITuplePartitionComputerFactory tpcf;
+    private final IPlaqueExchangeFilterFactory plaqueFilterFactory;
 
     public MToNPartitioningConnectorDescriptor(IConnectorDescriptorRegistry spec, ITuplePartitionComputerFactory tpcf) {
+        this(spec, tpcf, null);
+    }
+
+    public MToNPartitioningConnectorDescriptor(IConnectorDescriptorRegistry spec, ITuplePartitionComputerFactory tpcf,
+            IPlaqueExchangeFilterFactory plaqueFilterFactory) {
         super(spec);
         this.tpcf = tpcf;
+        this.plaqueFilterFactory = plaqueFilterFactory;
     }
 
     @Override
     public IFrameWriter createPartitioner(IHyracksTaskContext ctx, RecordDescriptor recordDesc,
             IPartitionWriterFactory edwFactory, int index, int nProducerPartitions, int nConsumerPartitions)
             throws HyracksDataException {
+        if (plaqueFilterFactory != null) {
+            IPlaqueExchangeFilter filter = plaqueFilterFactory.createFilter(ctx);
+            return new PlaqueFilteringPartitionDataWriter(ctx, nConsumerPartitions, edwFactory, recordDesc,
+                    tpcf.createPartitioner(ctx), filter);
+        }
         return new PartitionDataWriter(ctx, nConsumerPartitions, edwFactory, recordDesc, tpcf.createPartitioner(ctx));
     }
 

@@ -183,7 +183,7 @@ public class ResultWriterOperatorDescriptor extends AbstractSingleActivityOperat
                         }
 
                         if (isExecutionInteractive) {
-                            if (totalCount % 1000 == 1) {
+                            if (totalCount % 2 == 1) {
                                 System.out.println("Tuples outputted:" + totalCount + " at: "
                                         + LocalDateTime.now().format(formatter));
                                 try {

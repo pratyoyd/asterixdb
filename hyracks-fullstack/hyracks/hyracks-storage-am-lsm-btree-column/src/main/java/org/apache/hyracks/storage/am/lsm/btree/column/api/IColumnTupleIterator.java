@@ -115,4 +115,19 @@ public interface IColumnTupleIterator extends ILSMTreeTupleReference, Comparable
     int getAntimatterGap();
 
     void resetAntimatterGap();
+
+    /**
+     * Enable physical page skipping for filtered-out pages (skip PK decompression).
+     * Only safe for single-component scans where no merge reconciliation is needed.
+     */
+    default void setSkipPrimaryKeysOnFilteredPages(boolean skip) {
+        // no-op by default
+    }
+
+    /**
+     * @return true if the current page was physically skipped (PKs not decompressed, no valid tuple data)
+     */
+    default boolean isPagePhysicallySkipped() {
+        return false;
+    }
 }

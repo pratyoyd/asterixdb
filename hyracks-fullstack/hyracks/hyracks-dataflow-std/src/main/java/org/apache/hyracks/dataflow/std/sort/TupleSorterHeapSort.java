@@ -122,6 +122,7 @@ public class TupleSorterHeapSort implements ITupleSorter {
 
     private MaxHeap heap;
     private boolean isSorted;
+    private ITopKThresholdObserver thresholdObserver;
 
     private final int[] nmk;
 
@@ -173,6 +174,10 @@ public class TupleSorterHeapSort implements ITupleSorter {
         this.nmk = new int[runningNormalizedKeyTotalLength];
     }
 
+    public void setThresholdObserver(ITopKThresholdObserver observer) {
+        this.thresholdObserver = observer;
+    }
+
     @Override
     public int getTupleCount() {
         return heap.getNumEntries();
@@ -198,11 +203,27 @@ public class TupleSorterHeapSort implements ITupleSorter {
         }
         if (heap.getNumEntries() < topK) {
             heap.insert(newEntry);
+            if (thresholdObserver != null && heap.getNumEntries() == topK) {
+                notifyObserver();
+            }
         } else {
             bufferManager.deleteTuple(maxEntry.tuplePointer);
             heap.replaceMax(newEntry);
+            if (thresholdObserver != null) {
+                notifyObserver();
+            }
         }
         return true;
+    }
+
+    private void notifyObserver() throws HyracksDataException {
+        heap.peekMax(maxEntry);
+        bufferAccessor1.reset(maxEntry.tuplePointer);
+        byte[] data = bufferAccessor1.getBuffer().array();
+        int fIdx = sortFields[0];
+        int offset = bufferAccessor1.getAbsFieldStartOffset(fIdx);
+        int length = bufferAccessor1.getFieldLength(fIdx);
+        thresholdObserver.onKthValueChanged(data, offset, length);
     }
 
     private int[] getPNK(IFrameTupleAccessor fta, int tIx) {

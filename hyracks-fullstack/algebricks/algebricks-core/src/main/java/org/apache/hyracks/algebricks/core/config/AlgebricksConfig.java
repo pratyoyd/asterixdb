@@ -50,4 +50,9 @@ public class AlgebricksConfig {
     public static final int MAX_VARIABLE_OCCURRENCES_INLINING_DEFAULT = 128;
     public static final boolean INTERACTIVE_MODE_DEFAULT = false;
     public static final boolean BLOCKING_MODE_DEFAULT = false;
+    public static final boolean PLAQUE_ENABLED_DEFAULT = false;
+    public static final boolean PLAQUE_PROPAGATION_DEFAULT = true;
+    public static final int PLAQUE_PROPAGATION_INTERVAL_DEFAULT = 5000;
+    public static final boolean PLAQUE_PUSH_THROUGH_JOIN_DEFAULT = true;
+    public static final int PLAQUE_EAGER_BATCH_SIZE_DEFAULT = 32;
 }

@@ -96,7 +96,7 @@ public class ColumnBTreeRangeSearchCursor extends EnforcedIndexCursor
             frameTuple.newPage();
             setCursorPosition();
             nextLeafPage = frame.getNextLeaf();
-        } while (frame.getTupleCount() == 0 && nextLeafPage > 0);
+        } while ((frame.getTupleCount() == 0 || frameTuple.isPagePhysicallySkipped()) && nextLeafPage > 0);
     }
 
     @Override
@@ -150,6 +150,12 @@ public class ColumnBTreeRangeSearchCursor extends EnforcedIndexCursor
     }
 
     private void setCursorPosition() throws HyracksDataException {
+        if (frameTuple.isPagePhysicallySkipped()) {
+            // Page was filtered out in newPage() — no PK data available
+            frameTuple.consume();
+            yieldFirstCall = false;
+            return;
+        }
         int start = getLowKeyIndex();
         int end = getHighKeyIndex();
         if (end < start) {
@@ -177,6 +183,9 @@ public class ColumnBTreeRangeSearchCursor extends EnforcedIndexCursor
     }
 
     protected boolean shouldYieldFirstCall() throws HyracksDataException {
+        if (frameTuple.isConsumed()) {
+            return false;
+        }
         // Proceed if the highKey is null or the current tuple's key is less than (or equal) the highKey
         return highKey == null
                 || isLessOrEqual(frameTuple, highKey, pred.isHighKeyInclusive(), pred.getHighKeyComparator());

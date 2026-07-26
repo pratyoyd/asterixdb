@@ -2403,6 +2403,12 @@ def make_filename(base_dir, mode, part, deployment, timestamp, query, sf, iterat
     filename = f"output_{deployment}_{mode}-{strategy}_part-{part}_{timestamp}_run{iteration + 1}.json"
     return os.path.join(dir_path, filename)
 
+def metric_dest_name(metric: str, query_label: str, timestamp: str) -> str:
+    # Keep extension if present (e.g., .log); otherwise follow your existing naming
+    root, ext = os.path.splitext(metric)
+    if ext:
+        return f"{root}_{query_label}_{timestamp}{ext}"
+    return f"{metric}_{query_label}_{timestamp}"
 
 # runs a single query and saves result to filename
 async def run_query(session, payload, filename, delay=0):
@@ -2463,68 +2469,7 @@ async def main(mode, deployment, query, base_dir, runs, strategy, sf, number_of_
             default_interactive_query=default_interactive_query
         )
 
-        # If strategy is dynamic, try to fetch _dynamic variants
-#         if strategy == "dynamic":
-#             query_label = f"{query}_{sf}"
-#             blocking_query = globals().get(f"blocking_query_{query_label}_dynamic", globals().get(f"blocking_query_{query_label}", default_blocking_query))
-#             interactive_query = globals().get(f"interactive_query_{query_label}_dynamic", globals().get(f"interactive_query_{query_label}", default_interactive_query))
-#         else:
-#            query_map = {
-#                "q1": (blocking_query_q1, interactive_query_q1),
-#                "q3": (blocking_query_q3, interactive_query_q3),
-#                "q4": (blocking_query_q4, interactive_query_q4),
-#                "q5": (blocking_query_q5, interactive_query_q5),
-#                "q8": (blocking_query_q8, interactive_query_q8),
-#                "q9": (blocking_query_q9, interactive_query_q9),
-#                "q10": (blocking_query_q10, interactive_query_q10),
-#                "q12": (blocking_query_q12, interactive_query_q12),
-#                "q16": (blocking_query_q16, interactive_query_q16),
-#                "q18": (blocking_query_q18, interactive_query_q18),
-#
-#                "SSB_q21": (blocking_query_SSB_q21, interactive_query_SSB_q21),
-#                "SSB_q22": (blocking_query_SSB_q22, interactive_query_SSB_q22),
-#                "SSB_q23": (blocking_query_SSB_q23, interactive_query_SSB_q23),
-#                "SSB_q31": (blocking_query_SSB_q31, interactive_query_SSB_q31),
-#                "SSB_q32": (blocking_query_SSB_q32, interactive_query_SSB_q32),
-#                "SSB_q33": (blocking_query_SSB_q33, interactive_query_SSB_q33),
-#                "SSB_q34": (blocking_query_SSB_q34, interactive_query_SSB_q34),
-#                "SSB_q41": (blocking_query_SSB_q41, interactive_query_SSB_q41),
-#                "SSB_q42": (blocking_query_SSB_q42, interactive_query_SSB_q42),
-#                "SSB_q43": (blocking_query_SSB_q43, interactive_query_SSB_q43),
-#
-#                # SF30
-#                "q3_30": (blocking_query_q3_30, interactive_query_q3_30),
-#                "q10_30": (blocking_query_q10_30, interactive_query_q10_30),
-#                "q4_30":  (blocking_query_q4_30,  interactive_query_q4_30),
-#                "q5_30":  (blocking_query_q5_30,  interactive_query_q5_30),
-#                "q8_30":  (blocking_query_q8_30,  interactive_query_q8_30),
-#                "q9_30":  (blocking_query_q9_30,  interactive_query_q9_30),
-#                "q1_30": (blocking_query_q1_30, interactive_query_q1_30),
-#                "q12_30": (blocking_query_q12_30, interactive_query_q12_30),
-#                "q16_30": (blocking_query_q16_30, interactive_query_q16_30),
-#                "q18_30": (blocking_query_q18_30, interactive_query_q18_30),
-#
-#                # SF1 (new)
-#                "q1_1":  (blocking_query_q1_1,  interactive_query_q1_1),
-#                "q3_1":  (blocking_query_q3_1,  interactive_query_q3_1),
-#                "q4_1":  (blocking_query_q4_1,  interactive_query_q4_1),
-#                "q8_1":  (blocking_query_q8_1,  interactive_query_q8_1),
-#                "q9_1":  (blocking_query_q9_1,  interactive_query_q9_1),
-#                "q10_1": (blocking_query_q10_1, interactive_query_q10_1),
-#                "q12_1": (blocking_query_q12_1, interactive_query_q12_1),
-#                "q16_1": (blocking_query_q16_1, interactive_query_q16_1),
-#                "q18_1": (blocking_query_q18_1, interactive_query_q18_1),
-#            }
-#            blocking_query, interactive_query = query_map.get(query, (default_blocking_query, default_interactive_query))
-#
-#           # Derive a consistent query label like base_SF (e.g., q3_50) for filenames/logs
-#         base_q = query.split('_')[0]
-#         query_label = f"{base_q}_{sf}"
-#
-#           # If this isn't an SSB query, rewrite TPCH table names to _{sf}
-#         if not base_q.startswith("SSB"):
-#           blocking_query = _apply_sf_suffix(blocking_query, sf)
-#           interactive_query = _apply_sf_suffix(interactive_query, sf)
+
 
 
         def move_if_exists(src_path: str, dest_path: str, label: str, iteration: int):
@@ -2597,11 +2542,12 @@ async def main(mode, deployment, query, base_dir, runs, strategy, sf, number_of_
             metrics = [
                 "InteractiveAnswerCount",
                 "InteractiveAnswerRate",
-                "BlockingAnswerRate"
+                "BlockingAnswerRate",
+                "B2I_stdout.log"
             ]
             for metric in metrics:
                 src_path = os.path.join(signal_dir, "HybridExecution", metric)
-                dest_path = os.path.join(dest_dir, f"{metric}_{query_label}_{timestamp}")
+                dest_path = os.path.join(dest_dir, metric_dest_name(metric, query_label, timestamp))
                 move_if_exists(src_path, dest_path, metric, iteration)
 
 if __name__ == "__main__":

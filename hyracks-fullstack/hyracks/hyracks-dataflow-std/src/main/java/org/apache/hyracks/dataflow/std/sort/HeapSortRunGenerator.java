@@ -61,6 +61,12 @@ public class HeapSortRunGenerator extends AbstractSortRunGenerator {
         this.recordDescriptor = recordDescriptor;
     }
 
+    public void setThresholdObserver(ITopKThresholdObserver observer) {
+        if (tupleSorter instanceof TupleSorterHeapSort) {
+            ((TupleSorterHeapSort) tupleSorter).setThresholdObserver(observer);
+        }
+    }
+
     @Override
     public void open() throws HyracksDataException {
         IFramePool framePool = new VariableFramePool(ctx, (frameLimit - 1) * ctx.getInitialFrameSize());

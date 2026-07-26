@@ -96,6 +96,7 @@ public class OptimizedHybridHashJoin {
     private final TuplePointer tempPtr = new TuplePointer();
     private int[] probePSizeInTups;
     private IOperatorStats stats = null;
+    private IBuildSideObserver buildSideObserver;
 
     public OptimizedHybridHashJoin(IHyracksJobletContext jobletCtx, int memSizeInFrames, int numOfPartitions,
             String probeRelName, String buildRelName, RecordDescriptor probeRd, RecordDescriptor buildRd,
@@ -142,11 +143,18 @@ public class OptimizedHybridHashJoin {
         buildPSizeInTups = new int[numOfPartitions];
     }
 
+    public void setBuildSideObserver(IBuildSideObserver observer) {
+        this.buildSideObserver = observer;
+    }
+
     public void build(ByteBuffer buffer) throws HyracksDataException {
         accessorBuild.reset(buffer);
         int tupleCount = accessorBuild.getTupleCount();
         for (int i = 0; i < tupleCount; ++i) {
             if (buildPredEval == null || buildPredEval.evaluate(accessorBuild, i)) {
+                if (buildSideObserver != null) {
+                    buildSideObserver.observe(accessorBuild, i);
+                }
                 int pid = buildHpc.partition(accessorBuild, i, numOfPartitions);
                 processTupleBuildPhase(i, pid);
                 buildPSizeInTups[pid]++;
@@ -234,6 +242,9 @@ public class OptimizedHybridHashJoin {
                 bufferManagerForHashTable);
 
         buildHashTable();
+        if (buildSideObserver != null) {
+            buildSideObserver.publishResult();
+        }
     }
 
     public void clearBuildTempFiles() throws HyracksDataException {

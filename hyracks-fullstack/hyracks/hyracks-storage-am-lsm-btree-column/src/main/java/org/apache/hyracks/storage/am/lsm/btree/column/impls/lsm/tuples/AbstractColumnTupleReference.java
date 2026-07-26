@@ -53,6 +53,9 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
     private int totalNumberOfMegaLeafNodes;
     private int numOfSkippedMegaLeafNodes;
     private int maxNumberOfPinnedPages;
+    private boolean skipPrimaryKeysOnFilteredPages;
+    private boolean pagePhysicallySkipped;
+    private boolean startNewPageCalledInNewPage;
 
     /**
      * Column tuple reference
@@ -98,17 +101,44 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
         }
         totalNumberOfMegaLeafNodes = 0;
         numOfSkippedMegaLeafNodes = 0;
+        skipPrimaryKeysOnFilteredPages = false;
+    }
+
+    /**
+     * When set to true, primary key decompression is skipped for pages rejected by the range filter.
+     * Only safe for single-component scans where no merge reconciliation is needed.
+     */
+    public void setSkipPrimaryKeysOnFilteredPages(boolean skip) {
+        this.skipPrimaryKeysOnFilteredPages = skip;
     }
 
     @Override
     public final void newPage() throws HyracksDataException {
         tupleIndex = 0;
         antimatterGap = 0;
+        pagePhysicallySkipped = false;
         ByteBuffer pageZero = frame.getBuffer();
         pageZero.clear();
         pageZero.position(HEADER_SIZE);
 
         int numberOfTuples = frame.getTupleCount();
+
+        startNewPageCalledInNewPage = false;
+        if (skipPrimaryKeysOnFilteredPages && numberOfTuples > 0) {
+            // Check page filter BEFORE decompressing primary keys
+            boolean readColumnPages = startNewPage(pageZero, frame.getNumberOfColumns(), numberOfTuples);
+            startNewPageCalledInNewPage = true;
+            if (!readColumnPages) {
+                // Page filtered out — skip PK decompression entirely
+                pagePhysicallySkipped = true;
+                skipMegaLeafNode();
+                numOfSkippedMegaLeafNodes++;
+                totalNumberOfMegaLeafNodes++;
+                return;
+            }
+            // Page passes filter — continue with PK decompression
+            // Note: startNewPage already advanced pageZero past the filter section
+        }
 
         //Start primary keys
         for (int i = 0; i < numberOfPrimaryKeys; i++) {
@@ -118,6 +148,13 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
         }
     }
 
+    /**
+     * @return true if the last page was physically skipped (PKs not decompressed)
+     */
+    public boolean isPagePhysicallySkipped() {
+        return pagePhysicallySkipped;
+    }
+
     @Override
     public final void reset(int startIndex, int endIndex) throws HyracksDataException {
         tupleIndex = startIndex;
@@ -125,41 +162,66 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
         this.endIndex = endIndex;
         ByteBuffer pageZero = frame.getBuffer();
         int numberOfTuples = frame.getTupleCount();
-        //Start new page and check whether we should skip reading non-key columns or not
-        boolean readColumnPages = startNewPage(pageZero, frame.getNumberOfColumns(), numberOfTuples);
-        //Release previous pinned pages if any
-        unpinColumnsPages();
-        /*
-         * When startIndex = 0, a call to next() is performed to get the information of the PK
-         * and 0 skips will be performed. If startIndex (for example) is 5, a call to next() will be performed
-         * then 4 skips will be performed.
-         */
-        int skipCount = setPrimaryKeysAt(startIndex, startIndex);
-        if (readColumnPages) {
-            for (int i = 0; i < filterBufferProviders.length; i++) {
-                IColumnBufferProvider provider = filterBufferProviders[i];
-                provider.reset(frame);
-                startColumnFilter(provider, i, numberOfTuples);
-            }
+        if (pagePhysicallySkipped) {
+            // Page was already filtered and skipped in newPage() — nothing to do
+            unpinColumnsPages();
+            endIndex = startIndex;
+            tupleIndex = startIndex;
+            return;
         }
 
-        if (readColumnPages && evaluateFilter()) {
-            for (int i = 0; i < buffersProviders.length; i++) {
-                IColumnBufferProvider provider = buffersProviders[i];
-                provider.reset(frame);
-                startColumn(provider, i, numberOfTuples);
+        //Start new page and check whether we should skip reading non-key columns or not
+        boolean readColumnPages;
+        if (startNewPageCalledInNewPage) {
+            // startNewPage was already called in newPage() and returned true (page passes filter)
+            readColumnPages = true;
+        } else {
+            readColumnPages = startNewPage(pageZero, frame.getNumberOfColumns(), numberOfTuples);
+        }
+        //Release previous pinned pages if any
+        unpinColumnsPages();
+
+        if (!readColumnPages && skipPrimaryKeysOnFilteredPages) {
+            // FAST PATH: single-component scan and page filtered out by range filter.
+            // This shouldn't normally be reached since newPage() handles it, but keep as safety net.
+            skipMegaLeafNode();
+            pagePhysicallySkipped = true;
+            endIndex = startIndex;
+            tupleIndex = startIndex;
+            numOfSkippedMegaLeafNodes++;
+        } else {
+            /*
+             * When startIndex = 0, a call to next() is performed to get the information of the PK
+             * and 0 skips will be performed. If startIndex (for example) is 5, a call to next() will be performed
+             * then 4 skips will be performed.
+             */
+            int skipCount = setPrimaryKeysAt(startIndex, startIndex);
+            if (readColumnPages) {
+                for (int i = 0; i < filterBufferProviders.length; i++) {
+                    IColumnBufferProvider provider = filterBufferProviders[i];
+                    provider.reset(frame);
+                    startColumnFilter(provider, i, numberOfTuples);
+                }
             }
 
-            /*
-             * skipCount can be < 0 for cases when the tuples in the range [0, startIndex] are all anti-matters.
-             * Consequently, tuples in the range [0, startIndex] do not have any non-key columns. Thus, the returned
-             * skipCount from calling setPrimaryKeysAt(startIndex, startIndex) is a negative value. For that reason,
-             * non-key column should not skip any value.
-             */
-            skip(Math.max(skipCount, 0));
-        } else {
-            skipMegaLeafNode();
-            numOfSkippedMegaLeafNodes++;
+            if (readColumnPages && evaluateFilter()) {
+                for (int i = 0; i < buffersProviders.length; i++) {
+                    IColumnBufferProvider provider = buffersProviders[i];
+                    provider.reset(frame);
+                    startColumn(provider, i, numberOfTuples);
+                }
+
+                /*
+                 * skipCount can be < 0 for cases when the tuples in the range [0, startIndex] are all anti-matters.
+                 * Consequently, tuples in the range [0, startIndex] do not have any non-key columns. Thus, the returned
+                 * skipCount from calling setPrimaryKeysAt(startIndex, startIndex) is a negative value. For that reason,
+                 * non-key column should not skip any value.
+                 */
+                skip(Math.max(skipCount, 0));
+            } else {
+                skipMegaLeafNode();
+                numOfSkippedMegaLeafNodes++;
+            }
         }
 
         totalNumberOfMegaLeafNodes++;

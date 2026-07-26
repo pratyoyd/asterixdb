@@ -303,6 +303,34 @@ public class IndexUtil {
         ColumnRangeFilterBuilder columnRangeFilterBuilder = new ColumnRangeFilterBuilder(columnInfo);
         IColumnRangeFilterEvaluatorFactory rangeFilterEvaluatorFactory = columnRangeFilterBuilder.build();
 
+        // Compose PLAQUE page-level filter if present
+        if (columnInfo.getPlaqueHandle() != null) {
+            IColumnRangeFilterEvaluatorFactory plaqueFactory;
+            if (columnInfo.getPlaqueCrossExprBuildHandle() != null) {
+                // Cross-expression page filter: uses t + c_min for bound
+                org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory.CombineOp combineOp =
+                        org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory.CombineOp
+                                .valueOf(columnInfo.getPlaqueCrossExprCombineOp());
+                org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDir =
+                        org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory.FilterDirection
+                                .valueOf(columnInfo.getPlaqueCrossExprFilterDirection());
+                plaqueFactory = new org.apache.asterix.column.filter.range.evaluator
+                        .PlaqueCrossExprColumnFilterEvaluatorFactory(
+                                columnInfo.getPlaqueHandle(),
+                                columnInfo.getPlaqueCrossExprBuildHandle(),
+                                columnInfo.isPlaqueIsMax(),
+                                columnInfo.getPlaqueColumnPath(),
+                                combineOp, filterDir);
+            } else {
+                // Standard single-table page filter
+                plaqueFactory = new org.apache.asterix.column.filter.range.evaluator.PlaqueColumnFilterEvaluatorFactory(
+                        columnInfo.getPlaqueHandle(), columnInfo.isPlaqueIsMax(),
+                        columnInfo.getPlaqueColumnPath());
+            }
+            rangeFilterEvaluatorFactory = new org.apache.asterix.column.filter.range.evaluator
+                    .ANDColumnFilterEvaluatorFactory(rangeFilterEvaluatorFactory, plaqueFactory);
+        }
+
         ColumnFilterBuilder columnFilterBuilder = new ColumnFilterBuilder(columnInfo, context, typeEnv);
         IColumnIterableFilterEvaluatorFactory columnFilterEvaluatorFactory = columnFilterBuilder.build();
 

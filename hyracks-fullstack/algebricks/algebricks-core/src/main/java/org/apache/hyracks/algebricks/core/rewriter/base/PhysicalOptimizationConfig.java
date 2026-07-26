@@ -66,6 +66,11 @@ public class PhysicalOptimizationConfig {
     private static final String INTERACTIVEMODE = "INTERACTIVEMODE";
     private static final String BLOCKINGMODE = "BLOCKINGMODE";
     private static final String ORDER_FIELDS = "ORDER_FIELDS";
+    private static final String PLAQUE_ENABLED = "PLAQUE_ENABLED";
+    private static final String PLAQUE_PROPAGATION = "PLAQUE_PROPAGATION";
+    private static final String PLAQUE_PROPAGATION_INTERVAL = "PLAQUE_PROPAGATION_INTERVAL";
+    private static final String PLAQUE_PUSH_THROUGH_JOIN = "PLAQUE_PUSH_THROUGH_JOIN";
+    private static final String PLAQUE_EAGER_BATCH_SIZE = "PLAQUE_EAGER_BATCH_SIZE";
 
     private final Properties properties = new Properties();
 
@@ -453,5 +458,45 @@ public class PhysicalOptimizationConfig {
 
     public void setBlockingMode(boolean blockingMode) {
         setBoolean(BLOCKINGMODE, blockingMode);
+    }
+
+    public boolean getPlaqueEnabled() {
+        return getBoolean(PLAQUE_ENABLED, AlgebricksConfig.PLAQUE_ENABLED_DEFAULT);
+    }
+
+    public void setPlaqueEnabled(boolean v) {
+        setBoolean(PLAQUE_ENABLED, v);
+    }
+
+    public boolean getPlaquePropagation() {
+        return getBoolean(PLAQUE_PROPAGATION, AlgebricksConfig.PLAQUE_PROPAGATION_DEFAULT);
+    }
+
+    public void setPlaquePropagation(boolean v) {
+        setBoolean(PLAQUE_PROPAGATION, v);
+    }
+
+    public int getPlaquePropagationInterval() {
+        return getInt(PLAQUE_PROPAGATION_INTERVAL, AlgebricksConfig.PLAQUE_PROPAGATION_INTERVAL_DEFAULT);
+    }
+
+    public void setPlaquePropagationInterval(int v) {
+        setInt(PLAQUE_PROPAGATION_INTERVAL, v);
+    }
+
+    public boolean getPlaquePushThroughJoin() {
+        return getBoolean(PLAQUE_PUSH_THROUGH_JOIN, AlgebricksConfig.PLAQUE_PUSH_THROUGH_JOIN_DEFAULT);
+    }
+
+    public void setPlaquePushThroughJoin(boolean v) {
+        setBoolean(PLAQUE_PUSH_THROUGH_JOIN, v);
+    }
+
+    public int getPlaqueEagerBatchSize() {
+        return getInt(PLAQUE_EAGER_BATCH_SIZE, AlgebricksConfig.PLAQUE_EAGER_BATCH_SIZE_DEFAULT);
+    }
+
+    public void setPlaqueEagerBatchSize(int v) {
+        setInt(PLAQUE_EAGER_BATCH_SIZE, v);
     }
 }
