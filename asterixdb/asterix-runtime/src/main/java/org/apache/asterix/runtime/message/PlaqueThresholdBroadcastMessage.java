@@ -15,8 +15,8 @@ public class PlaqueThresholdBroadcastMessage implements INcAddressedMessage {
     private final int thresholdLength;
     private final boolean isMax;
 
-    public PlaqueThresholdBroadcastMessage(JobId jobId, String handle,
-            byte[] thresholdBytes, int thresholdLength, boolean isMax) {
+    public PlaqueThresholdBroadcastMessage(JobId jobId, String handle, byte[] thresholdBytes, int thresholdLength,
+            boolean isMax) {
         this.jobId = jobId;
         this.handle = handle;
         this.thresholdBytes = thresholdBytes;
@@ -26,8 +26,7 @@ public class PlaqueThresholdBroadcastMessage implements INcAddressedMessage {
 
     @Override
     public void handle(INcApplicationContext appCtx) throws HyracksDataException, InterruptedException {
-        PlaqueThresholdRegistry.INSTANCE.mergeGlobal(
-                jobId, handle, thresholdBytes, thresholdLength, isMax);
+        PlaqueThresholdRegistry.INSTANCE.mergeGlobal(jobId, handle, thresholdBytes, thresholdLength, isMax);
     }
 
     @Override

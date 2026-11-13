@@ -76,7 +76,8 @@ public class PlaqueFilterRuntimeFactory implements IPushRuntimeFactory {
             initAccessAppendRef(ctx);
             jobId = ctx.getJobletContext().getJobId();
             thresholdState = PlaqueThresholdRegistry.INSTANCE.getOrCreate(jobId, handle, isMax, strictComparison);
-            threadLocalComparator = new AGenericAscBinaryComparatorFactory(BuiltinType.ANY, BuiltinType.ANY).createBinaryComparator();
+            threadLocalComparator =
+                    new AGenericAscBinaryComparatorFactory(BuiltinType.ANY, BuiltinType.ANY).createBinaryComparator();
             super.open();
         }
 
@@ -98,8 +99,7 @@ public class PlaqueFilterRuntimeFactory implements IPushRuntimeFactory {
                 }
 
                 byte typeTag = data[start];
-                if (typeTag == ATypeTag.SERIALIZED_NULL_TYPE_TAG
-                        || typeTag == ATypeTag.SERIALIZED_MISSING_TYPE_TAG
+                if (typeTag == ATypeTag.SERIALIZED_NULL_TYPE_TAG || typeTag == ATypeTag.SERIALIZED_MISSING_TYPE_TAG
                         || typeTag == ATypeTag.SERIALIZED_SYSTEM_NULL_TYPE_TAG) {
                     nullPassedTuples++;
                     appendTupleToFrame(t);
@@ -123,10 +123,9 @@ public class PlaqueFilterRuntimeFactory implements IPushRuntimeFactory {
         public void close() throws HyracksDataException {
             LOGGER.warning(String.format(
                     "PLAQUE_FILTER_STATS [job=%s, handle=%s, partition=%s] "
-                    + "total=%d, passed=%d, filtered=%d, nullPassed=%d, "
-                    + "thresholdUninitTuples=%d, thresholdInitialized=%b, filterRate=%.4f%%",
-                    jobId, handle, ctx.getTaskAttemptId(),
-                    totalTuples, passedTuples, filteredTuples, nullPassedTuples,
+                            + "total=%d, passed=%d, filtered=%d, nullPassed=%d, "
+                            + "thresholdUninitTuples=%d, thresholdInitialized=%b, filterRate=%.4f%%",
+                    jobId, handle, ctx.getTaskAttemptId(), totalTuples, passedTuples, filteredTuples, nullPassedTuples,
                     thresholdUninitializedTuples, thresholdState.isInitialized(),
                     totalTuples > 0 ? (100.0 * filteredTuples / totalTuples) : 0.0));
             try {

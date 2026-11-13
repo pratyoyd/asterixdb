@@ -5,8 +5,8 @@ import java.util.logging.Logger;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdPropagator;
 import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdState;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 import org.apache.hyracks.api.job.JobId;
@@ -26,10 +26,8 @@ public class PlaqueLocalSqlMinMaxAggregateFunction extends SqlMinMaxAggregateFun
     private int thresholdUpdateCount;
 
     public PlaqueLocalSqlMinMaxAggregateFunction(IScalarEvaluatorFactory[] args, IEvaluatorContext context,
-            boolean isMin, SourceLocation sourceLoc, IAType aggFieldType,
-            PlaqueThresholdState thresholdState, JobId jobId, String handle,
-            int propagationInterval)
-            throws HyracksDataException {
+            boolean isMin, SourceLocation sourceLoc, IAType aggFieldType, PlaqueThresholdState thresholdState,
+            JobId jobId, String handle, int propagationInterval) throws HyracksDataException {
         super(args, context, isMin, Type.LOCAL, sourceLoc, aggFieldType);
         this.thresholdState = thresholdState;
         this.jobId = jobId;
@@ -41,10 +39,7 @@ public class PlaqueLocalSqlMinMaxAggregateFunction extends SqlMinMaxAggregateFun
     @Override
     protected void onMinMaxChanged() throws HyracksDataException {
         thresholdUpdateCount++;
-        thresholdState.update(
-                outputVal.getByteArray(),
-                outputVal.getStartOffset(),
-                outputVal.getLength());
+        thresholdState.update(outputVal.getByteArray(), outputVal.getStartOffset(), outputVal.getLength());
     }
 
     @Override
@@ -60,8 +55,7 @@ public class PlaqueLocalSqlMinMaxAggregateFunction extends SqlMinMaxAggregateFun
     @Override
     public void finish(org.apache.hyracks.data.std.api.IPointable result) throws HyracksDataException {
         LOGGER.warning(String.format(
-                "PLAQUE_AGG_STATS [job=%s, handle=%s] totalSteps=%d, thresholdUpdates=%d, "
-                + "thresholdInitialized=%b",
+                "PLAQUE_AGG_STATS [job=%s, handle=%s] totalSteps=%d, thresholdUpdates=%d, " + "thresholdInitialized=%b",
                 jobId, handle, totalSteps, thresholdUpdateCount, thresholdState.isInitialized()));
         maybePropagateThreshold();
         super.finish(result);

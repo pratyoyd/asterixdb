@@ -38,15 +38,13 @@ public class PlaqueGroupThresholdUpdateMessage implements ICcAddressedMessage {
     @Override
     public void handle(ICcApplicationContext appCtx) throws HyracksDataException, InterruptedException {
         try {
-            boolean improved = PlaqueThresholdCCState.INSTANCE.updateGroup(
-                    jobId, handle, groupKeyBytes, groupKeyLength, thresholdBytes, thresholdLength, isMax);
+            boolean improved = PlaqueThresholdCCState.INSTANCE.updateGroup(jobId, handle, groupKeyBytes, groupKeyLength,
+                    thresholdBytes, thresholdLength, isMax);
             if (improved) {
-                ICCMessageBroker broker =
-                        (ICCMessageBroker) appCtx.getServiceContext().getMessageBroker();
+                ICCMessageBroker broker = (ICCMessageBroker) appCtx.getServiceContext().getMessageBroker();
                 // Broadcast the improved group threshold to all NCs
-                PlaqueGroupThresholdBroadcastMessage broadcast =
-                        new PlaqueGroupThresholdBroadcastMessage(jobId, handle, groupKeyBytes, groupKeyLength,
-                                thresholdBytes, thresholdLength, isMax);
+                PlaqueGroupThresholdBroadcastMessage broadcast = new PlaqueGroupThresholdBroadcastMessage(jobId, handle,
+                        groupKeyBytes, groupKeyLength, thresholdBytes, thresholdLength, isMax);
                 Set<String> nodes = appCtx.getClusterStateManager().getParticipantNodes();
                 for (String nodeId : nodes) {
                     try {

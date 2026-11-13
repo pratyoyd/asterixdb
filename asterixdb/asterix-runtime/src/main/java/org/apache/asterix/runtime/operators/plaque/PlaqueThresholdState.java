@@ -24,7 +24,8 @@ public class PlaqueThresholdState {
     public PlaqueThresholdState(boolean isMax, boolean strictComparison) {
         this.isMax = isMax;
         this.strictComparison = strictComparison;
-        this.comparator = new AGenericAscBinaryComparatorFactory(BuiltinType.ANY, BuiltinType.ANY).createBinaryComparator();
+        this.comparator =
+                new AGenericAscBinaryComparatorFactory(BuiltinType.ANY, BuiltinType.ANY).createBinaryComparator();
         this.initialized = false;
     }
 

@@ -36,9 +36,8 @@ public class PlaqueCrossExprColumnFilterEvaluatorFactory implements IColumnRange
     private final PlaqueCrossExprExchangeFilterFactory.CombineOp combineOp;
     private final PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDirection;
 
-    public PlaqueCrossExprColumnFilterEvaluatorFactory(String thresholdHandle, String buildSideHandle,
-            boolean isMax, ARecordType columnPath,
-            PlaqueCrossExprExchangeFilterFactory.CombineOp combineOp,
+    public PlaqueCrossExprColumnFilterEvaluatorFactory(String thresholdHandle, String buildSideHandle, boolean isMax,
+            ARecordType columnPath, PlaqueCrossExprExchangeFilterFactory.CombineOp combineOp,
             PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDirection) {
         this.thresholdHandle = thresholdHandle;
         this.buildSideHandle = buildSideHandle;
@@ -66,11 +65,10 @@ public class PlaqueCrossExprColumnFilterEvaluatorFactory implements IColumnRange
             colIdx = ((org.apache.asterix.column.filter.range.accessor.ColumnRangeFilterValueAccessor) pageAccessor)
                     .getColumnIndex();
         }
-        System.out.println("PLAQUE_CROSSEXPR_PAGE_FILTER_CREATE: colIdx=" + colIdx
-                + " columnPath=" + columnPath
-                + " readMin=" + readMin
-                + " inList=" + filterAccessorProvider.getFilterAccessors().contains(pageAccessor)
-                + " listSize=" + filterAccessorProvider.getFilterAccessors().size());
+        System.out.println(
+                "PLAQUE_CROSSEXPR_PAGE_FILTER_CREATE: colIdx=" + colIdx + " columnPath=" + columnPath + " readMin="
+                        + readMin + " inList=" + filterAccessorProvider.getFilterAccessors().contains(pageAccessor)
+                        + " listSize=" + filterAccessorProvider.getFilterAccessors().size());
 
         // Determine if the column stores values as raw longs (integer types) or doubleToLongBits (doubles)
         boolean isIntegerColumn = false;
@@ -93,14 +91,14 @@ public class PlaqueCrossExprColumnFilterEvaluatorFactory implements IColumnRange
             buildSideState = PlaqueThresholdRegistry.INSTANCE.getBuildSideMinState(jobId, buildSideHandle);
         }
 
-        return new PlaqueCrossExprColumnFilterEvaluator(pageAccessor, thresholdState, buildSideState,
-                combineOp, filterDirection, thresholdHandle, isIntegerColumn);
+        return new PlaqueCrossExprColumnFilterEvaluator(pageAccessor, thresholdState, buildSideState, combineOp,
+                filterDirection, thresholdHandle, isIntegerColumn);
     }
 
     @Override
     public String toString() {
-        return "PLAQUE_CROSSEXPR_PAGE_FILTER(" + (isMax ? "MAX" : "MIN") + ", t=" + thresholdHandle
-                + ", b=" + buildSideHandle + ")";
+        return "PLAQUE_CROSSEXPR_PAGE_FILTER(" + (isMax ? "MAX" : "MIN") + ", t=" + thresholdHandle + ", b="
+                + buildSideHandle + ")";
     }
 
     private static class PlaqueCrossExprColumnFilterEvaluator implements IColumnFilterEvaluator {
@@ -119,8 +117,8 @@ public class PlaqueCrossExprColumnFilterEvaluatorFactory implements IColumnRange
         PlaqueCrossExprColumnFilterEvaluator(IColumnRangeFilterValueAccessor pageAccessor,
                 PlaqueThresholdState thresholdState, PlaqueBuildSideMinState buildSideState,
                 PlaqueCrossExprExchangeFilterFactory.CombineOp combineOp,
-                PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDirection,
-                String handle, boolean isIntegerColumn) {
+                PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDirection, String handle,
+                boolean isIntegerColumn) {
             this.pageAccessor = pageAccessor;
             this.thresholdState = thresholdState;
             this.buildSideState = buildSideState;
@@ -170,7 +168,8 @@ public class PlaqueCrossExprColumnFilterEvaluatorFactory implements IColumnRange
                     bound = t * c;
                     break;
                 case DIVIDE:
-                    if (c == 0) return true;
+                    if (c == 0)
+                        return true;
                     bound = t / c;
                     break;
                 default:
@@ -202,9 +201,8 @@ public class PlaqueCrossExprColumnFilterEvaluatorFactory implements IColumnRange
                         "PLAQUE_CROSSEXPR_PAGE_FILTER [handle=%s] evaluated=%d, skipped=%d, skipRate=%.2f%%, "
                                 + "pageValue=%d (%.4f), normalizedBound=%d (%.4f), t=%.4f, c=%.4f, bound=%.4f, pass=%b",
                         handle, pagesEvaluated, pagesSkipped,
-                        pagesEvaluated > 0 ? (100.0 * pagesSkipped / pagesEvaluated) : 0.0,
-                        pageValue, Double.longBitsToDouble(pageValue),
-                        normalizedBound, Double.longBitsToDouble(normalizedBound),
+                        pagesEvaluated > 0 ? (100.0 * pagesSkipped / pagesEvaluated) : 0.0, pageValue,
+                        Double.longBitsToDouble(pageValue), normalizedBound, Double.longBitsToDouble(normalizedBound),
                         t, c, bound, pass));
             }
 
@@ -215,43 +213,50 @@ public class PlaqueCrossExprColumnFilterEvaluatorFactory implements IColumnRange
          * Extract a double from AsterixDB typed bytes (type tag + value).
          */
         private static double extractDouble(byte[] data) {
-            if (data.length < 2) return Double.NaN;
+            if (data.length < 2)
+                return Double.NaN;
             byte typeTag = data[0];
             switch (typeTag) {
                 case 12: // DOUBLE
-                    if (data.length < 9) return Double.NaN;
+                    if (data.length < 9)
+                        return Double.NaN;
                     long dBits = 0;
                     for (int i = 1; i <= 8; i++) {
                         dBits = (dBits << 8) | (data[i] & 0xFF);
                     }
                     return Double.longBitsToDouble(dBits);
                 case 11: // FLOAT
-                    if (data.length < 5) return Double.NaN;
+                    if (data.length < 5)
+                        return Double.NaN;
                     int fBits = 0;
                     for (int i = 1; i <= 4; i++) {
                         fBits = (fBits << 8) | (data[i] & 0xFF);
                     }
                     return Float.intBitsToFloat(fBits);
                 case 4: // BIGINT
-                    if (data.length < 9) return Double.NaN;
+                    if (data.length < 9)
+                        return Double.NaN;
                     long lVal = 0;
                     for (int i = 1; i <= 8; i++) {
                         lVal = (lVal << 8) | (data[i] & 0xFF);
                     }
                     return (double) lVal;
                 case 3: // INTEGER
-                    if (data.length < 5) return Double.NaN;
+                    if (data.length < 5)
+                        return Double.NaN;
                     int iVal = 0;
                     for (int i = 1; i <= 4; i++) {
                         iVal = (iVal << 8) | (data[i] & 0xFF);
                     }
                     return (double) iVal;
                 case 2: // SMALLINT
-                    if (data.length < 3) return Double.NaN;
+                    if (data.length < 3)
+                        return Double.NaN;
                     short sVal = (short) (((data[1] & 0xFF) << 8) | (data[2] & 0xFF));
                     return (double) sVal;
                 case 1: // TINYINT
-                    if (data.length < 2) return Double.NaN;
+                    if (data.length < 2)
+                        return Double.NaN;
                     return (double) data[1];
                 default:
                     return Double.NaN;

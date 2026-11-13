@@ -18,8 +18,8 @@ public class PlaqueThresholdUpdateMessage implements ICcAddressedMessage {
     private final int thresholdLength;
     private final boolean isMax;
 
-    public PlaqueThresholdUpdateMessage(JobId jobId, String handle,
-            byte[] thresholdBytes, int thresholdLength, boolean isMax) {
+    public PlaqueThresholdUpdateMessage(JobId jobId, String handle, byte[] thresholdBytes, int thresholdLength,
+            boolean isMax) {
         this.jobId = jobId;
         this.handle = handle;
         this.thresholdBytes = thresholdBytes;
@@ -30,16 +30,14 @@ public class PlaqueThresholdUpdateMessage implements ICcAddressedMessage {
     @Override
     public void handle(ICcApplicationContext appCtx) throws HyracksDataException, InterruptedException {
         try {
-            boolean improved = PlaqueThresholdCCState.INSTANCE.update(
-                    jobId, handle, thresholdBytes, thresholdLength, isMax);
+            boolean improved =
+                    PlaqueThresholdCCState.INSTANCE.update(jobId, handle, thresholdBytes, thresholdLength, isMax);
             if (improved) {
-                ICCMessageBroker broker =
-                        (ICCMessageBroker) appCtx.getServiceContext().getMessageBroker();
+                ICCMessageBroker broker = (ICCMessageBroker) appCtx.getServiceContext().getMessageBroker();
                 byte[] globalSnapshot = PlaqueThresholdCCState.INSTANCE.getSnapshot(jobId, handle);
                 if (globalSnapshot != null) {
-                    PlaqueThresholdBroadcastMessage broadcast =
-                            new PlaqueThresholdBroadcastMessage(jobId, handle, globalSnapshot,
-                                    globalSnapshot.length, isMax);
+                    PlaqueThresholdBroadcastMessage broadcast = new PlaqueThresholdBroadcastMessage(jobId, handle,
+                            globalSnapshot, globalSnapshot.length, isMax);
                     Set<String> nodes = appCtx.getClusterStateManager().getParticipantNodes();
                     for (String nodeId : nodes) {
                         try {

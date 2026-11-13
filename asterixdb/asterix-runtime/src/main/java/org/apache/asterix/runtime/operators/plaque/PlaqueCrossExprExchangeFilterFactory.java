@@ -23,8 +23,17 @@ public class PlaqueCrossExprExchangeFilterFactory implements IPlaqueExchangeFilt
 
     private static final long serialVersionUID = 1L;
 
-    public enum CombineOp { ADD, SUBTRACT, MULTIPLY, DIVIDE }
-    public enum FilterDirection { GREATER, LESS }
+    public enum CombineOp {
+        ADD,
+        SUBTRACT,
+        MULTIPLY,
+        DIVIDE
+    }
+
+    public enum FilterDirection {
+        GREATER,
+        LESS
+    }
 
     private final String thresholdHandle;
     private final String buildSideHandle;
@@ -48,8 +57,8 @@ public class PlaqueCrossExprExchangeFilterFactory implements IPlaqueExchangeFilt
                 PlaqueThresholdRegistry.INSTANCE.getOrCreate(jobId, thresholdHandle, true);
         PlaqueBuildSideMinState buildSideState =
                 PlaqueThresholdRegistry.INSTANCE.getBuildSideMinState(jobId, buildSideHandle);
-        return new PlaqueCrossExprExchangeFilter(thresholdState, buildSideState, probeColumnIdx,
-                combineOp, filterDirection, jobId, thresholdHandle);
+        return new PlaqueCrossExprExchangeFilter(thresholdState, buildSideState, probeColumnIdx, combineOp,
+                filterDirection, jobId, thresholdHandle);
     }
 
     private static final class PlaqueCrossExprExchangeFilter implements IPlaqueExchangeFilter {
@@ -68,15 +77,14 @@ public class PlaqueCrossExprExchangeFilterFactory implements IPlaqueExchangeFilt
         private long uninitTuples;
 
         // Cached state to avoid per-tuple overhead
-        private boolean stateReady;       // true once both threshold and build-side are available
-        private double cachedT;           // cached threshold value (re-read periodically)
-        private double[] cachedBounds;    // precomputed bound per destination partition
-        private long refreshCounter;      // refresh cached threshold every N tuples
+        private boolean stateReady; // true once both threshold and build-side are available
+        private double cachedT; // cached threshold value (re-read periodically)
+        private double[] cachedBounds; // precomputed bound per destination partition
+        private long refreshCounter; // refresh cached threshold every N tuples
         private static final long REFRESH_INTERVAL = 4096;
 
         PlaqueCrossExprExchangeFilter(PlaqueThresholdState thresholdState, PlaqueBuildSideMinState buildSideState,
-                int probeColumnIdx, CombineOp combineOp, FilterDirection filterDirection,
-                JobId jobId, String handle) {
+                int probeColumnIdx, CombineOp combineOp, FilterDirection filterDirection, JobId jobId, String handle) {
             this.thresholdState = thresholdState;
             this.buildSideState = buildSideState;
             this.probeColumnIdx = probeColumnIdx;
@@ -122,11 +130,16 @@ public class PlaqueCrossExprExchangeFilterFactory implements IPlaqueExchangeFilt
 
         private double computeBound(double t, double c) {
             switch (combineOp) {
-                case ADD: return t + c;
-                case SUBTRACT: return t - c;
-                case MULTIPLY: return t * c;
-                case DIVIDE: return c == 0 ? Double.NaN : t / c;
-                default: return Double.NaN;
+                case ADD:
+                    return t + c;
+                case SUBTRACT:
+                    return t - c;
+                case MULTIPLY:
+                    return t * c;
+                case DIVIDE:
+                    return c == 0 ? Double.NaN : t / c;
+                default:
+                    return Double.NaN;
             }
         }
 
@@ -179,39 +192,45 @@ public class PlaqueCrossExprExchangeFilterFactory implements IPlaqueExchangeFilt
             byte typeTag = data[offset];
             switch (typeTag) {
                 case 12: // DOUBLE
-                    if (len < 9) return Double.NaN;
+                    if (len < 9)
+                        return Double.NaN;
                     long dBits = 0;
                     for (int i = 1; i <= 8; i++) {
                         dBits = (dBits << 8) | (data[offset + i] & 0xFF);
                     }
                     return Double.longBitsToDouble(dBits);
                 case 11: // FLOAT
-                    if (len < 5) return Double.NaN;
+                    if (len < 5)
+                        return Double.NaN;
                     int fBits = 0;
                     for (int i = 1; i <= 4; i++) {
                         fBits = (fBits << 8) | (data[offset + i] & 0xFF);
                     }
                     return Float.intBitsToFloat(fBits);
                 case 4: // BIGINT
-                    if (len < 9) return Double.NaN;
+                    if (len < 9)
+                        return Double.NaN;
                     long lVal = 0;
                     for (int i = 1; i <= 8; i++) {
                         lVal = (lVal << 8) | (data[offset + i] & 0xFF);
                     }
                     return (double) lVal;
                 case 3: // INTEGER
-                    if (len < 5) return Double.NaN;
+                    if (len < 5)
+                        return Double.NaN;
                     int iVal = 0;
                     for (int i = 1; i <= 4; i++) {
                         iVal = (iVal << 8) | (data[offset + i] & 0xFF);
                     }
                     return (double) iVal;
                 case 2: // SMALLINT
-                    if (len < 3) return Double.NaN;
+                    if (len < 3)
+                        return Double.NaN;
                     short sVal = (short) (((data[offset + 1] & 0xFF) << 8) | (data[offset + 2] & 0xFF));
                     return (double) sVal;
                 case 1: // TINYINT
-                    if (len < 2) return Double.NaN;
+                    if (len < 2)
+                        return Double.NaN;
                     return (double) data[offset + 1];
                 default:
                     return Double.NaN;

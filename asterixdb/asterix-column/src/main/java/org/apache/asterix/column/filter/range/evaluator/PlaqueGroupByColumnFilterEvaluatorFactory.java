@@ -68,8 +68,8 @@ public class PlaqueGroupByColumnFilterEvaluatorFactory implements IColumnRangeFi
             state = PlaqueThresholdRegistry.INSTANCE.getOrCreateGroupState(jobId, handle, isMax);
         }
 
-        return new PlaqueGroupByColumnFilterEvaluator(
-                groupMinAccessor, groupMaxAccessor, aggAccessor, state, handle, isMax);
+        return new PlaqueGroupByColumnFilterEvaluator(groupMinAccessor, groupMaxAccessor, aggAccessor, state, handle,
+                isMax);
     }
 
     @Override

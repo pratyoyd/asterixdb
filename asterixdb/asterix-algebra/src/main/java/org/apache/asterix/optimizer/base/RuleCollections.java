@@ -74,6 +74,7 @@ import org.apache.asterix.optimizer.rules.MetaFunctionToMetaVariableRule;
 import org.apache.asterix.optimizer.rules.NestGroupByRule;
 import org.apache.asterix.optimizer.rules.NormalizeWritingPathRule;
 import org.apache.asterix.optimizer.rules.PlaqueCrossExprJobGenRule;
+import org.apache.asterix.optimizer.rules.PlaqueGroupByJobGenRule;
 import org.apache.asterix.optimizer.rules.PlaquePageFilterRule;
 import org.apache.asterix.optimizer.rules.PlaqueRewriteRule;
 import org.apache.asterix.optimizer.rules.ProtectClusterByPlaceholderRule;
@@ -462,6 +463,8 @@ public final class RuleCollections {
         // Re-infer all types, so that, e.g., the effect of not-is-null is propagated
         prepareForJobGenRewrites.add(new ReinferAllTypesRule());
         prepareForJobGenRewrites.add(new PushGroupByIntoSortRule());
+        // must run after PushGroupByIntoSortRule: swaps SortGroupByPOperator -> PlaqueSortGroupByPOperator
+        prepareForJobGenRewrites.add(new PlaqueGroupByJobGenRule());
 
         prepareForJobGenRewrites.add(new ReplaceSortBeforeINLJRule());
         prepareForJobGenRewrites.add(new ReplaceSortBeforePreClusteredGroupByRule());

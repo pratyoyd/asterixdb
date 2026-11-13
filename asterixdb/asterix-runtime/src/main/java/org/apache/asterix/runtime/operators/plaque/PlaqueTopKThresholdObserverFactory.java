@@ -51,9 +51,8 @@ public class PlaqueTopKThresholdObserverFactory implements ITopKThresholdObserve
             updateCount++;
 
             if (updateCount <= 3 || updateCount % 10000 == 0) {
-                LOGGER.warning(String.format(
-                        "PLAQUE_TOPK_THRESHOLD [job=%s, handle=%s] update #%d",
-                        jobId, handle, updateCount));
+                LOGGER.warning(String.format("PLAQUE_TOPK_THRESHOLD [job=%s, handle=%s] update #%d", jobId, handle,
+                        updateCount));
             }
         }
     }

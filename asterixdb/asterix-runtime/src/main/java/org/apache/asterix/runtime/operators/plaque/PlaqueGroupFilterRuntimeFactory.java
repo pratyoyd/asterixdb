@@ -42,8 +42,8 @@ public class PlaqueGroupFilterRuntimeFactory implements IPushRuntimeFactory {
 
     @Override
     public String toString() {
-        return "plaque-group-filter [gCol=" + groupColumnIdx + ", aCol=" + aggColumnIdx + ", "
-                + (isMax ? "MAX" : "MIN") + ", h=" + handle + "]";
+        return "plaque-group-filter [gCol=" + groupColumnIdx + ", aCol=" + aggColumnIdx + ", " + (isMax ? "MAX" : "MIN")
+                + ", h=" + handle + "]";
     }
 
     private static final class PlaqueGroupFilterRuntime extends AbstractOneInputOneOutputOneFramePushRuntime {

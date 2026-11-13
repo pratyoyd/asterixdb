@@ -19,6 +19,7 @@ import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogi
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AggregateOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AssignOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.DataSourceScanOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator;
 import org.apache.hyracks.algebricks.core.rewriter.base.IAlgebraicRewriteRule;
 
@@ -54,6 +55,10 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
 
         if (op.getOperatorTag() == LogicalOperatorTag.ORDER) {
             return handleTopKSort(opRef, context);
+        }
+
+        if (op.getOperatorTag() == LogicalOperatorTag.GROUP) {
+            return handleGroupByPageFilter(opRef, context);
         }
 
         return false;
@@ -173,6 +178,60 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
             orderOp.getAnnotations().put("plaque-topk-page-filter-set", true);
         }
         return result;
+    }
+
+    private boolean handleGroupByPageFilter(Mutable<ILogicalOperator> opRef, IOptimizationContext context)
+            throws AlgebricksException {
+        GroupByOperator gByOp = (GroupByOperator) opRef.getValue();
+        if (!Boolean.TRUE.equals(gByOp.getAnnotations().get("plaque-groupby-aggregate"))) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(gByOp.getAnnotations().get("plaque-page-filter-set"))) {
+            return false;
+        }
+
+        String handle = (String) gByOp.getAnnotations().get("plaque-handle");
+        Boolean isMax = (Boolean) gByOp.getAnnotations().get("plaque-isMax");
+        LogicalVariable filteredVar = (LogicalVariable) gByOp.getAnnotations().get("plaque-filteredVar");
+        LogicalVariable groupKeyVar = (LogicalVariable) gByOp.getAnnotations().get("plaque-groupKeyVar");
+
+        if (handle == null || isMax == null || filteredVar == null || groupKeyVar == null) {
+            return false;
+        }
+
+        // Find field names for both the aggregate and group key columns
+        String aggFieldName = findFieldName(gByOp.getInputs().get(0), filteredVar);
+        String groupFieldName = findFieldName(gByOp.getInputs().get(0), groupKeyVar);
+        System.out.println("PLAQUE_GROUPBY_PAGE_FILTER: handle=" + handle + " aggField=" + aggFieldName
+                + " groupField=" + groupFieldName);
+        if (aggFieldName == null || groupFieldName == null) {
+            return false;
+        }
+
+        DataSourceScanOperator scanOp = findDataSourceScan(gByOp.getInputs().get(0));
+        if (scanOp == null) {
+            return false;
+        }
+
+        IProjectionFiltrationInfo info = scanOp.getProjectionFiltrationInfo();
+        if (!(info instanceof ColumnDatasetProjectionFiltrationInfo)) {
+            return false;
+        }
+
+        ARecordType aggColumnPath = new ARecordType("plaque_groupby_agg_path",
+                new String[] { aggFieldName },
+                new IAType[] { BuiltinType.ANY }, false);
+        ARecordType groupColumnPath = new ARecordType("plaque_groupby_grp_path",
+                new String[] { groupFieldName },
+                new IAType[] { BuiltinType.ANY }, false);
+
+        ColumnDatasetProjectionFiltrationInfo columnInfo = (ColumnDatasetProjectionFiltrationInfo) info;
+        columnInfo.setPlaqueGroupByInfo(handle, isMax, aggColumnPath, groupColumnPath);
+        System.out.println("PLAQUE_GROUPBY_PAGE_FILTER: SUCCESS — set on scan for aggField=" + aggFieldName
+                + " groupField=" + groupFieldName);
+
+        gByOp.getAnnotations().put("plaque-page-filter-set", true);
+        return true;
     }
 
     private boolean attachCrossExprPageFilter(AbstractLogicalOperator annotatedOp, Mutable<ILogicalOperator> walkRef,

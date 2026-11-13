@@ -61,8 +61,8 @@ public class PlaqueThetaJoinMismatchWriterFactory implements INLJMismatchWriterF
             this.outerJoinColumnIdx = outerJoinColumnIdx;
             this.jobId = jobId;
             this.handle = handle;
-            this.localComparator = new AGenericAscBinaryComparatorFactory(
-                    BuiltinType.ANY, BuiltinType.ANY).createBinaryComparator();
+            this.localComparator =
+                    new AGenericAscBinaryComparatorFactory(BuiltinType.ANY, BuiltinType.ANY).createBinaryComparator();
             this.localBest = new byte[64];
             this.localBestInitialized = false;
         }
@@ -80,8 +80,7 @@ public class PlaqueThetaJoinMismatchWriterFactory implements INLJMismatchWriterF
             }
             byte[] data = accessor.getBuffer().array();
             byte typeTag = data[fStart];
-            if (typeTag == ATypeTag.SERIALIZED_NULL_TYPE_TAG
-                    || typeTag == ATypeTag.SERIALIZED_MISSING_TYPE_TAG
+            if (typeTag == ATypeTag.SERIALIZED_NULL_TYPE_TAG || typeTag == ATypeTag.SERIALIZED_MISSING_TYPE_TAG
                     || typeTag == ATypeTag.SERIALIZED_SYSTEM_NULL_TYPE_TAG) {
                 return;
             }

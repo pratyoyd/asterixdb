@@ -6,8 +6,8 @@ import java.util.logging.Logger;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.runtime.operators.plaque.PlaqueGroupThresholdState;
 import org.apache.asterix.runtime.operators.plaque.PlaqueGroupThresholdState.ByteArrayWrapper;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 import org.apache.hyracks.api.job.JobId;
@@ -40,9 +40,8 @@ public class PlaqueGroupByMinMaxAggregateFunction extends SqlMinMaxAggregateFunc
     private int lastGroupKeyLen;
 
     public PlaqueGroupByMinMaxAggregateFunction(IScalarEvaluatorFactory[] args, IEvaluatorContext context,
-            boolean isMin, SourceLocation sourceLoc, IAType aggFieldType,
-            PlaqueGroupThresholdState groupThresholdState, int groupKeyColumnIndex,
-            JobId jobId, String handle, int propagationInterval) throws HyracksDataException {
+            boolean isMin, SourceLocation sourceLoc, IAType aggFieldType, PlaqueGroupThresholdState groupThresholdState,
+            int groupKeyColumnIndex, JobId jobId, String handle, int propagationInterval) throws HyracksDataException {
         super(args, context, isMin, Type.LOCAL, sourceLoc, aggFieldType);
         this.groupThresholdState = groupThresholdState;
         this.groupKeyColumnIndex = groupKeyColumnIndex;
@@ -81,8 +80,8 @@ public class PlaqueGroupByMinMaxAggregateFunction extends SqlMinMaxAggregateFunc
             return;
         }
         thresholdUpdateCount++;
-        groupThresholdState.update(lastGroupKeyData, lastGroupKeyStart, lastGroupKeyLen,
-                outputVal.getByteArray(), outputVal.getStartOffset(), outputVal.getLength());
+        groupThresholdState.update(lastGroupKeyData, lastGroupKeyStart, lastGroupKeyLen, outputVal.getByteArray(),
+                outputVal.getStartOffset(), outputVal.getLength());
     }
 
     @Override
@@ -104,8 +103,8 @@ public class PlaqueGroupByMinMaxAggregateFunction extends SqlMinMaxAggregateFunc
                 byte[] thresholdSnapshot = groupThresholdState.getGroupThresholdSnapshot(gk);
                 if (thresholdSnapshot != null) {
                     byte[] groupKeyBytes = gk.getBytes();
-                    propagator.propagate(jobId, handle, groupKeyBytes, groupKeyBytes.length,
-                            thresholdSnapshot, thresholdSnapshot.length, groupThresholdState.isMax());
+                    propagator.propagate(jobId, handle, groupKeyBytes, groupKeyBytes.length, thresholdSnapshot,
+                            thresholdSnapshot.length, groupThresholdState.isMax());
                 }
             }
             groupThresholdState.clearDirty();

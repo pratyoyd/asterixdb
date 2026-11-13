@@ -10,6 +10,7 @@ public final class PlaqueThresholdRegistry {
 
     private final ConcurrentHashMap<String, PlaqueThresholdState> states = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PlaqueBuildSideMinState> buildSideStates = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, PlaqueGroupThresholdState> groupStates = new ConcurrentHashMap<>();
 
     private PlaqueThresholdRegistry() {
     }
@@ -37,10 +38,26 @@ public final class PlaqueThresholdRegistry {
         return buildSideStates.get(makeKey(jobId, handle));
     }
 
+    public PlaqueGroupThresholdState getOrCreateGroupState(JobId jobId, String handle, boolean isMax) {
+        String key = makeKey(jobId, handle);
+        return groupStates.computeIfAbsent(key, k -> new PlaqueGroupThresholdState(isMax));
+    }
+
+    public PlaqueGroupThresholdState getGroupState(JobId jobId, String handle) {
+        return groupStates.get(makeKey(jobId, handle));
+    }
+
+    public void mergeGlobalGroup(JobId jobId, String handle, byte[] groupKey, int gLen, byte[] thresholdBytes, int tLen,
+            boolean isMax) throws org.apache.hyracks.api.exceptions.HyracksDataException {
+        PlaqueGroupThresholdState state = getOrCreateGroupState(jobId, handle, isMax);
+        state.mergeGlobal(groupKey, 0, gLen, thresholdBytes, 0, tLen);
+    }
+
     public void removeJob(JobId jobId) {
         String prefix = jobId.toString() + ":";
         states.entrySet().removeIf(e -> e.getKey().startsWith(prefix));
         buildSideStates.entrySet().removeIf(e -> e.getKey().startsWith(prefix));
+        groupStates.entrySet().removeIf(e -> e.getKey().startsWith(prefix));
     }
 
     public void mergeGlobal(JobId jobId, String handle, byte[] thresholdBytes, int len, boolean isMax)

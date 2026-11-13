@@ -90,39 +90,45 @@ public class PlaqueBuildSideObserverFactory implements IBuildSideObserverFactory
         private static double extractNumericValue(byte[] data, int offset, int len, byte typeTag) {
             switch (typeTag) {
                 case 12: // DOUBLE
-                    if (len < 9) return Double.NaN;
+                    if (len < 9)
+                        return Double.NaN;
                     long dBits = 0;
                     for (int i = 1; i <= 8; i++) {
                         dBits = (dBits << 8) | (data[offset + i] & 0xFF);
                     }
                     return Double.longBitsToDouble(dBits);
                 case 11: // FLOAT
-                    if (len < 5) return Double.NaN;
+                    if (len < 5)
+                        return Double.NaN;
                     int fBits = 0;
                     for (int i = 1; i <= 4; i++) {
                         fBits = (fBits << 8) | (data[offset + i] & 0xFF);
                     }
                     return Float.intBitsToFloat(fBits);
                 case 4: // BIGINT
-                    if (len < 9) return Double.NaN;
+                    if (len < 9)
+                        return Double.NaN;
                     long lVal = 0;
                     for (int i = 1; i <= 8; i++) {
                         lVal = (lVal << 8) | (data[offset + i] & 0xFF);
                     }
                     return (double) lVal;
                 case 3: // INTEGER
-                    if (len < 5) return Double.NaN;
+                    if (len < 5)
+                        return Double.NaN;
                     int iVal = 0;
                     for (int i = 1; i <= 4; i++) {
                         iVal = (iVal << 8) | (data[offset + i] & 0xFF);
                     }
                     return (double) iVal;
                 case 2: // SMALLINT
-                    if (len < 3) return Double.NaN;
+                    if (len < 3)
+                        return Double.NaN;
                     short sVal = (short) (((data[offset + 1] & 0xFF) << 8) | (data[offset + 2] & 0xFF));
                     return (double) sVal;
                 case 1: // TINYINT
-                    if (len < 2) return Double.NaN;
+                    if (len < 2)
+                        return Double.NaN;
                     return (double) data[offset + 1];
                 default:
                     return Double.NaN;
@@ -132,10 +138,8 @@ public class PlaqueBuildSideObserverFactory implements IBuildSideObserverFactory
         @Override
         public void publishResult() throws HyracksDataException {
             state.publish(partitionIdx, localBound);
-            LOGGER.warning(String.format(
-                    "PLAQUE_BUILD_OBSERVER [job=%s, handle=%s, partition=%d] observed=%d, %s=%.4f",
-                    jobId, handle, partitionIdx, observedCount,
-                    trackMin ? "min" : "max", localBound));
+            LOGGER.warning(String.format("PLAQUE_BUILD_OBSERVER [job=%s, handle=%s, partition=%d] observed=%d, %s=%.4f",
+                    jobId, handle, partitionIdx, observedCount, trackMin ? "min" : "max", localBound));
         }
     }
 }

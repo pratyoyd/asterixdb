@@ -60,13 +60,13 @@ public class PlaqueColumnFilterEvaluatorFactory implements IColumnRangeFilterEva
 
         int colIdx = -1;
         if (pageAccessor instanceof org.apache.asterix.column.filter.range.accessor.ColumnRangeFilterValueAccessor) {
-            colIdx = ((org.apache.asterix.column.filter.range.accessor.ColumnRangeFilterValueAccessor) pageAccessor).getColumnIndex();
+            colIdx = ((org.apache.asterix.column.filter.range.accessor.ColumnRangeFilterValueAccessor) pageAccessor)
+                    .getColumnIndex();
         }
-        System.out.println("PLAQUE_PAGE_FILTER_CREATE: handle=" + handle
-                + " colIdx=" + colIdx
-                + " accessorIdentity=" + System.identityHashCode(pageAccessor)
-                + " inList=" + filterAccessorProvider.getFilterAccessors().contains(pageAccessor)
-                + " listSize=" + filterAccessorProvider.getFilterAccessors().size());
+        System.out.println("PLAQUE_PAGE_FILTER_CREATE: handle=" + handle + " colIdx=" + colIdx + " accessorIdentity="
+                + System.identityHashCode(pageAccessor) + " inList="
+                + filterAccessorProvider.getFilterAccessors().contains(pageAccessor) + " listSize="
+                + filterAccessorProvider.getFilterAccessors().size());
 
         PlaqueColumnFilterEvaluator evaluator = new PlaqueColumnFilterEvaluator(pageAccessor, handle, isMax);
         evaluator.setThresholdState(state);
@@ -98,9 +98,8 @@ public class PlaqueColumnFilterEvaluatorFactory implements IColumnRangeFilterEva
         public boolean evaluate() throws HyracksDataException {
             pagesEvaluated++;
             if (pagesEvaluated % 1000 == 0 || pagesEvaluated == 1) {
-                System.out.println("PLAQUE_PAGE_FILTER_EVAL: pages=" + pagesEvaluated
-                        + " skipped=" + pagesSkipped + " thresholdInit="
-                        + (thresholdState != null && thresholdState.isInitialized()));
+                System.out.println("PLAQUE_PAGE_FILTER_EVAL: pages=" + pagesEvaluated + " skipped=" + pagesSkipped
+                        + " thresholdInit=" + (thresholdState != null && thresholdState.isInitialized()));
             }
 
             if (thresholdState == null) {
@@ -125,13 +124,11 @@ public class PlaqueColumnFilterEvaluatorFactory implements IColumnRangeFilterEva
             long pageValue = pageAccessor.getNormalizedValue();
 
             if (pagesEvaluated <= 1005 && pagesEvaluated >= 1000) {
-                System.out.println("PLAQUE_PAGE_FILTER_DEBUG: pageValue=" + pageValue
-                        + " (" + Double.longBitsToDouble(pageValue) + ")"
-                        + " threshold=" + normalizedThreshold
-                        + " (" + Double.longBitsToDouble(normalizedThreshold) + ")"
-                        + " snapshotLen=" + snapshot.length
-                        + " typeTag=" + (snapshot.length > 0 ? (snapshot[0] & 0xFF) : "?"
-                        + " pass=" + (pageValue >= normalizedThreshold)));
+                System.out.println("PLAQUE_PAGE_FILTER_DEBUG: pageValue=" + pageValue + " ("
+                        + Double.longBitsToDouble(pageValue) + ")" + " threshold=" + normalizedThreshold + " ("
+                        + Double.longBitsToDouble(normalizedThreshold) + ")" + " snapshotLen=" + snapshot.length
+                        + " typeTag=" + (snapshot.length > 0 ? (snapshot[0] & 0xFF)
+                                : "?" + " pass=" + (pageValue >= normalizedThreshold)));
             }
 
             boolean pass;
@@ -146,8 +143,8 @@ public class PlaqueColumnFilterEvaluatorFactory implements IColumnRangeFilterEva
             if (!pass) {
                 pagesSkipped++;
                 if (pagesSkipped <= 5) {
-                    System.out.println("PLAQUE_PAGE_FILTER_SKIP: pageValue=" + pageValue
-                            + " threshold=" + normalizedThreshold + " pagesSkipped=" + pagesSkipped);
+                    System.out.println("PLAQUE_PAGE_FILTER_SKIP: pageValue=" + pageValue + " threshold="
+                            + normalizedThreshold + " pagesSkipped=" + pagesSkipped);
                 }
             }
             return pass;
@@ -209,8 +206,7 @@ public class PlaqueColumnFilterEvaluatorFactory implements IColumnRangeFilterEva
                     long nk = 0;
                     int strOffset = 1; // skip type tag byte; length prefix starts here
                     int utfLen = org.apache.hyracks.util.string.UTF8StringUtil.getUTFLength(data, strOffset);
-                    strOffset += org.apache.hyracks.util.string.UTF8StringUtil
-                            .getNumBytesToStoreLength(utfLen);
+                    strOffset += org.apache.hyracks.util.string.UTF8StringUtil.getNumBytesToStoreLength(utfLen);
                     int strEnd = data.length;
                     for (int i = 0; i < 4; i++) {
                         nk <<= 16;

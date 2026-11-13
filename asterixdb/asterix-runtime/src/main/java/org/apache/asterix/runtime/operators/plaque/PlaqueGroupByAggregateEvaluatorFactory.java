@@ -6,9 +6,9 @@ import org.apache.asterix.runtime.aggregates.std.PlaqueGroupByMinMaxAggregateFun
 import org.apache.asterix.runtime.message.PlaqueGroupThresholdUpdateMessage;
 import org.apache.hyracks.algebricks.runtime.base.IAggregateEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IAggregateEvaluatorFactory;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
 import org.apache.hyracks.api.application.INCServiceContext;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 import org.apache.hyracks.api.job.JobId;
@@ -32,8 +32,8 @@ public class PlaqueGroupByAggregateEvaluatorFactory implements IAggregateEvaluat
     private final int groupKeyColumnIndex;
 
     public PlaqueGroupByAggregateEvaluatorFactory(IScalarEvaluatorFactory[] args, boolean isMin,
-            SourceLocation sourceLoc, IAType aggFieldType, String handle, boolean isMax,
-            boolean propagationEnabled, int propagationInterval, int groupKeyColumnIndex) {
+            SourceLocation sourceLoc, IAType aggFieldType, String handle, boolean isMax, boolean propagationEnabled,
+            int propagationInterval, int groupKeyColumnIndex) {
         this.args = args;
         this.isMin = isMin;
         this.sourceLoc = sourceLoc;
@@ -49,9 +49,8 @@ public class PlaqueGroupByAggregateEvaluatorFactory implements IAggregateEvaluat
     public IAggregateEvaluator createAggregateEvaluator(IEvaluatorContext ctx) throws HyracksDataException {
         JobId jobId = ctx.getTaskContext().getJobletContext().getJobId();
         PlaqueGroupThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreateGroupState(jobId, handle, isMax);
-        PlaqueGroupByMinMaxAggregateFunction agg = new PlaqueGroupByMinMaxAggregateFunction(
-                args, ctx, isMin, sourceLoc, aggFieldType, state, groupKeyColumnIndex, jobId, handle,
-                propagationInterval);
+        PlaqueGroupByMinMaxAggregateFunction agg = new PlaqueGroupByMinMaxAggregateFunction(args, ctx, isMin, sourceLoc,
+                aggFieldType, state, groupKeyColumnIndex, jobId, handle, propagationInterval);
         if (propagationEnabled) {
             try {
                 INCServiceContext serviceCtx =

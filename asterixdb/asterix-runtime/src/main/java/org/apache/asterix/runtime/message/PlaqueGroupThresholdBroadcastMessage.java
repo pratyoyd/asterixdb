@@ -33,8 +33,8 @@ public class PlaqueGroupThresholdBroadcastMessage implements INcAddressedMessage
 
     @Override
     public void handle(INcApplicationContext appCtx) throws HyracksDataException, InterruptedException {
-        PlaqueThresholdRegistry.INSTANCE.mergeGlobalGroup(
-                jobId, handle, groupKeyBytes, groupKeyLength, thresholdBytes, thresholdLength, isMax);
+        PlaqueThresholdRegistry.INSTANCE.mergeGlobalGroup(jobId, handle, groupKeyBytes, groupKeyLength, thresholdBytes,
+                thresholdLength, isMax);
     }
 
     @Override

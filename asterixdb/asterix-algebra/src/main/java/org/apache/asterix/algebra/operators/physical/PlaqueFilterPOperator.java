@@ -2,6 +2,7 @@ package org.apache.asterix.algebra.operators.physical;
 
 import org.apache.asterix.runtime.operators.plaque.PlaqueFilterRuntimeFactory;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
+import org.apache.hyracks.algebricks.runtime.operators.std.StreamProjectRuntimeFactory;
 import org.apache.hyracks.algebricks.core.algebra.base.IHyracksJobBuilder;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -77,7 +78,14 @@ public class PlaqueFilterPOperator extends AbstractPhysicalOperator {
             throws AlgebricksException {
         int columnIdx = inputSchemas[0].findVariable(filteredVar);
         if (columnIdx < 0) {
-            throw new AlgebricksException("Filtered variable not found in input schema: " + filteredVar);
+            // CBO sampling query may strip variables — fall back to pass-through
+            RecordDescriptor recDescFallback = JobGenHelper.mkRecordDescriptor(
+                    context.getTypeEnvironment(op), opSchema, context);
+            builder.contributeMicroOperator(op, new StreamProjectRuntimeFactory(
+                    inputSchemas[0].getSize()), recDescFallback);
+            ILogicalOperator srcFallback = op.getInputs().get(0).getValue();
+            builder.contributeGraphEdge(srcFallback, 0, op, 0);
+            return;
         }
         PlaqueFilterRuntimeFactory runtime = new PlaqueFilterRuntimeFactory(columnIdx, isMax, handle, strictComparison);
         RecordDescriptor recDesc = JobGenHelper.mkRecordDescriptor(

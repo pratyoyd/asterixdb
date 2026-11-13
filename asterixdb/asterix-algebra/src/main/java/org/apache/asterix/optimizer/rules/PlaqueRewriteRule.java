@@ -8,6 +8,8 @@ import org.apache.asterix.algebra.operators.physical.PlaqueAggregatePOperator;
 import org.apache.asterix.algebra.operators.physical.PlaqueCrossExprExchangePOperator;
 import org.apache.asterix.algebra.operators.physical.PlaqueCrossExprHashJoinPOperator;
 import org.apache.asterix.algebra.operators.physical.PlaqueFilterPOperator;
+import org.apache.asterix.algebra.operators.physical.PlaqueGroupByAggregatePOperator;
+import org.apache.asterix.algebra.operators.physical.PlaqueGroupFilterPOperator;
 import org.apache.asterix.algebra.operators.physical.PlaqueThetaJoinPOperator;
 import org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory;
 import org.apache.asterix.om.functions.BuiltinFunctions;
@@ -16,6 +18,7 @@ import org.apache.commons.lang3.mutable.MutableObject;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
+import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalExpressionTag;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalOperatorTag;
@@ -31,6 +34,7 @@ import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractBina
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AggregateOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AssignOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.SelectOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.visitors.VariableUtilities;
@@ -74,6 +78,11 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         if (op.getOperatorTag() == LogicalOperatorTag.ORDER) {
             System.out.println("PLAQUE_TOPK: visiting ORDER operator");
             return rewriteTopKCrossTableExpression(opRef, context, physConf);
+        }
+
+        // Path 4: GROUP BY with MIN/MAX aggregate
+        if (op.getOperatorTag() == LogicalOperatorTag.GROUP) {
+            return handleGroupBy(opRef, context, physConf);
         }
 
         if (op.getOperatorTag() != LogicalOperatorTag.AGGREGATE) {
@@ -749,5 +758,141 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
                 + " probeVar=" + probeVar + " buildVar=" + buildVar);
 
         return true;
+    }
+
+    // ==================== GROUP BY Path ====================
+
+    private boolean handleGroupBy(Mutable<ILogicalOperator> opRef, IOptimizationContext context,
+            PhysicalOptimizationConfig physConf) throws AlgebricksException {
+        GroupByOperator gByOp = (GroupByOperator) opRef.getValue();
+
+        // Don't rewrite twice
+        if (Boolean.TRUE.equals(gByOp.getAnnotations().get("plaque-groupby-aggregate"))) {
+            return false;
+        }
+
+        // Need exactly 1 group key that is a variable reference
+        if (gByOp.getGByList().size() != 1) {
+            return false;
+        }
+        ILogicalExpression gByExpr = gByOp.getGByList().get(0).second.getValue();
+        if (!(gByExpr instanceof VariableReferenceExpression)) {
+            return false;
+        }
+        LogicalVariable groupKeyVar = ((VariableReferenceExpression) gByExpr).getVariableReference();
+
+        // Walk into nested plan to find the aggregate
+        if (gByOp.getNestedPlans().isEmpty()) {
+            return false;
+        }
+        ILogicalPlan nestedPlan = gByOp.getNestedPlans().get(0);
+        if (nestedPlan.getRoots().isEmpty()) {
+            return false;
+        }
+        ILogicalOperator nestedRoot = nestedPlan.getRoots().get(0).getValue();
+        if (nestedRoot.getOperatorTag() != LogicalOperatorTag.AGGREGATE) {
+            return false;
+        }
+        AggregateOperator nestedAgg = (AggregateOperator) nestedRoot;
+
+        // Find a LOCAL_SQL_MAX or LOCAL_SQL_MIN in the nested aggregate
+        int eligibleIdx = -1;
+        boolean isMax = false;
+        LogicalVariable filteredVar = null;
+        for (int i = 0; i < nestedAgg.getExpressions().size(); i++) {
+            ILogicalExpression expr = nestedAgg.getExpressions().get(i).getValue();
+            if (!(expr instanceof AggregateFunctionCallExpression)) continue;
+            AggregateFunctionCallExpression aggExpr = (AggregateFunctionCallExpression) expr;
+            FunctionIdentifier fid = aggExpr.getFunctionIdentifier();
+            if (fid.equals(BuiltinFunctions.LOCAL_SQL_MAX) || fid.equals(BuiltinFunctions.LOCAL_SQL_MIN)) {
+                if (aggExpr.getArguments().size() == 1
+                        && aggExpr.getArguments().get(0).getValue() instanceof VariableReferenceExpression) {
+                    eligibleIdx = i;
+                    isMax = fid.equals(BuiltinFunctions.LOCAL_SQL_MAX);
+                    filteredVar =
+                            ((VariableReferenceExpression) aggExpr.getArguments().get(0).getValue())
+                                    .getVariableReference();
+                    break;
+                }
+            }
+        }
+        if (eligibleIdx < 0 || filteredVar == null) {
+            return false;
+        }
+
+        String handle = "plaque-groupby-" + context.newVar();
+        boolean propagationEnabled = physConf.getPlaquePropagation();
+        int propagationInterval = physConf.getPlaquePropagationInterval();
+
+        // Annotate the GROUP BY operator
+        gByOp.getAnnotations().put("plaque-groupby-aggregate", true);
+        gByOp.getAnnotations().put(PLAQUE_HANDLE, handle);
+        gByOp.getAnnotations().put("plaque-isMax", isMax);
+        gByOp.getAnnotations().put("plaque-filteredVar", filteredVar);
+        gByOp.getAnnotations().put("plaque-groupKeyVar", groupKeyVar);
+        gByOp.getAnnotations().put("plaque-propagationEnabled", propagationEnabled);
+        gByOp.getAnnotations().put("plaque-propagationInterval", propagationInterval);
+
+        // Set physical operator on the nested aggregate
+        nestedAgg.setPhysicalOperator(new PlaqueGroupByAggregatePOperator(
+                handle, isMax, propagationEnabled, propagationInterval, groupKeyVar));
+
+        // Remove any scalar PLAQUE filter that was inserted into the nested plan
+        // (the scalar path fires on AGGREGATE before GROUP visits, inserting SELECT between
+        // AGGREGATE and NESTEDTUPLESOURCE, which breaks PushGroupByIntoSortRule)
+        rewriteGroupByNestedPlan(nestedAgg);
+
+        // Find filter insertion point below the GROUP BY's input
+        boolean pushThroughJoin = physConf.getPlaquePushThroughJoin();
+        Mutable<ILogicalOperator>[] insertionPoints = findInsertionPoints(
+                gByOp.getInputs().get(0), filteredVar, pushThroughJoin);
+        Mutable<ILogicalOperator> deepRef = insertionPoints[0];
+
+        if (deepRef != null) {
+            // Verify groupKeyVar is also live at the insertion point
+            Set<LogicalVariable> liveVars = new HashSet<>();
+            VariableUtilities.getLiveVariables(deepRef.getValue(), liveVars);
+            if (liveVars.contains(groupKeyVar)) {
+                SelectOperator groupFilter = createPlaqueGroupFilter(gByOp, deepRef, filteredVar,
+                        groupKeyVar, isMax, handle);
+                ILogicalOperator below = deepRef.getValue();
+                groupFilter.getInputs().add(new MutableObject<>(below));
+                deepRef.setValue(groupFilter);
+                context.computeAndSetTypeEnvironmentForOperator(groupFilter);
+            }
+        }
+
+        context.computeAndSetTypeEnvironmentForOperator(gByOp);
+        return true;
+    }
+
+    /**
+     * Remove scalar PLAQUE filter (SELECT with "plaque-filter" annotation) from the nested plan
+     * of a GROUP BY aggregate. This restores AGGREGATE -> NESTEDTUPLESOURCE which is required
+     * by PushGroupByIntoSortRule.
+     */
+    private void rewriteGroupByNestedPlan(AggregateOperator nestedAgg) {
+        if (nestedAgg.getInputs().isEmpty()) return;
+        ILogicalOperator child = nestedAgg.getInputs().get(0).getValue();
+        if (child.getOperatorTag() == LogicalOperatorTag.SELECT) {
+            SelectOperator selectChild = (SelectOperator) child;
+            if (Boolean.TRUE.equals(selectChild.getAnnotations().get(PLAQUE_FILTER))) {
+                // Bypass the select: connect aggregate directly to what's below it
+                nestedAgg.getInputs().set(0, selectChild.getInputs().get(0));
+            }
+        }
+    }
+
+    private SelectOperator createPlaqueGroupFilter(GroupByOperator gByOp,
+            Mutable<ILogicalOperator> insertionRef, LogicalVariable filteredVar,
+            LogicalVariable groupKeyVar, boolean isMax, String handle) {
+        SelectOperator filter = new SelectOperator(new MutableObject<>(ConstantExpression.TRUE));
+        filter.setSourceLocation(gByOp.getSourceLocation());
+        filter.setExecutionMode(
+                ((AbstractLogicalOperator) insertionRef.getValue()).getExecutionMode());
+        filter.getAnnotations().put("plaque-group-filter", true);
+        filter.getAnnotations().put(PLAQUE_HANDLE, handle);
+        filter.setPhysicalOperator(new PlaqueGroupFilterPOperator(filteredVar, groupKeyVar, isMax, handle));
+        return filter;
     }
 }

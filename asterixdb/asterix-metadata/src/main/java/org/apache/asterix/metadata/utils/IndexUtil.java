@@ -337,7 +337,13 @@ public class IndexUtil {
         // Compose PLAQUE page-level filter if present
         if (columnInfo.getPlaqueHandle() != null) {
             IColumnRangeFilterEvaluatorFactory plaqueFactory;
-            if (columnInfo.getPlaqueCrossExprBuildHandle() != null) {
+            if (columnInfo.isPlaqueGroupBy()) {
+                // GROUP BY page filter — needs both group and aggregate column accessors
+                plaqueFactory =
+                        new org.apache.asterix.column.filter.range.evaluator.PlaqueGroupByColumnFilterEvaluatorFactory(
+                                columnInfo.getPlaqueHandle(), columnInfo.isPlaqueIsMax(),
+                                columnInfo.getPlaqueColumnPath(), columnInfo.getPlaqueGroupByColumnPath());
+            } else if (columnInfo.getPlaqueCrossExprBuildHandle() != null) {
                 // Cross-expression page filter: uses t + c_min for bound
                 org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory.CombineOp combineOp =
                         org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory.CombineOp

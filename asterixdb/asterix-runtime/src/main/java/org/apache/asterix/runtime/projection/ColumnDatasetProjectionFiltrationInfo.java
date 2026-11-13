@@ -46,6 +46,10 @@ public class ColumnDatasetProjectionFiltrationInfo extends ExternalDatasetProjec
     private String plaqueCrossExprCombineOp;
     private String plaqueCrossExprFilterDirection;
 
+    // PLAQUE GROUP BY page filter metadata
+    private boolean plaqueGroupBy;
+    private ARecordType plaqueGroupByColumnPath;
+
     public ColumnDatasetProjectionFiltrationInfo(ARecordType recordRequestedType, ARecordType metaProjectedType,
             Map<String, FunctionCallInformation> sourceInformationMap, Map<ILogicalExpression, ARecordType> filterPaths,
             ILogicalExpression filterExpression, ILogicalExpression rangeFilterExpression) {
@@ -65,6 +69,8 @@ public class ColumnDatasetProjectionFiltrationInfo extends ExternalDatasetProjec
         plaqueCrossExprBuildHandle = other.plaqueCrossExprBuildHandle;
         plaqueCrossExprCombineOp = other.plaqueCrossExprCombineOp;
         plaqueCrossExprFilterDirection = other.plaqueCrossExprFilterDirection;
+        plaqueGroupBy = other.plaqueGroupBy;
+        plaqueGroupByColumnPath = other.plaqueGroupByColumnPath;
     }
 
     @Override
@@ -164,6 +170,23 @@ public class ColumnDatasetProjectionFiltrationInfo extends ExternalDatasetProjec
         this.plaqueCrossExprBuildHandle = buildHandle;
         this.plaqueCrossExprCombineOp = combineOp;
         this.plaqueCrossExprFilterDirection = filterDirection;
+    }
+
+    public void setPlaqueGroupByInfo(String handle, boolean isMax, ARecordType aggColumnPath,
+            ARecordType groupColumnPath) {
+        this.plaqueHandle = handle;
+        this.plaqueIsMax = isMax;
+        this.plaqueColumnPath = aggColumnPath;
+        this.plaqueGroupBy = true;
+        this.plaqueGroupByColumnPath = groupColumnPath;
+    }
+
+    public boolean isPlaqueGroupBy() {
+        return plaqueGroupBy;
+    }
+
+    public ARecordType getPlaqueGroupByColumnPath() {
+        return plaqueGroupByColumnPath;
     }
 
     public String getPlaqueCrossExprBuildHandle() {

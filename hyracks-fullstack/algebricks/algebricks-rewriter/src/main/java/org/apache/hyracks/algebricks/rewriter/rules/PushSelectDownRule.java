@@ -43,7 +43,8 @@ public class PushSelectDownRule implements IAlgebraicRewriteRule {
             return false;
         }
         SelectOperator selectOp = (SelectOperator) op;
-        if (Boolean.TRUE.equals(selectOp.getAnnotations().get("plaque-filter"))) {
+        if (Boolean.TRUE.equals(selectOp.getAnnotations().get("plaque-filter"))
+                || Boolean.TRUE.equals(selectOp.getAnnotations().get("plaque-group-filter"))) {
             return false;
         }
 

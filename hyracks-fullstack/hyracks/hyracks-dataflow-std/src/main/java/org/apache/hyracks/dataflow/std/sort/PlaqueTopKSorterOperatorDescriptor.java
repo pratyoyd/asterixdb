@@ -29,8 +29,8 @@ public class PlaqueTopKSorterOperatorDescriptor extends AbstractSorterOperatorDe
             int[] sortFields, INormalizedKeyComputerFactory firstKeyNormalizerFactory,
             IBinaryComparatorFactory[] comparatorFactories, RecordDescriptor recordDescriptor,
             ITopKThresholdObserverFactory observerFactory) {
-        super(spec, framesLimit, sortFields,
-                firstKeyNormalizerFactory != null
+        super(spec, framesLimit,
+                sortFields, firstKeyNormalizerFactory != null
                         ? new INormalizedKeyComputerFactory[] { firstKeyNormalizerFactory } : null,
                 comparatorFactories, recordDescriptor);
         this.topK = topK;

@@ -55,7 +55,8 @@ public class ConsolidateSelectsRule implements IAlgebraicRewriteRule {
             return false;
         }
         SelectOperator firstSelect = (SelectOperator) op;
-        if (Boolean.TRUE.equals(firstSelect.getAnnotations().get("plaque-filter"))) {
+        if (Boolean.TRUE.equals(firstSelect.getAnnotations().get("plaque-filter"))
+                || Boolean.TRUE.equals(firstSelect.getAnnotations().get("plaque-group-filter"))) {
             return false;
         }
 
@@ -90,7 +91,8 @@ public class ConsolidateSelectsRule implements IAlgebraicRewriteRule {
             // Consolidate all following selects.
             do {
                 SelectOperator selectOp = (SelectOperator) nextSelect;
-                if (Boolean.TRUE.equals(selectOp.getAnnotations().get("plaque-filter"))) {
+                if (Boolean.TRUE.equals(selectOp.getAnnotations().get("plaque-filter"))
+                        || Boolean.TRUE.equals(selectOp.getAnnotations().get("plaque-group-filter"))) {
                     break;
                 }
                 // Add the condition nextSelect to the new list of conjuncts.
