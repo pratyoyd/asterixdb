@@ -1,0 +1,2612 @@
+{
+	"requestID": "368ca1b7-fb0d-4de5-abc2-e5a3b7388a6c"	"signature": {
+		"*": "*"
+	},
+	"results": [ {"$1":104949.5} ]
+	,
+	"plans":{"optimizedLogicalPlan": {
+   "operator" : "distribute-result",
+   "expressions" : [ "$$54" ],
+   "operatorId" : "1.1",
+   "runtime-id" : "ODID:3",
+   "min-time" : 5.4978,
+   "max-time" : 5.4978,
+   "physical-operator" : "DISTRIBUTE_RESULT",
+   "execution-mode" : "UNPARTITIONED",
+   "optimizer-estimates" : {
+      "cardinality" : 0.0,
+      "op-cost" : 0.0,
+      "total-cost" : 0.0
+   },
+   "inputs" : [ {
+      "operator" : "exchange",
+      "operatorId" : "1.2",
+      "runtime-id" : "CDID:8",
+      "physical-operator" : "ONE_TO_ONE_EXCHANGE",
+      "execution-mode" : "UNPARTITIONED",
+      "optimizer-estimates" : {
+         "cardinality" : 0.0,
+         "op-cost" : 0.0,
+         "total-cost" : 0.0
+      },
+      "inputs" : [ {
+         "operator" : "project",
+         "variables" : [ "$$54" ],
+         "operatorId" : "1.3",
+         "runtime-id" : "ODID:8.2",
+         "min-time" : 0.1267,
+         "max-time" : 0.1267,
+         "min-cardinality" : 1,
+         "max-cardinality" : 1,
+         "total-cardinality" : 1,
+         "physical-operator" : "STREAM_PROJECT",
+         "execution-mode" : "UNPARTITIONED",
+         "optimizer-estimates" : {
+            "cardinality" : 0.0,
+            "op-cost" : 0.0,
+            "total-cost" : 0.0
+         },
+         "inputs" : [ {
+            "operator" : "assign",
+            "variables" : [ "$$54" ],
+            "expressions" : [ "{\"$1\": $$60}" ],
+            "operatorId" : "1.4",
+            "runtime-id" : "ODID:8.1",
+            "min-time" : 1.0318,
+            "max-time" : 1.0318,
+            "min-cardinality" : 1,
+            "max-cardinality" : 1,
+            "total-cardinality" : 1,
+            "physical-operator" : "ASSIGN",
+            "execution-mode" : "UNPARTITIONED",
+            "optimizer-estimates" : {
+               "cardinality" : 0.0,
+               "op-cost" : 0.0,
+               "total-cost" : 0.0
+            },
+            "inputs" : [ {
+               "operator" : "aggregate",
+               "variables" : [ "$$60" ],
+               "expressions" : [ "agg-global-sql-max($$63)" ],
+               "operatorId" : "1.5",
+               "runtime-id" : "ODID:8.0",
+               "min-time" : 0.3802,
+               "max-time" : 0.3802,
+               "min-cardinality" : 1,
+               "max-cardinality" : 1,
+               "total-cardinality" : 1,
+               "physical-operator" : "AGGREGATE",
+               "execution-mode" : "UNPARTITIONED",
+               "optimizer-estimates" : {
+                  "cardinality" : 0.0,
+                  "op-cost" : 0.0,
+                  "total-cost" : 0.0
+               },
+               "inputs" : [ {
+                  "operator" : "exchange",
+                  "operatorId" : "1.6",
+                  "runtime-id" : "CDID:7",
+                  "min-time" : 0.0,
+                  "max-time" : 0.0,
+                  "min-cardinality" : 1,
+                  "max-cardinality" : 1,
+                  "total-cardinality" : 4,
+                  "physical-operator" : "RANDOM_MERGE_EXCHANGE",
+                  "execution-mode" : "PARTITIONED",
+                  "optimizer-estimates" : {
+                     "cardinality" : 0.0,
+                     "op-cost" : 0.0,
+                     "total-cost" : 0.0
+                  },
+                  "inputs" : [ {
+                     "operator" : "aggregate",
+                     "variables" : [ "$$63" ],
+                     "expressions" : [ "agg-local-sql-max($$52)" ],
+                     "operatorId" : "1.7",
+                     "runtime-id" : "ODID:6.1",
+                     "min-time" : 3531.2522,
+                     "max-time" : 3629.4072,
+                     "min-cardinality" : 1,
+                     "max-cardinality" : 1,
+                     "total-cardinality" : 4,
+                     "physical-operator" : "PLAQUE_AGGREGATE(MAX, plaque-$$64)",
+                     "execution-mode" : "PARTITIONED",
+                     "optimizer-estimates" : {
+                        "cardinality" : 0.0,
+                        "op-cost" : 0.0,
+                        "total-cost" : 0.0
+                     },
+                     "inputs" : [ {
+                        "operator" : "project",
+                        "variables" : [ "$$52" ],
+                        "operatorId" : "1.8",
+                        "runtime-id" : "ODID:6.0",
+                        "min-time" : 3216.6336,
+                        "max-time" : 3294.4696,
+                        "min-cardinality" : 34153905,
+                        "max-cardinality" : 34162593,
+                        "total-cardinality" : 136638480,
+                        "physical-operator" : "STREAM_PROJECT",
+                        "execution-mode" : "PARTITIONED",
+                        "optimizer-estimates" : {
+                           "cardinality" : 0.0,
+                           "op-cost" : 0.0,
+                           "total-cost" : 0.0
+                        },
+                        "inputs" : [ {
+                           "operator" : "exchange",
+                           "operatorId" : "1.9",
+                           "runtime-id" : "CDID:6",
+                           "physical-operator" : "ONE_TO_ONE_EXCHANGE",
+                           "execution-mode" : "PARTITIONED",
+                           "optimizer-estimates" : {
+                              "cardinality" : 0.0,
+                              "op-cost" : 0.0,
+                              "total-cost" : 0.0
+                           },
+                           "inputs" : [ {
+                              "operator" : "join",
+                              "condition" : "eq($$55, $$57)",
+                              "build-side" : 0,
+                              "operatorId" : "1.10",
+                              "runtime-id" : "ODID:2",
+                              "activity-stats" : [ {
+                                 "name" : "Hybrid Hash Join: Build",
+                                 "id" : "ANID:0",
+                                 "min-time" : 2761.3491,
+                                 "max-time" : 3266.3891
+                              }, {
+                                 "name" : "Hybrid Hash Join: Probe & Join",
+                                 "id" : "ANID:1",
+                                 "min-time" : 110795.4595,
+                                 "max-time" : 114397.1901,
+                                 "min-cardinality" : 34153905,
+                                 "max-cardinality" : 34162593,
+                                 "total-cardinality" : 136638480
+                              } ],
+                              "physical-operator" : "HYBRID_HASH_JOIN [$$55][$$57]",
+                              "execution-mode" : "PARTITIONED",
+                              "optimizer-estimates" : {
+                                 "cardinality" : 0.0,
+                                 "op-cost" : 0.0,
+                                 "total-cost" : 0.0
+                              },
+                              "inputs" : [ {
+                                 "operator" : "exchange",
+                                 "operatorId" : "1.11",
+                                 "runtime-id" : "CDID:5",
+                                 "min-time" : 0.0,
+                                 "max-time" : 0.0,
+                                 "min-cardinality" : 0,
+                                 "max-cardinality" : 8541198,
+                                 "total-cardinality" : 34159560,
+                                 "physical-operator" : "HASH_PARTITION_EXCHANGE [$$57]",
+                                 "execution-mode" : "PARTITIONED",
+                                 "optimizer-estimates" : {
+                                    "cardinality" : 0.0,
+                                    "op-cost" : 0.0,
+                                    "total-cost" : 0.0
+                                 },
+                                 "inputs" : [ {
+                                    "operator" : "project",
+                                    "variables" : [ "$$57" ],
+                                    "operatorId" : "1.12",
+                                    "runtime-id" : "ODID:4.1",
+                                    "min-time" : 783.2775,
+                                    "max-time" : 865.7633,
+                                    "min-cardinality" : 8538550,
+                                    "max-cardinality" : 8541198,
+                                    "total-cardinality" : 34159560,
+                                    "physical-operator" : "STREAM_PROJECT",
+                                    "execution-mode" : "PARTITIONED",
+                                    "optimizer-estimates" : {
+                                       "cardinality" : 0.0,
+                                       "op-cost" : 0.0,
+                                       "total-cost" : 0.0
+                                    },
+                                    "inputs" : [ {
+                                       "operator" : "select",
+                                       "condition" : "lt($$o.getField(4), \"1995-01-01\")",
+                                       "operatorId" : "1.13",
+                                       "runtime-id" : "ODID:4.0",
+                                       "min-time" : 5953.449,
+                                       "max-time" : 6481.8237,
+                                       "min-cardinality" : 8538550,
+                                       "max-cardinality" : 8541198,
+                                       "total-cardinality" : 34159560,
+                                       "physical-operator" : "STREAM_SELECT",
+                                       "execution-mode" : "PARTITIONED",
+                                       "optimizer-estimates" : {
+                                          "cardinality" : 0.0,
+                                          "op-cost" : 0.0,
+                                          "total-cost" : 0.0
+                                       },
+                                       "inputs" : [ {
+                                          "operator" : "exchange",
+                                          "operatorId" : "1.14",
+                                          "runtime-id" : "CDID:4",
+                                          "physical-operator" : "ONE_TO_ONE_EXCHANGE",
+                                          "execution-mode" : "PARTITIONED",
+                                          "optimizer-estimates" : {
+                                             "cardinality" : 0.0,
+                                             "op-cost" : 0.0,
+                                             "total-cost" : 0.0
+                                          },
+                                          "inputs" : [ {
+                                             "operator" : "data-scan",
+                                             "variables" : [ "$$57", "$$o" ],
+                                             "data-source" : "Default.Orders_50",
+                                             "operatorId" : "1.15",
+                                             "runtime-id" : "ODID:1",
+                                             "min-time" : 23760.5455,
+                                             "max-time" : 27103.8227,
+                                             "min-cardinality" : 18748142,
+                                             "max-cardinality" : 18751638,
+                                             "total-cardinality" : 75000000,
+                                             "physical-operator" : "DATASOURCE_SCAN",
+                                             "execution-mode" : "PARTITIONED",
+                                             "optimizer-estimates" : {
+                                                "cardinality" : 0.0,
+                                                "op-cost" : 0.0,
+                                                "total-cost" : 0.0
+                                             },
+                                             "inputs" : [ {
+                                                "operator" : "exchange",
+                                                "operatorId" : "1.16",
+                                                "runtime-id" : "CDID:3",
+                                                "physical-operator" : "ONE_TO_ONE_EXCHANGE",
+                                                "execution-mode" : "PARTITIONED",
+                                                "optimizer-estimates" : {
+                                                   "cardinality" : 0.0,
+                                                   "op-cost" : 0.0,
+                                                   "total-cost" : 0.0
+                                                },
+                                                "inputs" : [ {
+                                                   "operator" : "empty-tuple-source",
+                                                   "operatorId" : "1.17",
+                                                   "runtime-id" : "ODID:9.0",
+                                                   "physical-operator" : "EMPTY_TUPLE_SOURCE",
+                                                   "execution-mode" : "PARTITIONED",
+                                                   "optimizer-estimates" : {
+                                                      "cardinality" : 0.0,
+                                                      "op-cost" : 0.0,
+                                                      "total-cost" : 0.0
+                                                   }
+                                                } ]
+                                             } ]
+                                          } ]
+                                       } ]
+                                    } ]
+                                 } ]
+                              }, {
+                                 "operator" : "exchange",
+                                 "operatorId" : "1.18",
+                                 "runtime-id" : "CDID:2",
+                                 "min-time" : 0.0,
+                                 "max-time" : 0.0,
+                                 "min-cardinality" : 12665711,
+                                 "max-cardinality" : 25061268,
+                                 "total-cardinality" : 300005811,
+                                 "physical-operator" : "HASH_PARTITION_EXCHANGE [$$55]",
+                                 "execution-mode" : "PARTITIONED",
+                                 "optimizer-estimates" : {
+                                    "cardinality" : 0.0,
+                                    "op-cost" : 0.0,
+                                    "total-cost" : 0.0
+                                 },
+                                 "inputs" : [ {
+                                    "operator" : "select",
+                                    "condition" : "true",
+                                    "operatorId" : "1.19",
+                                    "runtime-id" : "ODID:7.4",
+                                    "min-time" : 7139.5728,
+                                    "max-time" : 7368.8971,
+                                    "min-cardinality" : 74994966,
+                                    "max-cardinality" : 75004182,
+                                    "total-cardinality" : 300005811,
+                                    "physical-operator" : "PLAQUE_FILTER($$52, MAX, plaque-$$64)",
+                                    "execution-mode" : "PARTITIONED",
+                                    "optimizer-estimates" : {
+                                       "cardinality" : 0.0,
+                                       "op-cost" : 0.0,
+                                       "total-cost" : 0.0
+                                    },
+                                    "inputs" : [ {
+                                       "operator" : "select",
+                                       "condition" : "true",
+                                       "operatorId" : "1.20",
+                                       "runtime-id" : "ODID:7.3",
+                                       "min-time" : 7107.3257,
+                                       "max-time" : 7233.7817,
+                                       "min-cardinality" : 74994966,
+                                       "max-cardinality" : 75004182,
+                                       "total-cardinality" : 300005811,
+                                       "physical-operator" : "PLAQUE_FILTER($$52, MAX, plaque-$$64)",
+                                       "execution-mode" : "PARTITIONED",
+                                       "optimizer-estimates" : {
+                                          "cardinality" : 0.0,
+                                          "op-cost" : 0.0,
+                                          "total-cost" : 0.0
+                                       },
+                                       "inputs" : [ {
+                                          "operator" : "project",
+                                          "variables" : [ "$$55", "$$52" ],
+                                          "operatorId" : "1.21",
+                                          "runtime-id" : "ODID:7.2",
+                                          "min-time" : 9587.8684,
+                                          "max-time" : 9855.9303,
+                                          "min-cardinality" : 74994966,
+                                          "max-cardinality" : 75004182,
+                                          "total-cardinality" : 300005811,
+                                          "physical-operator" : "STREAM_PROJECT",
+                                          "execution-mode" : "PARTITIONED",
+                                          "optimizer-estimates" : {
+                                             "cardinality" : 0.0,
+                                             "op-cost" : 0.0,
+                                             "total-cost" : 0.0
+                                          },
+                                          "inputs" : [ {
+                                             "operator" : "assign",
+                                             "variables" : [ "$$52" ],
+                                             "expressions" : [ "$$l.getField(5)" ],
+                                             "operatorId" : "1.22",
+                                             "runtime-id" : "ODID:7.1",
+                                             "min-time" : 35986.169,
+                                             "max-time" : 36367.5713,
+                                             "min-cardinality" : 74994966,
+                                             "max-cardinality" : 75004182,
+                                             "total-cardinality" : 300005811,
+                                             "physical-operator" : "ASSIGN",
+                                             "execution-mode" : "PARTITIONED",
+                                             "optimizer-estimates" : {
+                                                "cardinality" : 0.0,
+                                                "op-cost" : 0.0,
+                                                "total-cost" : 0.0
+                                             },
+                                             "inputs" : [ {
+                                                "operator" : "project",
+                                                "variables" : [ "$$55", "$$l" ],
+                                                "operatorId" : "1.23",
+                                                "runtime-id" : "ODID:7.0",
+                                                "min-time" : 11751.0121,
+                                                "max-time" : 12003.8586,
+                                                "min-cardinality" : 74994966,
+                                                "max-cardinality" : 75004182,
+                                                "total-cardinality" : 300005811,
+                                                "physical-operator" : "STREAM_PROJECT",
+                                                "execution-mode" : "PARTITIONED",
+                                                "optimizer-estimates" : {
+                                                   "cardinality" : 0.0,
+                                                   "op-cost" : 0.0,
+                                                   "total-cost" : 0.0
+                                                },
+                                                "inputs" : [ {
+                                                   "operator" : "exchange",
+                                                   "operatorId" : "1.24",
+                                                   "runtime-id" : "CDID:1",
+                                                   "physical-operator" : "ONE_TO_ONE_EXCHANGE",
+                                                   "execution-mode" : "PARTITIONED",
+                                                   "optimizer-estimates" : {
+                                                      "cardinality" : 0.0,
+                                                      "op-cost" : 0.0,
+                                                      "total-cost" : 0.0
+                                                   },
+                                                   "inputs" : [ {
+                                                      "operator" : "data-scan",
+                                                      "variables" : [ "$$55", "$$56", "$$l" ],
+                                                      "data-source" : "Default.Lineitem_50",
+                                                      "operatorId" : "1.25",
+                                                      "runtime-id" : "ODID:0",
+                                                      "min-time" : 140693.2066,
+                                                      "max-time" : 146257.5918,
+                                                      "min-cardinality" : 74994966,
+                                                      "max-cardinality" : 75004182,
+                                                      "total-cardinality" : 300005811,
+                                                      "physical-operator" : "DATASOURCE_SCAN",
+                                                      "execution-mode" : "PARTITIONED",
+                                                      "optimizer-estimates" : {
+                                                         "cardinality" : 0.0,
+                                                         "op-cost" : 0.0,
+                                                         "total-cost" : 0.0
+                                                      },
+                                                      "inputs" : [ {
+                                                         "operator" : "exchange",
+                                                         "operatorId" : "1.26",
+                                                         "runtime-id" : "CDID:0",
+                                                         "physical-operator" : "ONE_TO_ONE_EXCHANGE",
+                                                         "execution-mode" : "PARTITIONED",
+                                                         "optimizer-estimates" : {
+                                                            "cardinality" : 0.0,
+                                                            "op-cost" : 0.0,
+                                                            "total-cost" : 0.0
+                                                         },
+                                                         "inputs" : [ {
+                                                            "operator" : "empty-tuple-source",
+                                                            "operatorId" : "1.27",
+                                                            "runtime-id" : "ODID:5.0",
+                                                            "physical-operator" : "EMPTY_TUPLE_SOURCE",
+                                                            "execution-mode" : "PARTITIONED",
+                                                            "optimizer-estimates" : {
+                                                               "cardinality" : 0.0,
+                                                               "op-cost" : 0.0,
+                                                               "total-cost" : 0.0
+                                                            }
+                                                         } ]
+                                                      } ]
+                                                   } ]
+                                                } ]
+                                             } ]
+                                          } ]
+                                       } ]
+                                    } ]
+                                 } ]
+                              } ]
+                           } ]
+                        } ]
+                     } ]
+                  } ]
+               } ]
+            } ]
+         } ]
+      } ]
+   } ]
+}},
+	"status": "success",
+	"metrics": {
+		"elapsedTime": "360.169624366s",
+		"executionTime": "360.165760373s",
+		"compileTime": "159.674116ms",
+		"queueWaitTime": "0ns",
+		"resultCount": 1,
+		"resultSize": 15,
+		"processedObjects": 375005811,
+		"bufferCacheHitRatio": "0.00%",
+		"bufferCachePageReadCount": 2678370
+	},
+	"profile" : {
+		"job-id" : "JID:0.6",
+		"create-time" : 1782696532398,
+		"start-time" : 1782696532398,
+		"queued-time" : 0,
+		"end-time" : 0,
+		"counters" : [ ],
+		"joblets" : [
+			{
+				"node-id" : "asterix_nc1",
+				"counters" : [ ],
+				"tasks" : [
+					{
+						"activity-id" : "ANID:ODID:2:0",
+						"partition" : 0,
+						"attempt" : 0,
+						"partition-send-profile" : [ ],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:2:0 - Hybrid Hash Join: Build",
+								"run-time" : 3185.7489,
+								"runtime-id" : "ODID:2",
+								"bytes-written" : 145555456
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:2:1",
+						"partition" : 0,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:7",
+									"sender-index" : 0,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696891171,
+								"cardinality" : 1,
+								"offset" : 1782696891170,
+								"frame-times" : [
+									0
+								],
+								"resolution" : 1
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:2:1 - Hybrid Hash Join: Probe & Join",
+								"run-time" : 110998.6511,
+								"runtime-id" : "ODID:2",
+								"cardinality-out" : 34153905,
+								"avg-tuple-size" : 39,
+								"min-tuple-size" : 39,
+								"max-tuple-size" : 39,
+								"level" : 2,
+								"bytes-read" : 1688698880,
+								"bytes-written" : 2252439552
+							},
+							{
+								"name" : "ANID:ODID:6:0.0 - MicroOp stream-project [1]",
+								"run-time" : 3245.1066,
+								"runtime-id" : "ODID:6.0",
+								"cardinality-out" : 34153905,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							},
+							{
+								"name" : "ANID:ODID:6:0.1 - MicroOp assign [org.apache.asterix.runtime.operators.plaque.PlaqueLocalAggregateEvaluatorFactory@6e7f4456]",
+								"run-time" : 3570.9943,
+								"runtime-id" : "ODID:6.1",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:5:0",
+						"partition" : 0,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 0,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696797417,
+								"cardinality" : 12777035,
+								"offset" : 1782696568470,
+								"frame-times" : [
+									0,
+									5314,
+									10178,
+									14811,
+									19942,
+									24762,
+									29560,
+									37238,
+									43246,
+									48131,
+									52969,
+									57659,
+									62581,
+									67813,
+									72513,
+									77256,
+									83729,
+									88636,
+									93594,
+									98408,
+									103228,
+									108588,
+									113401,
+									118483,
+									122997,
+									127598,
+									133398,
+									138812,
+									143664,
+									149068,
+									153648,
+									158283,
+									165436,
+									170085,
+									175062,
+									179671,
+									184499,
+									189327,
+									194750,
+									200464,
+									205654,
+									210428,
+									215052,
+									219943,
+									225331
+								],
+								"resolution" : 256
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 0,
+									"receiver-index" : 1
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696797418,
+								"cardinality" : 25061268,
+								"offset" : 1782696568452,
+								"frame-times" : [
+									0,
+									5408,
+									10363,
+									15085,
+									20325,
+									25218,
+									30188,
+									37889,
+									44005,
+									48966,
+									53876,
+									58725,
+									63736,
+									69027,
+									73824,
+									78919,
+									85354,
+									90371,
+									95375,
+									100224,
+									105656,
+									110727,
+									115538,
+									120560,
+									125234,
+									131045,
+									136659,
+									141524,
+									146398,
+									151785,
+									156461,
+									161208,
+									168487,
+									173496,
+									178292,
+									183133,
+									187951,
+									192945,
+									198407,
+									204637,
+									209534,
+									214316,
+									219218,
+									224236
+								],
+								"resolution" : 512
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 0,
+									"receiver-index" : 2
+								},
+								"open-time" : 1782696568393,
+								"close-time" : 1782696797418,
+								"cardinality" : 24494193,
+								"offset" : 1782696568452,
+								"frame-times" : [
+									0,
+									5522,
+									10586,
+									15401,
+									20776,
+									25818,
+									31020,
+									38792,
+									44956,
+									50046,
+									55003,
+									60110,
+									65146,
+									70518,
+									75367,
+									80795,
+									87229,
+									92398,
+									97388,
+									102450,
+									107992,
+									113075,
+									118354,
+									123061,
+									127864,
+									133848,
+									139483,
+									144573,
+									150171,
+									154910,
+									159718,
+									164805,
+									172140,
+									177290,
+									182193,
+									187141,
+									192174,
+									197829,
+									203813,
+									209173,
+									214067,
+									219064,
+									224195
+								],
+								"resolution" : 512
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 0,
+									"receiver-index" : 3
+								},
+								"open-time" : 1782696568393,
+								"close-time" : 1782696797418,
+								"cardinality" : 12671686,
+								"offset" : 1782696568476,
+								"frame-times" : [
+									0,
+									5323,
+									10224,
+									14917,
+									20095,
+									24936,
+									29779,
+									37479,
+									43540,
+									48458,
+									53322,
+									58079,
+									63053,
+									68286,
+									73025,
+									77947,
+									84391,
+									89332,
+									94327,
+									99174,
+									104569,
+									109470,
+									114276,
+									119336,
+									123904,
+									128530,
+									134382,
+									139901,
+									144787,
+									150230,
+									154792,
+									159451,
+									166661,
+									171403,
+									176389,
+									181160,
+									185930,
+									190778,
+									196317,
+									202141,
+									207329,
+									212127,
+									216799,
+									221756,
+									227210
+								],
+								"resolution" : 256
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:5:0 - Empty Tuple Source",
+								"run-time" : 0.1451,
+								"runtime-id" : "ODID:5",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 0,
+								"min-tuple-size" : 0,
+								"max-tuple-size" : 0
+							},
+							{
+								"name" : "ANID:ODID:0:0 - Index Search",
+								"run-time" : 140693.2066,
+								"runtime-id" : "ODID:0",
+								"pages-read" : 565156,
+								"pages-read-cold" : 565156,
+								"cardinality-out" : 75004182,
+								"avg-tuple-size" : 225,
+								"min-tuple-size" : 225,
+								"max-tuple-size" : 275
+							},
+							{
+								"name" : "ANID:ODID:7:0.2 - MicroOp stream-project [0, 2]",
+								"run-time" : 9655.0334,
+								"runtime-id" : "ODID:7.2",
+								"cardinality-out" : 75004182,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.0 - MicroOp stream-project [0, 2]",
+								"run-time" : 11819.8352,
+								"runtime-id" : "ODID:7.0",
+								"cardinality-out" : 75004182,
+								"avg-tuple-size" : 212,
+								"min-tuple-size" : 212,
+								"max-tuple-size" : 262
+							},
+							{
+								"name" : "ANID:ODID:7:0.3 - MicroOp plaque-filter [col=1, MAX, h=plaque-$$64]",
+								"run-time" : 7174.7994,
+								"runtime-id" : "ODID:7.3",
+								"cardinality-out" : 75004182,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.1 - MicroOp assign [2] := [org.apache.asterix.runtime.evaluators.functions.records.FieldAccessByIndexEvalFactory@96fed90]  project: [0, 1, 2]",
+								"run-time" : 36190.4385,
+								"runtime-id" : "ODID:7.1",
+								"cardinality-out" : 75004182,
+								"avg-tuple-size" : 225,
+								"min-tuple-size" : 225,
+								"max-tuple-size" : 275
+							},
+							{
+								"name" : "ANID:ODID:7:0.4 - MicroOp plaque-filter [col=1, MAX, h=plaque-$$64]",
+								"run-time" : 7198.0117,
+								"runtime-id" : "ODID:7.4",
+								"cardinality-out" : 75004182,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:9:0",
+						"partition" : 0,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 0,
+									"receiver-index" : 2
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696568340,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 0,
+									"receiver-index" : 1
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696568340,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 0,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696568340,
+								"cardinality" : 8539704,
+								"offset" : 1782696532428,
+								"frame-times" : [
+									0,
+									895,
+									1789,
+									2665,
+									3618,
+									4504,
+									5382,
+									6335,
+									7368,
+									8309,
+									9217,
+									10167,
+									11071,
+									11979,
+									12888,
+									14338,
+									15930,
+									17062,
+									18197,
+									19353,
+									20486,
+									21548,
+									22688,
+									23876,
+									25033,
+									26099,
+									27135,
+									28207,
+									29240,
+									30319,
+									31334,
+									32316,
+									33819,
+									35114
+								],
+								"resolution" : 128
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 0,
+									"receiver-index" : 3
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696568340,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:9:0 - Empty Tuple Source",
+								"run-time" : 0.0926,
+								"runtime-id" : "ODID:9",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 0,
+								"min-tuple-size" : 0,
+								"max-tuple-size" : 0
+							},
+							{
+								"name" : "ANID:ODID:1:0 - Index Search",
+								"run-time" : 27103.8227,
+								"runtime-id" : "ODID:1",
+								"pages-read" : 104457,
+								"pages-read-cold" : 104457,
+								"cardinality-out" : 18749873,
+								"avg-tuple-size" : 150,
+								"min-tuple-size" : 150,
+								"max-tuple-size" : 219
+							},
+							{
+								"name" : "ANID:ODID:4:0.0 - MicroOp stream-select org.apache.asterix.runtime.evaluators.comparisons.LessThanDescriptor$2@68ed0df0",
+								"run-time" : 6036.7523,
+								"runtime-id" : "ODID:4.0",
+								"cardinality-out" : 8539704,
+								"avg-tuple-size" : 150,
+								"min-tuple-size" : 150,
+								"max-tuple-size" : 219
+							},
+							{
+								"name" : "ANID:ODID:4:0.1 - MicroOp stream-project [0]",
+								"run-time" : 818.1945,
+								"runtime-id" : "ODID:4.1",
+								"cardinality-out" : 8539704,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							}
+						]
+					}
+				]
+			},
+			{
+				"node-id" : "asterix_nc3",
+				"counters" : [ ],
+				"tasks" : [
+					{
+						"activity-id" : "ANID:ODID:2:0",
+						"partition" : 2,
+						"attempt" : 0,
+						"partition-send-profile" : [ ],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:2:0 - Hybrid Hash Join: Build",
+								"run-time" : 2761.3491,
+								"runtime-id" : "ODID:2",
+								"bytes-written" : 145522688
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:2:1",
+						"partition" : 2,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:7",
+									"sender-index" : 2,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696891163,
+								"cardinality" : 1,
+								"offset" : 1782696891163,
+								"frame-times" : [
+									0
+								],
+								"resolution" : 1
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:2:1 - Hybrid Hash Join: Probe & Join",
+								"run-time" : 111842.163,
+								"runtime-id" : "ODID:2",
+								"cardinality-out" : 34162550,
+								"avg-tuple-size" : 39,
+								"min-tuple-size" : 39,
+								"max-tuple-size" : 39,
+								"level" : 2,
+								"bytes-read" : 1689387008,
+								"bytes-written" : 2253160448
+							},
+							{
+								"name" : "ANID:ODID:6:0.1 - MicroOp assign [org.apache.asterix.runtime.operators.plaque.PlaqueLocalAggregateEvaluatorFactory@7487dabc]",
+								"run-time" : 3629.4072,
+								"runtime-id" : "ODID:6.1",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							},
+							{
+								"name" : "ANID:ODID:6:0.0 - MicroOp stream-project [1]",
+								"run-time" : 3294.4696,
+								"runtime-id" : "ODID:6.0",
+								"cardinality-out" : 34162550,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:5:0",
+						"partition" : 2,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 2,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696802393,
+								"cardinality" : 24495929,
+								"offset" : 1782696568457,
+								"frame-times" : [
+									0,
+									5357,
+									10777,
+									15818,
+									21468,
+									26498,
+									31781,
+									38460,
+									44209,
+									49374,
+									54503,
+									59304,
+									64387,
+									69433,
+									74827,
+									79951,
+									86339,
+									91136,
+									96205,
+									101737,
+									106985,
+									112415,
+									117581,
+									122635,
+									127740,
+									133822,
+									139980,
+									145208,
+									151230,
+									156005,
+									160947,
+									166000,
+									173675,
+									178822,
+									184268,
+									189548,
+									195304,
+									201435,
+									206864,
+									212256,
+									217370,
+									222907,
+									228432
+								],
+								"resolution" : 512
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 2,
+									"receiver-index" : 1
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696802393,
+								"cardinality" : 12671242,
+								"offset" : 1782696568470,
+								"frame-times" : [
+									0,
+									5132,
+									10413,
+									15267,
+									20670,
+									25592,
+									30600,
+									37196,
+									42788,
+									47677,
+									52769,
+									57467,
+									62246,
+									67100,
+									72206,
+									77280,
+									83426,
+									88324,
+									92986,
+									98018,
+									103317,
+									108436,
+									113713,
+									118601,
+									123546,
+									128446,
+									134429,
+									140350,
+									145423,
+									151259,
+									155886,
+									160622,
+									168059,
+									172889,
+									177914,
+									183143,
+									188199,
+									193887,
+									199637,
+									205089,
+									210250,
+									215352,
+									220468,
+									226063,
+									231770
+								],
+								"resolution" : 256
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 2,
+									"receiver-index" : 2
+								},
+								"open-time" : 1782696568393,
+								"close-time" : 1782696802393,
+								"cardinality" : 12779809,
+								"offset" : 1782696568470,
+								"frame-times" : [
+									0,
+									5098,
+									10341,
+									15155,
+									20508,
+									25426,
+									30353,
+									36908,
+									42491,
+									47325,
+									52349,
+									57008,
+									61766,
+									66594,
+									71540,
+									76647,
+									82742,
+									87660,
+									92260,
+									97218,
+									102502,
+									107477,
+									112739,
+									117661,
+									122503,
+									127392,
+									133243,
+									139215,
+									144195,
+									150086,
+									154675,
+									159300,
+									166593,
+									171523,
+									176445,
+									181492,
+									186615,
+									191655,
+									197182,
+									203104,
+									208383,
+									213658,
+									218520,
+									223808,
+									229067
+								],
+								"resolution" : 256
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 2,
+									"receiver-index" : 3
+								},
+								"open-time" : 1782696568393,
+								"close-time" : 1782696802393,
+								"cardinality" : 25055907,
+								"offset" : 1782696568450,
+								"frame-times" : [
+									0,
+									5229,
+									10546,
+									15485,
+									20964,
+									25919,
+									31006,
+									37600,
+									43263,
+									48246,
+									53344,
+									58072,
+									62965,
+									67869,
+									73087,
+									78169,
+									84376,
+									89257,
+									94112,
+									99430,
+									104751,
+									109770,
+									115095,
+									119957,
+									124912,
+									130774,
+									137010,
+									141979,
+									147032,
+									152898,
+									157519,
+									162494,
+									169929,
+									174952,
+									179988,
+									185293,
+									190482,
+									196113,
+									202147,
+									207450,
+									212753,
+									217732,
+									223123,
+									228514
+								],
+								"resolution" : 512
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:5:0 - Empty Tuple Source",
+								"run-time" : 0.2079,
+								"runtime-id" : "ODID:5",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 0,
+								"min-tuple-size" : 0,
+								"max-tuple-size" : 0
+							},
+							{
+								"name" : "ANID:ODID:0:0 - Index Search",
+								"run-time" : 146257.5918,
+								"runtime-id" : "ODID:0",
+								"pages-read" : 565138,
+								"pages-read-cold" : 565138,
+								"cardinality-out" : 75002887,
+								"avg-tuple-size" : 225,
+								"min-tuple-size" : 225,
+								"max-tuple-size" : 275
+							},
+							{
+								"name" : "ANID:ODID:7:0.1 - MicroOp assign [2] := [org.apache.asterix.runtime.evaluators.functions.records.FieldAccessByIndexEvalFactory@d4e8ecc]  project: [0, 1, 2]",
+								"run-time" : 35986.169,
+								"runtime-id" : "ODID:7.1",
+								"cardinality-out" : 75002887,
+								"avg-tuple-size" : 225,
+								"min-tuple-size" : 225,
+								"max-tuple-size" : 275
+							},
+							{
+								"name" : "ANID:ODID:7:0.2 - MicroOp stream-project [0, 2]",
+								"run-time" : 9587.8684,
+								"runtime-id" : "ODID:7.2",
+								"cardinality-out" : 75002887,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.0 - MicroOp stream-project [0, 2]",
+								"run-time" : 11751.0121,
+								"runtime-id" : "ODID:7.0",
+								"cardinality-out" : 75002887,
+								"avg-tuple-size" : 212,
+								"min-tuple-size" : 212,
+								"max-tuple-size" : 262
+							},
+							{
+								"name" : "ANID:ODID:7:0.4 - MicroOp plaque-filter [col=1, MAX, h=plaque-$$64]",
+								"run-time" : 7249.1,
+								"runtime-id" : "ODID:7.4",
+								"cardinality-out" : 75002887,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.3 - MicroOp plaque-filter [col=1, MAX, h=plaque-$$64]",
+								"run-time" : 7107.3257,
+								"runtime-id" : "ODID:7.3",
+								"cardinality-out" : 75002887,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:8:0",
+						"partition" : 0,
+						"attempt" : 0,
+						"partition-send-profile" : [ ],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:8:0.1 - MicroOp assign [1] := [ClosedRecordConstructor]  project: [0, 1]",
+								"run-time" : 1.0318,
+								"runtime-id" : "ODID:8.1",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 39,
+								"min-tuple-size" : 39,
+								"max-tuple-size" : 39
+							},
+							{
+								"name" : "ANID:ODID:8:0.0 - MicroOp assign [org.apache.asterix.runtime.aggregates.std.GlobalSqlMaxAggregateDescriptor$1@4c51540d]",
+								"run-time" : 0.3802,
+								"runtime-id" : "ODID:8.0",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							},
+							{
+								"name" : "ANID:ODID:8:0.2 - MicroOp stream-project [1]",
+								"run-time" : 0.1267,
+								"runtime-id" : "ODID:8.2",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:3:0 - Result Writer",
+								"run-time" : 5.4978,
+								"runtime-id" : "ODID:3"
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:9:0",
+						"partition" : 2,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 2,
+									"receiver-index" : 3
+								},
+								"open-time" : 1782696532412,
+								"close-time" : 1782696565787,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 2,
+									"receiver-index" : 2
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696565787,
+								"cardinality" : 8540108,
+								"offset" : 1782696532431,
+								"frame-times" : [
+									0,
+									903,
+									1845,
+									2802,
+									3796,
+									4796,
+									5707,
+									6570,
+									7568,
+									8402,
+									9308,
+									10205,
+									11095,
+									11952,
+									12823,
+									13701,
+									14817,
+									15685,
+									16549,
+									17403,
+									18257,
+									19129,
+									20063,
+									21009,
+									22240,
+									23459,
+									24459,
+									25564,
+									26571,
+									27589,
+									28654,
+									29727,
+									31315,
+									32608
+								],
+								"resolution" : 128
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 2,
+									"receiver-index" : 1
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696565787,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 2,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696565787,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:9:0 - Empty Tuple Source",
+								"run-time" : 0.0859,
+								"runtime-id" : "ODID:9",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 0,
+								"min-tuple-size" : 0,
+								"max-tuple-size" : 0
+							},
+							{
+								"name" : "ANID:ODID:1:0 - Index Search",
+								"run-time" : 24713.1004,
+								"runtime-id" : "ODID:1",
+								"pages-read" : 104471,
+								"pages-read-cold" : 104471,
+								"cardinality-out" : 18751638,
+								"avg-tuple-size" : 150,
+								"min-tuple-size" : 150,
+								"max-tuple-size" : 219
+							},
+							{
+								"name" : "ANID:ODID:4:0.0 - MicroOp stream-select org.apache.asterix.runtime.evaluators.comparisons.LessThanDescriptor$2@5848faf9",
+								"run-time" : 5953.449,
+								"runtime-id" : "ODID:4.0",
+								"cardinality-out" : 8540108,
+								"avg-tuple-size" : 150,
+								"min-tuple-size" : 150,
+								"max-tuple-size" : 219
+							},
+							{
+								"name" : "ANID:ODID:4:0.1 - MicroOp stream-project [0]",
+								"run-time" : 783.2775,
+								"runtime-id" : "ODID:4.1",
+								"cardinality-out" : 8540108,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							}
+						]
+					}
+				]
+			},
+			{
+				"node-id" : "asterix_nc2",
+				"counters" : [ ],
+				"tasks" : [
+					{
+						"activity-id" : "ANID:ODID:2:0",
+						"partition" : 1,
+						"attempt" : 0,
+						"partition-send-profile" : [ ],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:2:0 - Hybrid Hash Join: Build",
+								"run-time" : 2914.9248,
+								"runtime-id" : "ODID:2",
+								"bytes-written" : 145588224
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:2:1",
+						"partition" : 1,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:7",
+									"sender-index" : 1,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696890056,
+								"cardinality" : 1,
+								"offset" : 1782696890056,
+								"frame-times" : [
+									0
+								],
+								"resolution" : 1
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:2:1 - Hybrid Hash Join: Probe & Join",
+								"run-time" : 110795.4595,
+								"runtime-id" : "ODID:2",
+								"cardinality-out" : 34159432,
+								"avg-tuple-size" : 39,
+								"min-tuple-size" : 39,
+								"max-tuple-size" : 39,
+								"level" : 2,
+								"bytes-read" : 1689518080,
+								"bytes-written" : 2252963840
+							},
+							{
+								"name" : "ANID:ODID:6:0.0 - MicroOp stream-project [1]",
+								"run-time" : 3216.6336,
+								"runtime-id" : "ODID:6.0",
+								"cardinality-out" : 34159432,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							},
+							{
+								"name" : "ANID:ODID:6:0.1 - MicroOp assign [org.apache.asterix.runtime.operators.plaque.PlaqueLocalAggregateEvaluatorFactory@7672a240]",
+								"run-time" : 3531.2522,
+								"runtime-id" : "ODID:6.1",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:5:0",
+						"partition" : 1,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 1,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696800789,
+								"cardinality" : 25045577,
+								"offset" : 1782696568450,
+								"frame-times" : [
+									0,
+									5262,
+									10514,
+									15350,
+									20425,
+									25442,
+									30434,
+									37972,
+									43751,
+									48682,
+									53667,
+									58646,
+									63583,
+									68921,
+									74450,
+									79687,
+									86044,
+									91000,
+									96099,
+									101415,
+									106697,
+									111574,
+									116408,
+									121210,
+									125960,
+									131949,
+									137644,
+									142569,
+									147322,
+									152918,
+									157717,
+									163592,
+									171449,
+									176528,
+									181248,
+									186267,
+									191324,
+									197016,
+									202849,
+									208111,
+									213065,
+									217929,
+									222855,
+									227989
+								],
+								"resolution" : 512
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 1,
+									"receiver-index" : 1
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696800789,
+								"cardinality" : 12774428,
+								"offset" : 1782696568468,
+								"frame-times" : [
+									0,
+									5147,
+									10285,
+									15061,
+									20019,
+									24927,
+									29778,
+									37247,
+									42940,
+									47766,
+									52734,
+									57547,
+									62352,
+									67600,
+									73030,
+									78106,
+									84472,
+									89277,
+									94267,
+									99469,
+									104780,
+									109487,
+									114333,
+									119011,
+									123674,
+									128492,
+									134359,
+									139953,
+									144714,
+									150042,
+									154889,
+									159661,
+									168407,
+									173276,
+									178004,
+									182813,
+									187664,
+									192532,
+									198126,
+									203885,
+									209062,
+									213941,
+									218703,
+									223489,
+									228508
+								],
+								"resolution" : 256
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 1,
+									"receiver-index" : 2
+								},
+								"open-time" : 1782696568393,
+								"close-time" : 1782696800789,
+								"cardinality" : 12671805,
+								"offset" : 1782696568468,
+								"frame-times" : [
+									0,
+									5194,
+									10396,
+									15192,
+									20200,
+									25137,
+									30049,
+									37545,
+									43287,
+									48184,
+									53138,
+									58037,
+									62886,
+									68194,
+									73625,
+									78730,
+									85164,
+									90003,
+									95039,
+									100292,
+									105618,
+									110358,
+									115259,
+									119952,
+									124657,
+									130298,
+									136186,
+									141024,
+									145816,
+									151266,
+									156099,
+									161021,
+									169706,
+									174659,
+									179300,
+									184237,
+									189203,
+									194850,
+									200589,
+									205771,
+									210730,
+									215547,
+									220331,
+									225577,
+									230213
+								],
+								"resolution" : 256
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 1,
+									"receiver-index" : 3
+								},
+								"open-time" : 1782696568393,
+								"close-time" : 1782696800789,
+								"cardinality" : 24503156,
+								"offset" : 1782696568456,
+								"frame-times" : [
+									0,
+									5354,
+									10743,
+									15673,
+									20884,
+									26004,
+									31152,
+									38760,
+									44634,
+									49699,
+									54755,
+									59869,
+									64878,
+									70314,
+									76121,
+									81420,
+									87859,
+									92958,
+									98377,
+									103653,
+									108924,
+									114001,
+									118864,
+									123699,
+									128691,
+									134751,
+									140532,
+									145469,
+									151100,
+									156105,
+									161522,
+									167269,
+									175239,
+									180015,
+									185124,
+									190265,
+									196134,
+									202081,
+									207462,
+									212575,
+									217499,
+									222508,
+									227782
+								],
+								"resolution" : 512
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:5:0 - Empty Tuple Source",
+								"run-time" : 0.173,
+								"runtime-id" : "ODID:5",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 0,
+								"min-tuple-size" : 0,
+								"max-tuple-size" : 0
+							},
+							{
+								"name" : "ANID:ODID:0:0 - Index Search",
+								"run-time" : 143489.5228,
+								"runtime-id" : "ODID:0",
+								"pages-read" : 565082,
+								"pages-read-cold" : 565082,
+								"cardinality-out" : 74994966,
+								"avg-tuple-size" : 225,
+								"min-tuple-size" : 225,
+								"max-tuple-size" : 275
+							},
+							{
+								"name" : "ANID:ODID:7:0.3 - MicroOp plaque-filter [col=1, MAX, h=plaque-$$64]",
+								"run-time" : 7233.7817,
+								"runtime-id" : "ODID:7.3",
+								"cardinality-out" : 74994966,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.0 - MicroOp stream-project [0, 2]",
+								"run-time" : 12003.8586,
+								"runtime-id" : "ODID:7.0",
+								"cardinality-out" : 74994966,
+								"avg-tuple-size" : 212,
+								"min-tuple-size" : 212,
+								"max-tuple-size" : 262
+							},
+							{
+								"name" : "ANID:ODID:7:0.4 - MicroOp plaque-filter [col=1, MAX, h=plaque-$$64]",
+								"run-time" : 7368.8971,
+								"runtime-id" : "ODID:7.4",
+								"cardinality-out" : 74994966,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.2 - MicroOp stream-project [0, 2]",
+								"run-time" : 9855.9303,
+								"runtime-id" : "ODID:7.2",
+								"cardinality-out" : 74994966,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.1 - MicroOp assign [2] := [org.apache.asterix.runtime.evaluators.functions.records.FieldAccessByIndexEvalFactory@1dd326ca]  project: [0, 1, 2]",
+								"run-time" : 36367.5713,
+								"runtime-id" : "ODID:7.1",
+								"cardinality-out" : 74994966,
+								"avg-tuple-size" : 225,
+								"min-tuple-size" : 225,
+								"max-tuple-size" : 275
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:9:0",
+						"partition" : 1,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 1,
+									"receiver-index" : 3
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696568293,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 1,
+									"receiver-index" : 2
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696568293,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 1,
+									"receiver-index" : 1
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696568293,
+								"cardinality" : 8541198,
+								"offset" : 1782696532426,
+								"frame-times" : [
+									0,
+									868,
+									1744,
+									2586,
+									3458,
+									4250,
+									5050,
+									5866,
+									6784,
+									7618,
+									8437,
+									9260,
+									10070,
+									10869,
+									11678,
+									12500,
+									13723,
+									14722,
+									15711,
+									16800,
+									17810,
+									19121,
+									20307,
+									21277,
+									22346,
+									23536,
+									24838,
+									26005,
+									27400,
+									28858,
+									30421,
+									31736,
+									33673,
+									34996
+								],
+								"resolution" : 128
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 1,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696532411,
+								"close-time" : 1782696568293,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:9:0 - Empty Tuple Source",
+								"run-time" : 0.1065,
+								"runtime-id" : "ODID:9",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 0,
+								"min-tuple-size" : 0,
+								"max-tuple-size" : 0
+							},
+							{
+								"name" : "ANID:ODID:1:0 - Index Search",
+								"run-time" : 26447.2421,
+								"runtime-id" : "ODID:1",
+								"pages-read" : 104461,
+								"pages-read-cold" : 104461,
+								"cardinality-out" : 18750347,
+								"avg-tuple-size" : 150,
+								"min-tuple-size" : 150,
+								"max-tuple-size" : 219
+							},
+							{
+								"name" : "ANID:ODID:4:0.0 - MicroOp stream-select org.apache.asterix.runtime.evaluators.comparisons.LessThanDescriptor$2@6b48bd33",
+								"run-time" : 6481.8237,
+								"runtime-id" : "ODID:4.0",
+								"cardinality-out" : 8541198,
+								"avg-tuple-size" : 150,
+								"min-tuple-size" : 150,
+								"max-tuple-size" : 219
+							},
+							{
+								"name" : "ANID:ODID:4:0.1 - MicroOp stream-project [0]",
+								"run-time" : 865.7633,
+								"runtime-id" : "ODID:4.1",
+								"cardinality-out" : 8541198,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							}
+						]
+					}
+				]
+			},
+			{
+				"node-id" : "asterix_nc4",
+				"counters" : [ ],
+				"tasks" : [
+					{
+						"activity-id" : "ANID:ODID:2:0",
+						"partition" : 3,
+						"attempt" : 0,
+						"partition-send-profile" : [ ],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:2:0 - Hybrid Hash Join: Build",
+								"run-time" : 3266.3891,
+								"runtime-id" : "ODID:2",
+								"bytes-written" : 145489920
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:2:1",
+						"partition" : 3,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:7",
+									"sender-index" : 3,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696892363,
+								"cardinality" : 1,
+								"offset" : 1782696892363,
+								"frame-times" : [
+									0
+								],
+								"resolution" : 1
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:2:1 - Hybrid Hash Join: Probe & Join",
+								"run-time" : 114397.1901,
+								"runtime-id" : "ODID:2",
+								"cardinality-out" : 34162593,
+								"avg-tuple-size" : 39,
+								"min-tuple-size" : 39,
+								"max-tuple-size" : 39,
+								"level" : 2,
+								"bytes-read" : 1690140672,
+								"bytes-written" : 2253324288
+							},
+							{
+								"name" : "ANID:ODID:6:0.0 - MicroOp stream-project [1]",
+								"run-time" : 3229.9106,
+								"runtime-id" : "ODID:6.0",
+								"cardinality-out" : 34162593,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							},
+							{
+								"name" : "ANID:ODID:6:0.1 - MicroOp assign [org.apache.asterix.runtime.operators.plaque.PlaqueLocalAggregateEvaluatorFactory@13925942]",
+								"run-time" : 3582.6133,
+								"runtime-id" : "ODID:6.1",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:5:0",
+						"partition" : 3,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 3,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696568392,
+								"close-time" : 1782696800057,
+								"cardinality" : 12665711,
+								"offset" : 1782696568473,
+								"frame-times" : [
+									0,
+									4935,
+									10004,
+									14785,
+									19784,
+									24626,
+									29369,
+									36814,
+									42451,
+									47321,
+									52287,
+									57280,
+									62273,
+									67862,
+									72827,
+									77915,
+									83889,
+									88829,
+									94121,
+									99058,
+									103646,
+									108377,
+									113103,
+									117985,
+									122661,
+									127321,
+									132955,
+									138508,
+									143266,
+									148655,
+									153519,
+									158564,
+									167008,
+									172635,
+									177556,
+									182450,
+									187515,
+									192580,
+									198022,
+									203715,
+									209012,
+									214150,
+									219200,
+									224443,
+									229773
+								],
+								"resolution" : 256
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 3,
+									"receiver-index" : 1
+								},
+								"open-time" : 1782696568393,
+								"close-time" : 1782696800057,
+								"cardinality" : 24495086,
+								"offset" : 1782696568456,
+								"frame-times" : [
+									0,
+									5124,
+									10365,
+									15302,
+									20469,
+									25434,
+									30387,
+									37988,
+									43789,
+									48858,
+									53953,
+									59253,
+									64304,
+									69930,
+									75338,
+									80412,
+									86715,
+									91950,
+									97213,
+									102058,
+									106916,
+									111837,
+									116845,
+									121798,
+									126594,
+									132362,
+									138061,
+									143035,
+									148563,
+									153599,
+									158788,
+									164614,
+									173278,
+									178364,
+									183458,
+									188762,
+									194635,
+									200380,
+									205581,
+									211023,
+									216131,
+									221527,
+									227153
+								],
+								"resolution" : 512
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 3,
+									"receiver-index" : 2
+								},
+								"open-time" : 1782696568393,
+								"close-time" : 1782696800057,
+								"cardinality" : 25060100,
+								"offset" : 1782696568456,
+								"frame-times" : [
+									0,
+									4982,
+									10125,
+									14963,
+									20036,
+									24896,
+									29677,
+									37166,
+									42893,
+									47796,
+									52808,
+									57912,
+									62934,
+									68547,
+									73559,
+									78723,
+									84751,
+									89794,
+									95157,
+									100053,
+									104743,
+									109496,
+									114269,
+									119232,
+									123899,
+									128718,
+									134355,
+									140061,
+									144720,
+									150231,
+									155266,
+									160225,
+									169349,
+									174512,
+									179370,
+									184419,
+									189643,
+									195340,
+									200979,
+									206084,
+									211454,
+									216461,
+									221718,
+									227209
+								],
+								"resolution" : 512
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:2",
+									"sender-index" : 3,
+									"receiver-index" : 3
+								},
+								"open-time" : 1782696568393,
+								"close-time" : 1782696800057,
+								"cardinality" : 12782879,
+								"offset" : 1782696568467,
+								"frame-times" : [
+									0,
+									4862,
+									9920,
+									14680,
+									19635,
+									24414,
+									29092,
+									35689,
+									42021,
+									46853,
+									51760,
+									56729,
+									61711,
+									67148,
+									71885,
+									77193,
+									83147,
+									88088,
+									93222,
+									98089,
+									102727,
+									107426,
+									112122,
+									116938,
+									121656,
+									126244,
+									131768,
+									137283,
+									142109,
+									147424,
+									152168,
+									157214,
+									165228,
+									170988,
+									176005,
+									180755,
+									185785,
+									190905,
+									196450,
+									202006,
+									206996,
+									212312,
+									217163,
+									222311,
+									227746
+								],
+								"resolution" : 256
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:5:0 - Empty Tuple Source",
+								"run-time" : 0.1501,
+								"runtime-id" : "ODID:5",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 0,
+								"min-tuple-size" : 0,
+								"max-tuple-size" : 0
+							},
+							{
+								"name" : "ANID:ODID:0:0 - Index Search",
+								"run-time" : 143529.67,
+								"runtime-id" : "ODID:0",
+								"pages-read" : 565151,
+								"pages-read-cold" : 565151,
+								"cardinality-out" : 75003776,
+								"avg-tuple-size" : 225,
+								"min-tuple-size" : 225,
+								"max-tuple-size" : 275
+							},
+							{
+								"name" : "ANID:ODID:7:0.4 - MicroOp plaque-filter [col=1, MAX, h=plaque-$$64]",
+								"run-time" : 7139.5728,
+								"runtime-id" : "ODID:7.4",
+								"cardinality-out" : 75003776,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.2 - MicroOp stream-project [0, 2]",
+								"run-time" : 9699.0247,
+								"runtime-id" : "ODID:7.2",
+								"cardinality-out" : 75003776,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.1 - MicroOp assign [2] := [org.apache.asterix.runtime.evaluators.functions.records.FieldAccessByIndexEvalFactory@47c98782]  project: [0, 1, 2]",
+								"run-time" : 36106.046,
+								"runtime-id" : "ODID:7.1",
+								"cardinality-out" : 75003776,
+								"avg-tuple-size" : 225,
+								"min-tuple-size" : 225,
+								"max-tuple-size" : 275
+							},
+							{
+								"name" : "ANID:ODID:7:0.3 - MicroOp plaque-filter [col=1, MAX, h=plaque-$$64]",
+								"run-time" : 7144.8092,
+								"runtime-id" : "ODID:7.3",
+								"cardinality-out" : 75003776,
+								"avg-tuple-size" : 26,
+								"min-tuple-size" : 26,
+								"max-tuple-size" : 26
+							},
+							{
+								"name" : "ANID:ODID:7:0.0 - MicroOp stream-project [0, 2]",
+								"run-time" : 11791.6562,
+								"runtime-id" : "ODID:7.0",
+								"cardinality-out" : 75003776,
+								"avg-tuple-size" : 212,
+								"min-tuple-size" : 212,
+								"max-tuple-size" : 262
+							}
+						]
+					},
+					{
+						"activity-id" : "ANID:ODID:9:0",
+						"partition" : 3,
+						"attempt" : 0,
+						"partition-send-profile" : [
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 3,
+									"receiver-index" : 3
+								},
+								"open-time" : 1782696532412,
+								"close-time" : 1782696564915,
+								"cardinality" : 8538550,
+								"offset" : 1782696532425,
+								"frame-times" : [
+									0,
+									767,
+									1590,
+									2532,
+									3531,
+									4491,
+									5293,
+									6076,
+									7100,
+									8023,
+									8861,
+									9733,
+									10623,
+									11488,
+									12350,
+									13313,
+									14404,
+									15383,
+									16276,
+									17167,
+									18050,
+									18955,
+									19921,
+									20923,
+									21967,
+									22983,
+									24045,
+									25096,
+									26194,
+									27232,
+									28244,
+									29276,
+									30891,
+									31904
+								],
+								"resolution" : 128
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 3,
+									"receiver-index" : 2
+								},
+								"open-time" : 1782696532412,
+								"close-time" : 1782696564915,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 3,
+									"receiver-index" : 1
+								},
+								"open-time" : 1782696532412,
+								"close-time" : 1782696564915,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							},
+							{
+								"partition-id" : {
+									"job-id" : "JID:0.6",
+									"connector-id" : "CDID:5",
+									"sender-index" : 3,
+									"receiver-index" : 0
+								},
+								"open-time" : 1782696532412,
+								"close-time" : 1782696564915,
+								"cardinality" : 0,
+								"offset" : -1,
+								"frame-times" : [ ],
+								"resolution" : 1
+							}
+						],
+						"counters" : [
+							{
+								"name" : "ANID:ODID:9:0 - Empty Tuple Source",
+								"run-time" : 0.0877,
+								"runtime-id" : "ODID:9",
+								"cardinality-out" : 1,
+								"avg-tuple-size" : 0,
+								"min-tuple-size" : 0,
+								"max-tuple-size" : 0
+							},
+							{
+								"name" : "ANID:ODID:1:0 - Index Search",
+								"run-time" : 23760.5455,
+								"runtime-id" : "ODID:1",
+								"pages-read" : 104454,
+								"pages-read-cold" : 104454,
+								"cardinality-out" : 18748142,
+								"avg-tuple-size" : 150,
+								"min-tuple-size" : 150,
+								"max-tuple-size" : 219
+							},
+							{
+								"name" : "ANID:ODID:4:0.0 - MicroOp stream-select org.apache.asterix.runtime.evaluators.comparisons.LessThanDescriptor$2@1307bffd",
+								"run-time" : 6028.7197,
+								"runtime-id" : "ODID:4.0",
+								"cardinality-out" : 8538550,
+								"avg-tuple-size" : 150,
+								"min-tuple-size" : 150,
+								"max-tuple-size" : 219
+							},
+							{
+								"name" : "ANID:ODID:4:0.1 - MicroOp stream-project [0]",
+								"run-time" : 789.2291,
+								"runtime-id" : "ODID:4.1",
+								"cardinality-out" : 8538550,
+								"avg-tuple-size" : 13,
+								"min-tuple-size" : 13,
+								"max-tuple-size" : 13
+							}
+						]
+					}
+				]
+			}
+		]
+	}
+}
