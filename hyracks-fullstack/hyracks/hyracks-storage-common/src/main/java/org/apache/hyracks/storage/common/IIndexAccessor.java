@@ -103,7 +103,15 @@ public interface IIndexAccessor extends IDestroyable {
      */
     void search(IIndexCursor cursor, ISearchPredicate searchPred) throws HyracksDataException;
 
-    void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled) throws HyracksDataException;
+    /**
+     * SmartRabbit variant of {@link #search(IIndexCursor, ISearchPredicate)}. No-op unless an accessor overrides it
+     * (index types added upstream after this method was introduced do not need to implement it).
+     */
+    default void search(IIndexCursor cursor, ISearchPredicate searchPred, boolean endOFKeyEnabled)
+            throws HyracksDataException {
+        // no-op by default
+    }
+
     /**
      * Perform the walk on the disk components for sampling till reaches a leaf.
       * @param cursor

@@ -341,9 +341,9 @@ public class IntroduceUnionForEagerAggregation
         Mutable<ILogicalOperator> leftInputOpRef = op.getInputs().get(0);
         Mutable<ILogicalOperator> rightInputOpRef = op.getInputs().get(1);
         ILogicalOperator inputOp = leftInputOpRef.getValue();
-        org.apache.hyracks.algebricks.common.utils.Pair<ILogicalOperator, Map<LogicalVariable, LogicalVariable>> copiedRootWithVars =
+        Pair<ILogicalOperator, Map<LogicalVariable, LogicalVariable>> copiedRootWithVars =
                 OperatorManipulationUtil.deepCopyWithNewVars(inputOp, context);
-        ILogicalOperator clonedOp = copiedRootWithVars.getFirst();
+        ILogicalOperator clonedOp = copiedRootWithVars.getLeft();
 
         // Compute type environments for input and cloned operators
         context.computeAndSetTypeEnvironmentForOperator(inputOp);

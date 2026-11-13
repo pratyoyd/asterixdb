@@ -3,8 +3,8 @@ package org.apache.hyracks.algebricks.core.algebra.operators.physical;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.*;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.IOperatorSchema;
@@ -55,7 +55,7 @@ public class SortedMergeOneExchangePOperator extends AbstractExchangePOperator {
         }
         IConnectorDescriptor conn =
                 new MToNBroadcastMergingConnectorDescriptor(spec, sortFields, comparatorFactories, nkcf);
-        return new Pair<>(conn, IHyracksJobBuilder.TargetConstraint.ONE);
+        return Pair.of(conn, IHyracksJobBuilder.TargetConstraint.ONE);
     }
 
     @Override

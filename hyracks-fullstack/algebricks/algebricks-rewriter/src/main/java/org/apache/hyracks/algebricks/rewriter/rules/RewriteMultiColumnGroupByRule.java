@@ -5,8 +5,8 @@ import java.util.List;
 
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
@@ -76,7 +76,7 @@ public class RewriteMultiColumnGroupByRule implements IAlgebraicRewriteRule {
         List<Pair<LogicalVariable, Mutable<ILogicalExpression>>> innerGByList = new ArrayList<>();
         for (int i = 1; i < gList.size(); i++) {
             Pair<LogicalVariable, Mutable<ILogicalExpression>> p = gList.get(i);
-            innerGByList.add(new Pair<>(p.first, new MutableObject<>(p.second.getValue().cloneExpression())));
+            innerGByList.add(Pair.of(p.getLeft(), new MutableObject<>(p.getRight().getValue().cloneExpression())));
         }
         gList.subList(1, gList.size()).clear();
 
@@ -97,7 +97,7 @@ public class RewriteMultiColumnGroupByRule implements IAlgebraicRewriteRule {
         for (LogicalVariable v : innerGby.getGroupByVarList()) {
             VariableReferenceExpression vref = new VariableReferenceExpression(v);
             vref.setSourceLocation(sourceLoc);
-            orderExprs.add(new Pair<>(OrderOperator.ASC_ORDER, new MutableObject<>(vref)));
+            orderExprs.add(Pair.of(OrderOperator.ASC_ORDER, new MutableObject<>(vref)));
         }
         OrderOperator order = new OrderOperator(orderExprs);
         order.setSourceLocation(sourceLoc);

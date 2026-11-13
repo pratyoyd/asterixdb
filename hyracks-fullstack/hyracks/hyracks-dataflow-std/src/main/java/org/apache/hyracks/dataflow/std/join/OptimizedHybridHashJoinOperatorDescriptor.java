@@ -313,8 +313,7 @@ public class OptimizedHybridHashJoinOperatorDescriptor extends AbstractOperatorD
                             probePredEval, buildPredEval, isLeftOuter, nonMatchWriterFactories);
                     state.hybridHJ.setOperatorStats(stats);
                     if (buildSideObserverFactory != null) {
-                        state.hybridHJ.setBuildSideObserver(
-                                buildSideObserverFactory.createObserver(ctx, partition));
+                        state.hybridHJ.setBuildSideObserver(buildSideObserverFactory.createObserver(ctx, partition));
                     }
 
                     state.hybridHJ.initBuild();

@@ -32,8 +32,8 @@ import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
 import org.apache.hyracks.algebricks.core.algebra.expressions.VariableReferenceExpression;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator.IOrder;
 import org.apache.hyracks.algebricks.core.algebra.properties.LocalOrderProperty;
 import org.apache.hyracks.algebricks.core.algebra.properties.OrderColumn;
@@ -567,10 +567,10 @@ public class SubstituteVariableVisitor
     public Void visitIncrementalOrderOperator(IncrementalOrderOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
         for (Pair<IOrder, Mutable<ILogicalExpression>> oe : op.getOrderExpressions()) {
-            substUsedVariablesInExpr(oe.second, pair.first, pair.second);
+            substUsedVariablesInExpr(oe.getRight(), pair.getLeft(), pair.getRight());
         }
 
-        substUsedVariables(op.getGroupByColumns(), pair.first, pair.second);
+        substUsedVariables(op.getGroupByColumns(), pair.getLeft(), pair.getRight());
 
         return null;
 
@@ -580,8 +580,8 @@ public class SubstituteVariableVisitor
     public Void visitEagerMergeOperator(EagerMergeOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
 
-        LogicalVariable fromVar = pair.getFirst();
-        LogicalVariable toVar = pair.getSecond();
+        LogicalVariable fromVar = pair.getLeft();
+        LogicalVariable toVar = pair.getRight();
 
         List<LogicalVariable> groupByVars = op.getGroupByColumns();
         for (int i = 0; i < groupByVars.size(); i++) {

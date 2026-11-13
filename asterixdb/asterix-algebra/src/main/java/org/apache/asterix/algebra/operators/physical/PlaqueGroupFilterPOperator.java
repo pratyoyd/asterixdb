@@ -81,8 +81,8 @@ public class PlaqueGroupFilterPOperator extends AbstractPhysicalOperator {
         if (aggColumnIdx < 0 || groupColumnIdx < 0) {
             // Variables not in schema — happens when CBO sampling queries clone and
             // restructure the plan. Degrade to pass-through (no filtering).
-            RecordDescriptor recDesc = JobGenHelper.mkRecordDescriptor(
-                    context.getTypeEnvironment(op), opSchema, context);
+            RecordDescriptor recDesc =
+                    JobGenHelper.mkRecordDescriptor(context.getTypeEnvironment(op), opSchema, context);
             int[] projections = JobGenHelper.projectAllVariables(opSchema);
             builder.contributeMicroOperator(op,
                     new org.apache.hyracks.algebricks.runtime.operators.std.StreamProjectRuntimeFactory(projections),
@@ -93,8 +93,7 @@ public class PlaqueGroupFilterPOperator extends AbstractPhysicalOperator {
         }
         PlaqueGroupFilterRuntimeFactory runtime =
                 new PlaqueGroupFilterRuntimeFactory(groupColumnIdx, aggColumnIdx, isMax, handle);
-        RecordDescriptor recDesc = JobGenHelper.mkRecordDescriptor(
-                context.getTypeEnvironment(op), opSchema, context);
+        RecordDescriptor recDesc = JobGenHelper.mkRecordDescriptor(context.getTypeEnvironment(op), opSchema, context);
         builder.contributeMicroOperator(op, runtime, recDesc);
         ILogicalOperator src = op.getInputs().get(0).getValue();
         builder.contributeGraphEdge(src, 0, op, 0);

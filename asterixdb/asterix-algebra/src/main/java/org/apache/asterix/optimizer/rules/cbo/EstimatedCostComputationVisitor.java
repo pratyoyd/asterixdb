@@ -138,8 +138,7 @@ public class EstimatedCostComputationVisitor
     public EstimatedCostComputationVisitor.CardSizeCost visitIncrementalOrderOperator(IncrementalOrderOperator op,
             Double arg) throws AlgebricksException {
         double orderCost = 0.0;
-        EstimatedCostComputationVisitor.CardSizeCost cardSizeCost =
-                op.getInputs().get(0).getValue().accept(this, arg);
+        EstimatedCostComputationVisitor.CardSizeCost cardSizeCost = op.getInputs().get(0).getValue().accept(this, arg);
 
         for (Map.Entry<String, Object> anno : op.getAnnotations().entrySet()) {
             if (anno.getValue() != null && anno.getKey().equals(OperatorAnnotations.OP_COST_LOCAL)) {

@@ -45,10 +45,10 @@ public class PlaqueCrossExprHashJoinPOperator extends HybridHashJoinPOperator {
 
     public PlaqueCrossExprHashJoinPOperator(JoinKind kind, JoinPartitioningType partitioningType,
             List<LogicalVariable> sideLeftOfEqualities, List<LogicalVariable> sideRightOfEqualities,
-            int maxInputSizeInFrames, int aveRecordsPerFrame, double fudgeFactor,
-            String handle, int buildColumnIdx, boolean trackMin, int numPartitions) {
-        super(kind, partitioningType, sideLeftOfEqualities, sideRightOfEqualities,
-                maxInputSizeInFrames, aveRecordsPerFrame, fudgeFactor);
+            int maxInputSizeInFrames, int aveRecordsPerFrame, double fudgeFactor, String handle, int buildColumnIdx,
+            boolean trackMin, int numPartitions) {
+        super(kind, partitioningType, sideLeftOfEqualities, sideRightOfEqualities, maxInputSizeInFrames,
+                aveRecordsPerFrame, fudgeFactor);
         this.handle = handle;
         this.buildColumnIdx = buildColumnIdx;
         this.trackMin = trackMin;
@@ -96,19 +96,19 @@ public class PlaqueCrossExprHashJoinPOperator extends HybridHashJoinPOperator {
         switch (kind) {
             case INNER:
                 opDesc = new OptimizedHybridHashJoinOperatorDescriptor(spec, memSizeInFrames,
-                        (int) (memSizeInFrames * getFudgeFactor()), getFudgeFactor(),
-                        keysLeft, keysRight, leftHashFunFamilies, rightHashFunFamilies, recDescriptor,
-                        comparatorFactory, reverseComparatorFactory, leftPredEvalFactory, rightPredEvalFactory,
-                        false, null, observerFactory);
+                        (int) (memSizeInFrames * getFudgeFactor()), getFudgeFactor(), keysLeft, keysRight,
+                        leftHashFunFamilies, rightHashFunFamilies, recDescriptor, comparatorFactory,
+                        reverseComparatorFactory, leftPredEvalFactory, rightPredEvalFactory, false, null,
+                        observerFactory);
                 break;
             case LEFT_OUTER:
                 IMissingWriterFactory[] nonMatchWriterFactories = JobGenHelper.createMissingWriterFactories(context,
                         ((LeftOuterJoinOperator) joinOp).getMissingValue(), inputSchemas[1].getSize());
                 opDesc = new OptimizedHybridHashJoinOperatorDescriptor(spec, memSizeInFrames,
-                        (int) (memSizeInFrames * getFudgeFactor()), getFudgeFactor(),
-                        keysLeft, keysRight, leftHashFunFamilies, rightHashFunFamilies, recDescriptor,
-                        comparatorFactory, reverseComparatorFactory, leftPredEvalFactory, rightPredEvalFactory,
-                        true, nonMatchWriterFactories, observerFactory);
+                        (int) (memSizeInFrames * getFudgeFactor()), getFudgeFactor(), keysLeft, keysRight,
+                        leftHashFunFamilies, rightHashFunFamilies, recDescriptor, comparatorFactory,
+                        reverseComparatorFactory, leftPredEvalFactory, rightPredEvalFactory, true,
+                        nonMatchWriterFactories, observerFactory);
                 break;
             default:
                 throw new NotImplementedException();

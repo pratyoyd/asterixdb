@@ -2,7 +2,6 @@ package org.apache.asterix.algebra.operators.physical;
 
 import org.apache.asterix.runtime.operators.plaque.PlaqueFilterRuntimeFactory;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.runtime.operators.std.StreamProjectRuntimeFactory;
 import org.apache.hyracks.algebricks.core.algebra.base.IHyracksJobBuilder;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -17,6 +16,7 @@ import org.apache.hyracks.algebricks.core.algebra.properties.PhysicalRequirement
 import org.apache.hyracks.algebricks.core.algebra.properties.StructuralPropertiesVector;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenContext;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenHelper;
+import org.apache.hyracks.algebricks.runtime.operators.std.StreamProjectRuntimeFactory;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
 
 public class PlaqueFilterPOperator extends AbstractPhysicalOperator {
@@ -79,17 +79,19 @@ public class PlaqueFilterPOperator extends AbstractPhysicalOperator {
         int columnIdx = inputSchemas[0].findVariable(filteredVar);
         if (columnIdx < 0) {
             // CBO sampling query may strip variables — fall back to pass-through
-            RecordDescriptor recDescFallback = JobGenHelper.mkRecordDescriptor(
-                    context.getTypeEnvironment(op), opSchema, context);
-            builder.contributeMicroOperator(op, new StreamProjectRuntimeFactory(
-                    inputSchemas[0].getSize()), recDescFallback);
+            RecordDescriptor recDescFallback =
+                    JobGenHelper.mkRecordDescriptor(context.getTypeEnvironment(op), opSchema, context);
+            int[] passThrough = new int[inputSchemas[0].getSize()];
+            for (int i = 0; i < passThrough.length; i++) {
+                passThrough[i] = i;
+            }
+            builder.contributeMicroOperator(op, new StreamProjectRuntimeFactory(passThrough), recDescFallback);
             ILogicalOperator srcFallback = op.getInputs().get(0).getValue();
             builder.contributeGraphEdge(srcFallback, 0, op, 0);
             return;
         }
         PlaqueFilterRuntimeFactory runtime = new PlaqueFilterRuntimeFactory(columnIdx, isMax, handle, strictComparison);
-        RecordDescriptor recDesc = JobGenHelper.mkRecordDescriptor(
-                context.getTypeEnvironment(op), opSchema, context);
+        RecordDescriptor recDesc = JobGenHelper.mkRecordDescriptor(context.getTypeEnvironment(op), opSchema, context);
         builder.contributeMicroOperator(op, runtime, recDesc);
         ILogicalOperator src = op.getInputs().get(0).getValue();
         builder.contributeGraphEdge(src, 0, op, 0);

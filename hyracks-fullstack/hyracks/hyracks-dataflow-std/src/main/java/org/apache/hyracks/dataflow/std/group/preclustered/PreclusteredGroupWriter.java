@@ -18,9 +18,10 @@
  */
 package org.apache.hyracks.dataflow.std.group.preclustered;
 
+import static org.apache.hyracks.dataflow.std.util.ProfilingUtils.profiling;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import static org.apache.hyracks.dataflow.std.util.ProfilingUtils.profiling;
 import java.nio.ByteBuffer;
 import java.time.format.DateTimeFormatter;
 import java.util.*;

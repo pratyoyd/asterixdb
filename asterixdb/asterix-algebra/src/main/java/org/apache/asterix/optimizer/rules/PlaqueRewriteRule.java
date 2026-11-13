@@ -5,14 +5,12 @@ import java.util.List;
 import java.util.Set;
 
 import org.apache.asterix.algebra.operators.physical.PlaqueAggregatePOperator;
-import org.apache.asterix.algebra.operators.physical.PlaqueCrossExprExchangePOperator;
-import org.apache.asterix.algebra.operators.physical.PlaqueCrossExprHashJoinPOperator;
 import org.apache.asterix.algebra.operators.physical.PlaqueFilterPOperator;
 import org.apache.asterix.algebra.operators.physical.PlaqueGroupByAggregatePOperator;
 import org.apache.asterix.algebra.operators.physical.PlaqueGroupFilterPOperator;
 import org.apache.asterix.algebra.operators.physical.PlaqueThetaJoinPOperator;
-import org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory;
 import org.apache.asterix.om.functions.BuiltinFunctions;
+import org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
@@ -132,8 +130,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         boolean pushThroughJoin = physConf.getPlaquePushThroughJoin();
 
         // Find insertion points — deep (below join) and optionally shallow (at join's probe input)
-        Mutable<ILogicalOperator>[] insertionPoints = findInsertionPoints(
-                aggOp.getInputs().get(0), filteredVar, pushThroughJoin);
+        Mutable<ILogicalOperator>[] insertionPoints =
+                findInsertionPoints(aggOp.getInputs().get(0), filteredVar, pushThroughJoin);
 
         Mutable<ILogicalOperator> deepRef = insertionPoints[0];
         Mutable<ILogicalOperator> shallowRef = insertionPoints[1]; // non-null if crossed a join
@@ -151,8 +149,7 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         aggOp.getAnnotations().put(PLAQUE_HANDLE, handle);
         aggOp.getAnnotations().put("plaque-isMax", isMax);
         aggOp.getAnnotations().put("plaque-filteredVar", filteredVar);
-        aggOp.setPhysicalOperator(new PlaqueAggregatePOperator(
-                handle, isMax, propagationEnabled, propagationInterval));
+        aggOp.setPhysicalOperator(new PlaqueAggregatePOperator(handle, isMax, propagationEnabled, propagationInterval));
 
         // Deep filter (below exchange — opportunistic, works when pipeline overlaps)
         SelectOperator deepFilter = createPlaqueFilter(aggOp, deepRef, filteredVar, isMax, handle, false);
@@ -168,13 +165,11 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         return true;
     }
 
-    private SelectOperator createPlaqueFilter(AggregateOperator aggOp,
-            Mutable<ILogicalOperator> insertionRef, LogicalVariable filteredVar,
-            boolean isMax, String handle, boolean requiresPartitioning) {
+    private SelectOperator createPlaqueFilter(AggregateOperator aggOp, Mutable<ILogicalOperator> insertionRef,
+            LogicalVariable filteredVar, boolean isMax, String handle, boolean requiresPartitioning) {
         SelectOperator filter = new SelectOperator(new MutableObject<>(ConstantExpression.TRUE));
         filter.setSourceLocation(aggOp.getSourceLocation());
-        filter.setExecutionMode(
-                ((AbstractLogicalOperator) insertionRef.getValue()).getExecutionMode());
+        filter.setExecutionMode(((AbstractLogicalOperator) insertionRef.getValue()).getExecutionMode());
         filter.getAnnotations().put(PLAQUE_FILTER, true);
         filter.getAnnotations().put(PLAQUE_HANDLE, handle);
         filter.setPhysicalOperator(new PlaqueFilterPOperator(filteredVar, isMax, handle, requiresPartitioning));
@@ -187,9 +182,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
      * shallowRef = join's probe input ref (for above-exchange filter). Non-null only if a join was crossed.
      */
     @SuppressWarnings("unchecked")
-    private Mutable<ILogicalOperator>[] findInsertionPoints(
-            Mutable<ILogicalOperator> startRef, LogicalVariable filteredVar,
-            boolean pushThroughJoin) throws AlgebricksException {
+    private Mutable<ILogicalOperator>[] findInsertionPoints(Mutable<ILogicalOperator> startRef,
+            LogicalVariable filteredVar, boolean pushThroughJoin) throws AlgebricksException {
 
         Mutable<ILogicalOperator> currentRef = startRef;
         Mutable<ILogicalOperator> joinProbeRef = null;
@@ -203,11 +197,10 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
                 if (assignOp.getVariables().contains(filteredVar)) {
                     return new Mutable[] { currentRef, joinProbeRef };
                 }
-            } else if (tag == LogicalOperatorTag.PROJECT
-                    || tag == LogicalOperatorTag.EXCHANGE) {
+            } else if (tag == LogicalOperatorTag.PROJECT || tag == LogicalOperatorTag.EXCHANGE) {
                 // Safe to walk through
-            } else if ((tag == LogicalOperatorTag.INNERJOIN
-                    || tag == LogicalOperatorTag.LEFTOUTERJOIN) && pushThroughJoin) {
+            } else if ((tag == LogicalOperatorTag.INNERJOIN || tag == LogicalOperatorTag.LEFTOUTERJOIN)
+                    && pushThroughJoin) {
                 AbstractLogicalOperator joinOp = (AbstractLogicalOperator) current;
                 if (!variableProducedBelow(joinOp.getInputs().get(0).getValue(), filteredVar)) {
                     // Variable from build side — weak filter above join
@@ -217,8 +210,7 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
                 joinProbeRef = joinOp.getInputs().get(0);
                 currentRef = joinProbeRef;
                 continue;
-            } else if (tag == LogicalOperatorTag.DATASOURCESCAN
-                    || tag == LogicalOperatorTag.SELECT) {
+            } else if (tag == LogicalOperatorTag.DATASOURCESCAN || tag == LogicalOperatorTag.SELECT) {
                 return new Mutable[] { currentRef, joinProbeRef };
             } else {
                 // Unknown operator — stop and insert above it
@@ -234,8 +226,7 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         return new Mutable[] { null, null };
     }
 
-    private boolean variableProducedBelow(ILogicalOperator op, LogicalVariable var)
-            throws AlgebricksException {
+    private boolean variableProducedBelow(ILogicalOperator op, LogicalVariable var) throws AlgebricksException {
         Set<LogicalVariable> liveVars = new HashSet<>();
         VariableUtilities.getLiveVariables(op, liveVars);
         return liveVars.contains(var);
@@ -323,8 +314,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         }
 
         // Find the insertion point for the filter on the outer side
-        Mutable<ILogicalOperator> filterInsertionRef = findFilterInsertionOnOuterSide(
-                joinOp.getInputs().get(0), outerJoinVar);
+        Mutable<ILogicalOperator> filterInsertionRef =
+                findFilterInsertionOnOuterSide(joinOp.getInputs().get(0), outerJoinVar);
         if (filterInsertionRef == null) {
             return false;
         }
@@ -334,12 +325,11 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         // Create and insert the PLAQUE filter on the outer side
         SelectOperator plaqueFilter = new SelectOperator(new MutableObject<>(ConstantExpression.TRUE));
         plaqueFilter.setSourceLocation(joinOp.getSourceLocation());
-        plaqueFilter.setExecutionMode(
-                ((AbstractLogicalOperator) filterInsertionRef.getValue()).getExecutionMode());
+        plaqueFilter.setExecutionMode(((AbstractLogicalOperator) filterInsertionRef.getValue()).getExecutionMode());
         plaqueFilter.getAnnotations().put(PLAQUE_FILTER, true);
         plaqueFilter.getAnnotations().put(PLAQUE_HANDLE, handle);
-        plaqueFilter.setPhysicalOperator(
-                new PlaqueFilterPOperator(outerJoinVar, isMax, handle, false, strictComparison));
+        plaqueFilter
+                .setPhysicalOperator(new PlaqueFilterPOperator(outerJoinVar, isMax, handle, false, strictComparison));
         ILogicalOperator below = filterInsertionRef.getValue();
         plaqueFilter.getInputs().add(new MutableObject<>(below));
         filterInsertionRef.setValue(plaqueFilter);
@@ -351,8 +341,7 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         joinOp.getAnnotations().put("plaque-isMax", isMax);
         joinOp.getAnnotations().put("plaque-filteredVar", outerJoinVar);
         int eagerBatchSize = context.getPhysicalOptimizationConfig().getPlaqueEagerBatchSize();
-        joinOp.setPhysicalOperator(new PlaqueThetaJoinPOperator(
-                joinOp.getJoinKind(), JoinPartitioningType.BROADCAST,
+        joinOp.setPhysicalOperator(new PlaqueThetaJoinPOperator(joinOp.getJoinKind(), JoinPartitioningType.BROADCAST,
                 handle, isMax, strictComparison, outerJoinVar, eagerBatchSize));
 
         context.computeAndSetTypeEnvironmentForOperator(joinOp);
@@ -363,8 +352,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
      * Walk down the outer (probe) side to find where to insert the PLAQUE filter.
      * Walks through ASSIGN, PROJECT, EXCHANGE, stops at DATASOURCE_SCAN, SELECT, or unknown.
      */
-    private Mutable<ILogicalOperator> findFilterInsertionOnOuterSide(
-            Mutable<ILogicalOperator> startRef, LogicalVariable filteredVar) throws AlgebricksException {
+    private Mutable<ILogicalOperator> findFilterInsertionOnOuterSide(Mutable<ILogicalOperator> startRef,
+            LogicalVariable filteredVar) throws AlgebricksException {
         Mutable<ILogicalOperator> currentRef = startRef;
         while (true) {
             ILogicalOperator current = currentRef.getValue();
@@ -398,9 +387,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
      * above a hash join. If found, injects build-side observer on the join and
      * exchange filter on the probe-side exchange.
      */
-    private boolean rewriteCrossTableExpression(AggregateOperator aggOp, LogicalVariable filteredVar,
-            boolean isMax, PhysicalOptimizationConfig physConf, IOptimizationContext context)
-            throws AlgebricksException {
+    private boolean rewriteCrossTableExpression(AggregateOperator aggOp, LogicalVariable filteredVar, boolean isMax,
+            PhysicalOptimizationConfig physConf, IOptimizationContext context) throws AlgebricksException {
 
         // Walk down from aggregate to find the ASSIGN defining filteredVar
         ILogicalOperator current = aggOp.getInputs().get(0).getValue();
@@ -414,7 +402,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
                     break;
                 }
             }
-            if (current.getInputs().isEmpty()) break;
+            if (current.getInputs().isEmpty())
+                break;
             current = current.getInputs().get(0).getValue();
         }
         if (exprAssign == null) {
@@ -425,7 +414,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         // Check if the expression is a binary arithmetic (subtract, add, multiply, divide)
         int idx = exprAssign.getVariables().indexOf(filteredVar);
         ILogicalExpression expr = exprAssign.getExpressions().get(idx).getValue();
-        if (!(expr instanceof AbstractFunctionCallExpression)) return false;
+        if (!(expr instanceof AbstractFunctionCallExpression))
+            return false;
 
         AbstractFunctionCallExpression funcExpr = (AbstractFunctionCallExpression) expr;
         FunctionIdentifier fid = funcExpr.getFunctionIdentifier();
@@ -454,12 +444,13 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
                 isMax ? PlaqueCrossExprExchangeFilterFactory.FilterDirection.GREATER
                         : PlaqueCrossExprExchangeFilterFactory.FilterDirection.LESS;
 
-        if (funcExpr.getArguments().size() != 2) return false;
+        if (funcExpr.getArguments().size() != 2)
+            return false;
         ILogicalExpression arg0 = funcExpr.getArguments().get(0).getValue();
         ILogicalExpression arg1 = funcExpr.getArguments().get(1).getValue();
         if (!(arg0 instanceof VariableReferenceExpression) || !(arg1 instanceof VariableReferenceExpression)) {
-            System.out.println("PLAQUE_CROSSEXPR: subtract args not var refs: "
-                    + arg0.getClass().getSimpleName() + ", " + arg1.getClass().getSimpleName());
+            System.out.println("PLAQUE_CROSSEXPR: subtract args not var refs: " + arg0.getClass().getSimpleName() + ", "
+                    + arg1.getClass().getSimpleName());
             return false;
         }
         LogicalVariable var0 = ((VariableReferenceExpression) arg0).getVariableReference();
@@ -475,7 +466,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
                 joinOp = (AbstractBinaryJoinOperator) current;
                 break;
             }
-            if (current.getInputs().isEmpty()) break;
+            if (current.getInputs().isEmpty())
+                break;
             current = current.getInputs().get(0).getValue();
         }
         if (joinOp == null) {
@@ -485,7 +477,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         System.out.println("PLAQUE_CROSSEXPR: found join kind=" + joinOp.getJoinKind());
 
         // Must be an inner join with an equi-join condition (will become hash join)
-        if (joinOp.getJoinKind() != JoinKind.INNER) return false;
+        if (joinOp.getJoinKind() != JoinKind.INNER)
+            return false;
 
         // Determine which variable comes from which side of the join
         // In AsterixDB's plan: input 0 (first child) = PROBE side (Lineitem)
@@ -536,8 +529,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         aggOp.getAnnotations().put("plaque-crossexpr-build-handle", buildSideHandle);
         aggOp.getAnnotations().put("plaque-crossexpr-combine-op", combineOp);
         aggOp.getAnnotations().put("plaque-crossexpr-filter-direction", filterDirection);
-        aggOp.setPhysicalOperator(new PlaqueAggregatePOperator(
-                thresholdHandle, isMax, propagationEnabled, propagationInterval));
+        aggOp.setPhysicalOperator(
+                new PlaqueAggregatePOperator(thresholdHandle, isMax, propagationEnabled, propagationInterval));
 
         // 2. Annotate the join with ALL cross-expr metadata.
         // Exchanges don't exist yet (EnforceStructuralPropertiesRule runs later).
@@ -554,9 +547,9 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         joinOp.getAnnotations().put("plaque-crossexpr-combine-op", combineOp);
         joinOp.getAnnotations().put("plaque-crossexpr-filter-direction", filterDirection);
 
-        System.out.println("PLAQUE_CROSSEXPR: annotations set on join and aggregate. "
-                + "thresholdHandle=" + thresholdHandle + " buildSideHandle=" + buildSideHandle
-                + " probeVar=" + probeVar + " buildVar=" + buildVar);
+        System.out.println(
+                "PLAQUE_CROSSEXPR: annotations set on join and aggregate. " + "thresholdHandle=" + thresholdHandle
+                        + " buildSideHandle=" + buildSideHandle + " probeVar=" + probeVar + " buildVar=" + buildVar);
 
         context.computeAndSetTypeEnvironmentForOperator(aggOp);
         return true;
@@ -611,13 +604,13 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         }
 
         // Must be DESC (for Top-K largest)
-        OrderOperator.IOrder order = orderOp.getOrderExpressions().get(0).first;
+        OrderOperator.IOrder order = orderOp.getOrderExpressions().get(0).getLeft();
         if (order.getKind() != OrderOperator.IOrder.OrderKind.DESC) {
             return false;
         }
 
         // Extract sort key variable
-        ILogicalExpression sortKeyExpr = orderOp.getOrderExpressions().get(0).second.getValue();
+        ILogicalExpression sortKeyExpr = orderOp.getOrderExpressions().get(0).getRight().getValue();
         if (sortKeyExpr.getExpressionTag() != LogicalExpressionTag.VARIABLE) {
             return false;
         }
@@ -634,7 +627,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
                     break;
                 }
             }
-            if (current.getInputs().isEmpty()) break;
+            if (current.getInputs().isEmpty())
+                break;
             current = current.getInputs().get(0).getValue();
         }
         if (exprAssign == null) {
@@ -644,7 +638,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         // Check if the expression is binary arithmetic
         int idx = exprAssign.getVariables().indexOf(sortKeyVar);
         ILogicalExpression expr = exprAssign.getExpressions().get(idx).getValue();
-        if (!(expr instanceof AbstractFunctionCallExpression)) return false;
+        if (!(expr instanceof AbstractFunctionCallExpression))
+            return false;
 
         AbstractFunctionCallExpression funcExpr = (AbstractFunctionCallExpression) expr;
         FunctionIdentifier fid = funcExpr.getFunctionIdentifier();
@@ -666,7 +661,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDirection =
                 PlaqueCrossExprExchangeFilterFactory.FilterDirection.GREATER;
 
-        if (funcExpr.getArguments().size() != 2) return false;
+        if (funcExpr.getArguments().size() != 2)
+            return false;
         ILogicalExpression arg0 = funcExpr.getArguments().get(0).getValue();
         ILogicalExpression arg1 = funcExpr.getArguments().get(1).getValue();
         if (!(arg0 instanceof VariableReferenceExpression) || !(arg1 instanceof VariableReferenceExpression)) {
@@ -684,7 +680,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
                 joinOp = (AbstractBinaryJoinOperator) current;
                 break;
             }
-            if (current.getInputs().isEmpty()) break;
+            if (current.getInputs().isEmpty())
+                break;
             current = current.getInputs().get(0).getValue();
         }
         if (joinOp == null) {
@@ -752,10 +749,9 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         joinOp.getAnnotations().put("plaque-crossexpr-combine-op", combineOp);
         joinOp.getAnnotations().put("plaque-crossexpr-filter-direction", filterDirection);
 
-        System.out.println("PLAQUE_TOPK_CROSSEXPR: annotations set on order and join. "
-                + "topK=" + orderOp.getTopK() + " thresholdHandle=" + thresholdHandle
-                + " buildSideHandle=" + buildSideHandle
-                + " probeVar=" + probeVar + " buildVar=" + buildVar);
+        System.out.println("PLAQUE_TOPK_CROSSEXPR: annotations set on order and join. " + "topK=" + orderOp.getTopK()
+                + " thresholdHandle=" + thresholdHandle + " buildSideHandle=" + buildSideHandle + " probeVar="
+                + probeVar + " buildVar=" + buildVar);
 
         return true;
     }
@@ -772,10 +768,10 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         }
 
         // Need exactly 1 group key that is a variable reference
-        if (gByOp.getGByList().size() != 1) {
+        if (gByOp.getGroupByList().size() != 1) {
             return false;
         }
-        ILogicalExpression gByExpr = gByOp.getGByList().get(0).second.getValue();
+        ILogicalExpression gByExpr = gByOp.getGroupByList().get(0).getRight().getValue();
         if (!(gByExpr instanceof VariableReferenceExpression)) {
             return false;
         }
@@ -801,7 +797,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         LogicalVariable filteredVar = null;
         for (int i = 0; i < nestedAgg.getExpressions().size(); i++) {
             ILogicalExpression expr = nestedAgg.getExpressions().get(i).getValue();
-            if (!(expr instanceof AggregateFunctionCallExpression)) continue;
+            if (!(expr instanceof AggregateFunctionCallExpression))
+                continue;
             AggregateFunctionCallExpression aggExpr = (AggregateFunctionCallExpression) expr;
             FunctionIdentifier fid = aggExpr.getFunctionIdentifier();
             if (fid.equals(BuiltinFunctions.LOCAL_SQL_MAX) || fid.equals(BuiltinFunctions.LOCAL_SQL_MIN)) {
@@ -809,9 +806,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
                         && aggExpr.getArguments().get(0).getValue() instanceof VariableReferenceExpression) {
                     eligibleIdx = i;
                     isMax = fid.equals(BuiltinFunctions.LOCAL_SQL_MAX);
-                    filteredVar =
-                            ((VariableReferenceExpression) aggExpr.getArguments().get(0).getValue())
-                                    .getVariableReference();
+                    filteredVar = ((VariableReferenceExpression) aggExpr.getArguments().get(0).getValue())
+                            .getVariableReference();
                     break;
                 }
             }
@@ -834,8 +830,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         gByOp.getAnnotations().put("plaque-propagationInterval", propagationInterval);
 
         // Set physical operator on the nested aggregate
-        nestedAgg.setPhysicalOperator(new PlaqueGroupByAggregatePOperator(
-                handle, isMax, propagationEnabled, propagationInterval, groupKeyVar));
+        nestedAgg.setPhysicalOperator(new PlaqueGroupByAggregatePOperator(handle, isMax, propagationEnabled,
+                propagationInterval, groupKeyVar));
 
         // Remove any scalar PLAQUE filter that was inserted into the nested plan
         // (the scalar path fires on AGGREGATE before GROUP visits, inserting SELECT between
@@ -844,8 +840,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
 
         // Find filter insertion point below the GROUP BY's input
         boolean pushThroughJoin = physConf.getPlaquePushThroughJoin();
-        Mutable<ILogicalOperator>[] insertionPoints = findInsertionPoints(
-                gByOp.getInputs().get(0), filteredVar, pushThroughJoin);
+        Mutable<ILogicalOperator>[] insertionPoints =
+                findInsertionPoints(gByOp.getInputs().get(0), filteredVar, pushThroughJoin);
         Mutable<ILogicalOperator> deepRef = insertionPoints[0];
 
         if (deepRef != null) {
@@ -853,8 +849,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
             Set<LogicalVariable> liveVars = new HashSet<>();
             VariableUtilities.getLiveVariables(deepRef.getValue(), liveVars);
             if (liveVars.contains(groupKeyVar)) {
-                SelectOperator groupFilter = createPlaqueGroupFilter(gByOp, deepRef, filteredVar,
-                        groupKeyVar, isMax, handle);
+                SelectOperator groupFilter =
+                        createPlaqueGroupFilter(gByOp, deepRef, filteredVar, groupKeyVar, isMax, handle);
                 ILogicalOperator below = deepRef.getValue();
                 groupFilter.getInputs().add(new MutableObject<>(below));
                 deepRef.setValue(groupFilter);
@@ -872,7 +868,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
      * by PushGroupByIntoSortRule.
      */
     private void rewriteGroupByNestedPlan(AggregateOperator nestedAgg) {
-        if (nestedAgg.getInputs().isEmpty()) return;
+        if (nestedAgg.getInputs().isEmpty())
+            return;
         ILogicalOperator child = nestedAgg.getInputs().get(0).getValue();
         if (child.getOperatorTag() == LogicalOperatorTag.SELECT) {
             SelectOperator selectChild = (SelectOperator) child;
@@ -883,13 +880,11 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         }
     }
 
-    private SelectOperator createPlaqueGroupFilter(GroupByOperator gByOp,
-            Mutable<ILogicalOperator> insertionRef, LogicalVariable filteredVar,
-            LogicalVariable groupKeyVar, boolean isMax, String handle) {
+    private SelectOperator createPlaqueGroupFilter(GroupByOperator gByOp, Mutable<ILogicalOperator> insertionRef,
+            LogicalVariable filteredVar, LogicalVariable groupKeyVar, boolean isMax, String handle) {
         SelectOperator filter = new SelectOperator(new MutableObject<>(ConstantExpression.TRUE));
         filter.setSourceLocation(gByOp.getSourceLocation());
-        filter.setExecutionMode(
-                ((AbstractLogicalOperator) insertionRef.getValue()).getExecutionMode());
+        filter.setExecutionMode(((AbstractLogicalOperator) insertionRef.getValue()).getExecutionMode());
         filter.getAnnotations().put("plaque-group-filter", true);
         filter.getAnnotations().put(PLAQUE_HANDLE, handle);
         filter.setPhysicalOperator(new PlaqueGroupFilterPOperator(filteredVar, groupKeyVar, isMax, handle));

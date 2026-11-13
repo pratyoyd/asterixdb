@@ -141,11 +141,10 @@ public class NestedLoopJoinOperatorDescriptor extends AbstractOperatorDescriptor
                 @Override
                 public void open() throws HyracksDataException {
                     state = new JoinCacheTaskState(jobletCtx.getJobId(), new TaskId(getActivityId(), partition));
-                    INLJMismatchWriter mw = mismatchWriterFactory != null
-                            ? mismatchWriterFactory.createWriter(ctx) : null;
+                    INLJMismatchWriter mw =
+                            mismatchWriterFactory != null ? mismatchWriterFactory.createWriter(ctx) : null;
                     state.joiner = new NestedLoopJoin(jobletCtx, new FrameTupleAccessor(rd0),
-                            new FrameTupleAccessor(rd1), memSize, isLeftOuter, nullWriters1, false, mw,
-                            eagerBatchSize);
+                            new FrameTupleAccessor(rd1), memSize, isLeftOuter, nullWriters1, false, mw, eagerBatchSize);
                     inFrame = new VSizeFrame(ctx);
                 }
 

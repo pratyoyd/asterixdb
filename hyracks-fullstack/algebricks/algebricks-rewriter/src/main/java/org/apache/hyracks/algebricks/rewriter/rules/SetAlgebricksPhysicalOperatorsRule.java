@@ -42,9 +42,9 @@ import org.apache.hyracks.algebricks.core.algebra.expressions.VariableReferenceE
 import org.apache.hyracks.algebricks.core.algebra.metadata.IDataSource;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.InsertDeleteUpsertOperator.Kind;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.KMeansStageOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.physical.*;
 import org.apache.hyracks.algebricks.core.algebra.properties.OrderColumn;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.KMeansStageOperator;
 import org.apache.hyracks.algebricks.core.algebra.visitors.ILogicalOperatorVisitor;
 import org.apache.hyracks.algebricks.core.rewriter.base.IAlgebraicRewriteRule;
 import org.apache.hyracks.algebricks.core.rewriter.base.PhysicalOptimizationConfig;
@@ -460,14 +460,14 @@ public class SetAlgebricksPhysicalOperatorsRule implements IAlgebraicRewriteRule
 
             List<Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>>> orderExpressions =
                     incrementalOrderOperator.getOrderExpressions();
-            ensureAllVariables(orderExpressions, Pair::getSecond);
+            ensureAllVariables(orderExpressions, Pair::getRight);
             OrderColumn[] orderColumns = new OrderColumn[orderExpressions.size()];
             //List<LogicalVariable> varLst = orderExpressions.second.getValue().getUsedVariables(usedVariables);
             for (int i = 0; i < orderExpressions.size(); i++) {
-                ILogicalExpression expression = orderExpressions.get(i).second.getValue();
+                ILogicalExpression expression = orderExpressions.get(i).getRight().getValue();
                 VariableReferenceExpression variableReferenceExpression = (VariableReferenceExpression) expression;
                 LogicalVariable orderVar = variableReferenceExpression.getVariableReference();
-                OrderOperator.IOrder.OrderKind kind = orderExpressions.get(i).first.getKind();
+                OrderOperator.IOrder.OrderKind kind = orderExpressions.get(i).getLeft().getKind();
                 OrderColumn ordercolumn = new OrderColumn(orderVar, kind);
                 orderColumns[i] = ordercolumn;
 

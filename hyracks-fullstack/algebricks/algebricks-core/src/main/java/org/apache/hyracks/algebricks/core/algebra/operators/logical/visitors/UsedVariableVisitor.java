@@ -531,7 +531,7 @@ public class UsedVariableVisitor implements ILogicalOperatorVisitor<Void, Void> 
     @Override
     public Void visitIncrementalOrderOperator(IncrementalOrderOperator op, Void arg) throws AlgebricksException {
         for (Pair<IOrder, Mutable<ILogicalExpression>> oe : op.getOrderExpressions()) {
-            oe.second.getValue().getUsedVariables(usedVariables);
+            oe.getRight().getValue().getUsedVariables(usedVariables);
         }
         op.getGroupByColumns().addAll(usedVariables);
         return null;

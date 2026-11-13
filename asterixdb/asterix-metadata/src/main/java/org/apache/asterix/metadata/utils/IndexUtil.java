@@ -351,21 +351,18 @@ public class IndexUtil {
                 org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDir =
                         org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory.FilterDirection
                                 .valueOf(columnInfo.getPlaqueCrossExprFilterDirection());
-                plaqueFactory = new org.apache.asterix.column.filter.range.evaluator
-                        .PlaqueCrossExprColumnFilterEvaluatorFactory(
-                                columnInfo.getPlaqueHandle(),
-                                columnInfo.getPlaqueCrossExprBuildHandle(),
-                                columnInfo.isPlaqueIsMax(),
-                                columnInfo.getPlaqueColumnPath(),
-                                combineOp, filterDir);
+                plaqueFactory =
+                        new org.apache.asterix.column.filter.range.evaluator.PlaqueCrossExprColumnFilterEvaluatorFactory(
+                                columnInfo.getPlaqueHandle(), columnInfo.getPlaqueCrossExprBuildHandle(),
+                                columnInfo.isPlaqueIsMax(), columnInfo.getPlaqueColumnPath(), combineOp, filterDir);
             } else {
                 // Standard single-table page filter
                 plaqueFactory = new org.apache.asterix.column.filter.range.evaluator.PlaqueColumnFilterEvaluatorFactory(
-                        columnInfo.getPlaqueHandle(), columnInfo.isPlaqueIsMax(),
-                        columnInfo.getPlaqueColumnPath());
+                        columnInfo.getPlaqueHandle(), columnInfo.isPlaqueIsMax(), columnInfo.getPlaqueColumnPath());
             }
-            rangeFilterEvaluatorFactory = new org.apache.asterix.column.filter.range.evaluator
-                    .ANDColumnFilterEvaluatorFactory(rangeFilterEvaluatorFactory, plaqueFactory);
+            rangeFilterEvaluatorFactory =
+                    new org.apache.asterix.column.filter.range.evaluator.ANDColumnFilterEvaluatorFactory(
+                            rangeFilterEvaluatorFactory, plaqueFactory);
         }
 
         ColumnFilterBuilder columnFilterBuilder = new ColumnFilterBuilder(columnInfo, context, typeEnv);

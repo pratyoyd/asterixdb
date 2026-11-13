@@ -3,8 +3,8 @@ package org.apache.asterix.algebra.operators.physical;
 import java.util.List;
 
 import org.apache.asterix.runtime.operators.plaque.PlaqueCrossExprExchangeFilterFactory;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.IHyracksJobBuilder.TargetConstraint;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
@@ -35,8 +35,8 @@ public class PlaqueCrossExprExchangePOperator extends HashPartitionExchangePOper
     private final PlaqueCrossExprExchangeFilterFactory.CombineOp combineOp;
     private final PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDirection;
 
-    public PlaqueCrossExprExchangePOperator(List<LogicalVariable> hashFields, INodeDomain domain,
-            int[][] partitionsMap, String thresholdHandle, String buildSideHandle, int probeColumnIdx,
+    public PlaqueCrossExprExchangePOperator(List<LogicalVariable> hashFields, INodeDomain domain, int[][] partitionsMap,
+            String thresholdHandle, String buildSideHandle, int probeColumnIdx,
             PlaqueCrossExprExchangeFilterFactory.CombineOp combineOp,
             PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDirection) {
         super(hashFields, domain, partitionsMap);
@@ -69,10 +69,10 @@ public class PlaqueCrossExprExchangePOperator extends HashPartitionExchangePOper
             tpcf = FieldHashPartitionComputerFactory.withMap(keys, hashFunctionFactories, partitionsMap);
         }
 
-        IPlaqueExchangeFilterFactory filterFactory = new PlaqueCrossExprExchangeFilterFactory(
-                thresholdHandle, buildSideHandle, probeColumnIdx, combineOp, filterDirection);
+        IPlaqueExchangeFilterFactory filterFactory = new PlaqueCrossExprExchangeFilterFactory(thresholdHandle,
+                buildSideHandle, probeColumnIdx, combineOp, filterDirection);
 
         IConnectorDescriptor conn = new MToNPartitioningConnectorDescriptor(spec, tpcf, filterFactory);
-        return new Pair<>(conn, null);
+        return Pair.of(conn, null);
     }
 }

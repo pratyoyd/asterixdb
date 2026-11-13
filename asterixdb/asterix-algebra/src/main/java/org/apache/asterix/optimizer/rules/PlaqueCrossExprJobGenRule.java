@@ -20,7 +20,6 @@ import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperato
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.visitors.VariableUtilities;
 import org.apache.hyracks.algebricks.core.algebra.operators.physical.HashPartitionExchangePOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.physical.HybridHashJoinPOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.physical.StableSortPOperator;
 import org.apache.hyracks.algebricks.core.rewriter.base.IAlgebraicRewriteRule;
 
 /**
@@ -78,11 +77,11 @@ public class PlaqueCrossExprJobGenRule implements IAlgebraicRewriteRule {
         Boolean trackMin = (Boolean) joinOp.getAnnotations().get("plaque-crossexpr-track-min");
         Integer numPartitions = (Integer) joinOp.getAnnotations().get("plaque-crossexpr-num-partitions");
         PlaqueCrossExprExchangeFilterFactory.CombineOp combineOp =
-                (PlaqueCrossExprExchangeFilterFactory.CombineOp)
-                        joinOp.getAnnotations().get("plaque-crossexpr-combine-op");
+                (PlaqueCrossExprExchangeFilterFactory.CombineOp) joinOp.getAnnotations()
+                        .get("plaque-crossexpr-combine-op");
         PlaqueCrossExprExchangeFilterFactory.FilterDirection filterDirection =
-                (PlaqueCrossExprExchangeFilterFactory.FilterDirection)
-                        joinOp.getAnnotations().get("plaque-crossexpr-filter-direction");
+                (PlaqueCrossExprExchangeFilterFactory.FilterDirection) joinOp.getAnnotations()
+                        .get("plaque-crossexpr-filter-direction");
 
         if (buildSideHandle == null || thresholdHandle == null || buildVar == null || probeVar == null
                 || trackMin == null || numPartitions == null || combineOp == null || filterDirection == null) {
@@ -91,15 +90,10 @@ public class PlaqueCrossExprJobGenRule implements IAlgebraicRewriteRule {
 
         // 1. Replace the join's physical operator with the PLAQUE variant
         AbstractBinaryJoinOperator joinLogOp = (AbstractBinaryJoinOperator) joinOp;
-        joinOp.setPhysicalOperator(new PlaqueCrossExprHashJoinPOperator(
-                joinLogOp.getJoinKind(),
-                existingPOp.getPartitioningType(),
-                existingPOp.getKeysLeftBranch(),
-                existingPOp.getKeysRightBranch(),
-                (int) (existingPOp.getFudgeFactor() * 100),
-                1,
-                existingPOp.getFudgeFactor(),
-                buildSideHandle, 0, trackMin, numPartitions));
+        joinOp.setPhysicalOperator(new PlaqueCrossExprHashJoinPOperator(joinLogOp.getJoinKind(),
+                existingPOp.getPartitioningType(), existingPOp.getKeysLeftBranch(), existingPOp.getKeysRightBranch(),
+                (int) (existingPOp.getFudgeFactor() * 100), 1, existingPOp.getFudgeFactor(), buildSideHandle, 0,
+                trackMin, numPartitions));
 
         // 2. Find the probe-side HASH_PARTITION_EXCHANGE and replace it
         // Determine which input is the probe side using the probeVar
@@ -118,21 +112,20 @@ public class PlaqueCrossExprJobGenRule implements IAlgebraicRewriteRule {
         while (current != null) {
             if (current.getOperatorTag() == LogicalOperatorTag.EXCHANGE) {
                 AbstractLogicalOperator exchangeOp = (AbstractLogicalOperator) current;
-                if (exchangeOp.getPhysicalOperator() != null
-                        && exchangeOp.getPhysicalOperator().getOperatorTag()
-                        == PhysicalOperatorTag.HASH_PARTITION_EXCHANGE) {
+                if (exchangeOp.getPhysicalOperator() != null && exchangeOp.getPhysicalOperator()
+                        .getOperatorTag() == PhysicalOperatorTag.HASH_PARTITION_EXCHANGE) {
                     HashPartitionExchangePOperator existingExchangePOp =
                             (HashPartitionExchangePOperator) exchangeOp.getPhysicalOperator();
-                    exchangeOp.setPhysicalOperator(new PlaqueCrossExprExchangePOperator(
-                            existingExchangePOp.getHashFields(),
-                            existingExchangePOp.getDomain(),
-                            existingExchangePOp.getPartitionsMap(),
-                            thresholdHandle, buildSideHandle, 0, combineOp, filterDirection));
+                    exchangeOp.setPhysicalOperator(
+                            new PlaqueCrossExprExchangePOperator(existingExchangePOp.getHashFields(),
+                                    existingExchangePOp.getDomain(), existingExchangePOp.getPartitionsMap(),
+                                    thresholdHandle, buildSideHandle, 0, combineOp, filterDirection));
                     System.out.println("PLAQUE_CROSSEXPR_JOBGEN: replaced probe exchange physical operator");
                     break;
                 }
             }
-            if (current.getInputs().isEmpty()) break;
+            if (current.getInputs().isEmpty())
+                break;
             current = current.getInputs().get(0).getValue();
         }
 
@@ -174,7 +167,8 @@ public class PlaqueCrossExprJobGenRule implements IAlgebraicRewriteRule {
                 }
                 break;
             }
-            if (current.getInputs().isEmpty()) break;
+            if (current.getInputs().isEmpty())
+                break;
             current = current.getInputs().get(0).getValue();
         }
 
@@ -188,8 +182,8 @@ public class PlaqueCrossExprJobGenRule implements IAlgebraicRewriteRule {
         plaqueSortPOp.computeLocalProperties(order);
         orderOp.setPhysicalOperator(plaqueSortPOp);
         orderOp.getAnnotations().put("plaque-topk-done", true);
-        System.out.println("PLAQUE_TOPK_JOBGEN: replaced sort physical operator, topK=" + order.getTopK()
-                + " handle=" + thresholdHandle);
+        System.out.println("PLAQUE_TOPK_JOBGEN: replaced sort physical operator, topK=" + order.getTopK() + " handle="
+                + thresholdHandle);
         return true;
     }
 }

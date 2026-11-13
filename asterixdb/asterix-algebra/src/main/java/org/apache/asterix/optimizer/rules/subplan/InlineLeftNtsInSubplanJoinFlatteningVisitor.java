@@ -399,8 +399,7 @@ class InlineLeftNtsInSubplanJoinFlatteningVisitor implements IQueryOperatorVisit
         for (LogicalVariable liveVar : liveVarsFromSubplanInput) {
             VariableReferenceExpression liveVarRef = new VariableReferenceExpression(liveVar);
             liveVarRef.setSourceLocation(op.getSourceLocation());
-            orderExprList.add(new Pair<IOrder, Mutable<ILogicalExpression>>(OrderOperator.ASC_ORDER,
-                    new MutableObject<ILogicalExpression>(liveVarRef)));
+            orderExprList.add(Pair.of(OrderOperator.ASC_ORDER, new MutableObject<ILogicalExpression>(liveVarRef)));
         }
         orderExprList.addAll(op.getOrderExpressions());
 

@@ -16,8 +16,8 @@ import org.apache.asterix.optimizer.rules.am.AccessMethodUtils;
 import org.apache.asterix.optimizer.rules.am.BTreeJobGenParams;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.*;
 import org.apache.hyracks.algebricks.core.algebra.expressions.AbstractFunctionCallExpression;
 import org.apache.hyracks.algebricks.core.algebra.expressions.ConstantExpression;
@@ -109,7 +109,7 @@ public class InteractiveSortRule implements IAlgebraicRewriteRule {
             OrderOperator orderOperator = (OrderOperator) operator;
             List<Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>>> orderKeys =
                     orderOperator.getOrderExpressions();
-            ILogicalExpression firstExpression = orderKeys.get(0).second.getValue();
+            ILogicalExpression firstExpression = orderKeys.get(0).getRight().getValue();
             Set<LogicalVariable> firstKeyUsedVars = new HashSet<>();
             firstExpression.getUsedVariables(firstKeyUsedVars);
             if (firstKeyUsedVars.isEmpty())
@@ -142,7 +142,7 @@ public class InteractiveSortRule implements IAlgebraicRewriteRule {
 
                 // For each grouping variable, check if it has a corresponding field and B-Tree index.
                 for (Pair<LogicalVariable, Mutable<ILogicalExpression>> varPair : gbyVarList) {
-                    LogicalVariable var = varPair.first;
+                    LogicalVariable var = varPair.getLeft();
                     //if (currentOp.getSchema().contains(var)) {
                     // Check if the variable has a B-Tree index
                     if (hasBTreeIndexAccess(var, opRef, context)) {
@@ -351,14 +351,13 @@ public class InteractiveSortRule implements IAlgebraicRewriteRule {
 
             ARecordType recordType = (ARecordType) metadataProvider.findType(dataset);
             ARecordType metaRecordType = (ARecordType) metadataProvider.findMetaType(dataset);
-            recordType =
-                    (ARecordType) metadataProvider.findTypeForDatasetWithoutType(recordType, metaRecordType, dataset);
+            recordType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(recordType, dataset);
 
             // Create the new operator to replace the DataSourceScan
             AbstractUnnestMapOperator chosenIndexUnnestOperator =
                     (AbstractUnnestMapOperator) AccessMethodUtils.createSecondaryIndexUnnestMap(dataset, recordType,
                             metaRecordType, chosenIndex, scanOperator.getInputs().get(0).getValue(), newBTreeParameters,
-                            context, retainInput, false, false, ConstantExpression.MISSING.getValue());
+                            context, retainInput, false, ConstantExpression.MISSING.getValue());
 
             // Reuse the inputs of the DataSourceScan operator
             chosenIndexUnnestOperator.getInputs().clear();

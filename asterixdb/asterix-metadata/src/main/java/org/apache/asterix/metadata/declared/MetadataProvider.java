@@ -876,7 +876,7 @@ public class MetadataProvider implements IMetadataProvider<DataSourceId, String>
         } else {
             btreeSearchOp = null;
         }
-        return new Pair<>(btreeSearchOp, datasetPartitioningProp.getConstraints());
+        return Pair.of(btreeSearchOp, datasetPartitioningProp.getConstraints());
     }
 
     public Pair<IOperatorDescriptor, AlgebricksPartitionConstraint> getRtreeSearchRuntime(JobSpecification jobSpec,
@@ -1051,7 +1051,7 @@ public class MetadataProvider implements IMetadataProvider<DataSourceId, String>
         } catch (IOException e) {
             throw new AlgebricksException(e);
         }
-        return new Pair<>(resultWriter, null);
+        return Pair.of(resultWriter, null);
     }
 
     @Override

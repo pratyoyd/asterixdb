@@ -337,7 +337,7 @@ public class SweepIllegalNonfunctionalFunctions implements IAlgebraicRewriteRule
         @Override
         public Void visitIncrementalOrderOperator(IncrementalOrderOperator op, Void arg) throws AlgebricksException {
             for (Pair<IOrder, Mutable<ILogicalExpression>> p : op.getOrderExpressions()) {
-                sweepExpression(p.second.getValue());
+                sweepExpression(p.getRight().getValue());
             }
             return null;
         }

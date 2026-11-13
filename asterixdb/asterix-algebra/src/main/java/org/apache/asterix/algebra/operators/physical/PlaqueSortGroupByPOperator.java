@@ -7,8 +7,8 @@ import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.runtime.operators.plaque.PlaqueGroupByAggregateEvaluatorFactory;
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.IHyracksJobBuilder;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -23,8 +23,8 @@ import org.apache.hyracks.algebricks.core.algebra.operators.logical.AggregateOpe
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.IOperatorSchema;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator.IOrder.OrderKind;
-import org.apache.hyracks.algebricks.core.algebra.properties.OrderColumn;
 import org.apache.hyracks.algebricks.core.algebra.operators.physical.SortGroupByPOperator;
+import org.apache.hyracks.algebricks.core.algebra.properties.OrderColumn;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenContext;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenHelper;
 import org.apache.hyracks.algebricks.core.jobgen.impl.OperatorSchemaImpl;
@@ -53,9 +53,8 @@ public class PlaqueSortGroupByPOperator extends SortGroupByPOperator {
     private final int propagationInterval;
     private final LogicalVariable groupKeyVar;
 
-    public PlaqueSortGroupByPOperator(List<LogicalVariable> columnList, OrderColumn[] orderColumns,
-            String handle, boolean isMax, boolean propagationEnabled, int propagationInterval,
-            LogicalVariable groupKeyVar) {
+    public PlaqueSortGroupByPOperator(List<LogicalVariable> columnList, OrderColumn[] orderColumns, String handle,
+            boolean isMax, boolean propagationEnabled, int propagationInterval, LogicalVariable groupKeyVar) {
         super(columnList, orderColumns);
         this.handle = handle;
         this.isMax = isMax;
@@ -111,9 +110,8 @@ public class PlaqueSortGroupByPOperator extends SortGroupByPOperator {
                             aggFun.getArguments().get(j).getValue(), aggOpInputEnv, inputSchemas, context);
                 }
                 IAType aggFieldType = (IAType) aggOpInputEnv.getType(aggFun.getArguments().get(0).getValue());
-                aff[i] = new PlaqueGroupByAggregateEvaluatorFactory(scalarArgs, isMin,
-                        aggFun.getSourceLocation(), aggFieldType, handle, isMax,
-                        propagationEnabled, propagationInterval, groupKeyColumnIndex);
+                aff[i] = new PlaqueGroupByAggregateEvaluatorFactory(scalarArgs, isMin, aggFun.getSourceLocation(),
+                        aggFieldType, handle, isMax, propagationEnabled, propagationInterval, groupKeyColumnIndex);
             } else {
                 aff[i] = expressionRuntimeProvider.createAggregateFunctionFactory(aggFun, aggOpInputEnv, inputSchemas,
                         context);
@@ -133,7 +131,7 @@ public class PlaqueSortGroupByPOperator extends SortGroupByPOperator {
 
         List<LogicalVariable> keyAndDecVariables = new ArrayList<>();
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : gby.getGroupByList()) {
-            keyAndDecVariables.add(p.first);
+            keyAndDecVariables.add(p.getLeft());
         }
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : gby.getDecorList()) {
             keyAndDecVariables.add(GroupByOperator.getDecorVariable(p));

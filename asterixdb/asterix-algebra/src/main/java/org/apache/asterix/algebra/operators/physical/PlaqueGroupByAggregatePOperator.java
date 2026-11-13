@@ -69,7 +69,8 @@ public class PlaqueGroupByAggregatePOperator extends AggregatePOperator {
             // Fallback: try inputSchemas
             for (IOperatorSchema s : inputSchemas) {
                 groupKeyColumnIndex = s.findVariable(groupKeyVar);
-                if (groupKeyColumnIndex >= 0) break;
+                if (groupKeyColumnIndex >= 0)
+                    break;
             }
         }
         if (groupKeyColumnIndex < 0) {
@@ -79,8 +80,7 @@ public class PlaqueGroupByAggregatePOperator extends AggregatePOperator {
         }
 
         for (int i = 0; i < aggFactories.length; i++) {
-            AggregateFunctionCallExpression aggFun =
-                    (AggregateFunctionCallExpression) expressions.get(i).getValue();
+            AggregateFunctionCallExpression aggFun = (AggregateFunctionCallExpression) expressions.get(i).getValue();
 
             FunctionIdentifier fid = aggFun.getFunctionIdentifier();
             boolean isMin = fid.equals(BuiltinFunctions.LOCAL_SQL_MIN);
@@ -94,14 +94,12 @@ public class PlaqueGroupByAggregatePOperator extends AggregatePOperator {
             IAType aggFieldType =
                     (IAType) context.getTypeEnvironment(inputOp).getType(aggFun.getArguments().get(0).getValue());
 
-            aggFactories[i] = new PlaqueGroupByAggregateEvaluatorFactory(scalarArgs, isMin,
-                    aggFun.getSourceLocation(), aggFieldType, handle, isMax,
-                    propagationEnabled, propagationInterval, groupKeyColumnIndex);
+            aggFactories[i] = new PlaqueGroupByAggregateEvaluatorFactory(scalarArgs, isMin, aggFun.getSourceLocation(),
+                    aggFieldType, handle, isMax, propagationEnabled, propagationInterval, groupKeyColumnIndex);
         }
 
         AggregateRuntimeFactory runtime = new AggregateRuntimeFactory(aggFactories);
-        RecordDescriptor recDesc = JobGenHelper.mkRecordDescriptor(
-                context.getTypeEnvironment(op), opSchema, context);
+        RecordDescriptor recDesc = JobGenHelper.mkRecordDescriptor(context.getTypeEnvironment(op), opSchema, context);
         builder.contributeMicroOperator(aggOp, runtime, recDesc);
         ILogicalOperator src = aggOp.getInputs().get(0).getValue();
         builder.contributeGraphEdge(src, 0, aggOp, 0);

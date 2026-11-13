@@ -50,7 +50,7 @@ public abstract class AbstractGroupByPOperator extends AbstractPhysicalOperator 
         return columnList;
     }
 
-    int[] getFdColumns(GroupByOperator gby, IOperatorSchema inputSchema) throws AlgebricksException {
+    protected int[] getFdColumns(GroupByOperator gby, IOperatorSchema inputSchema) throws AlgebricksException {
         int numFds = gby.getDecorList().size();
         int fdColumns[] = new int[numFds];
         int j = 0;
@@ -66,7 +66,7 @@ public abstract class AbstractGroupByPOperator extends AbstractPhysicalOperator 
         return fdColumns;
     }
 
-    void checkGroupAll(GroupByOperator groupByOp) throws AlgebricksException {
+    protected void checkGroupAll(GroupByOperator groupByOp) throws AlgebricksException {
         if (groupByOp.isGroupAll() && !groupByOp.getDecorList().isEmpty()) {
             throw AlgebricksException.create(ErrorCode.GROUP_ALL_DECOR, groupByOp.getSourceLocation());
         }

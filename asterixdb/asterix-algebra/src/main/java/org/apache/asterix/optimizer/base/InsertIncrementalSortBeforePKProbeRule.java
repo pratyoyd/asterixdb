@@ -266,8 +266,8 @@ import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.optimizer.rules.am.BTreeJobGenParams;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -399,7 +399,7 @@ public class InsertIncrementalSortBeforePKProbeRule implements IAlgebraicRewrite
         List<Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>>> orderExprs = new ArrayList<>();
         List<OrderColumn> orderCols = new ArrayList<>();
         for (LogicalVariable v : kVars) {
-            orderExprs.add(new Pair<>(OrderOperator.ASC_ORDER,
+            orderExprs.add(Pair.of(OrderOperator.ASC_ORDER,
                     new MutableObject<ILogicalExpression>(new VariableReferenceExpression(v))));
             orderCols.add(new OrderColumn(v, OrderOperator.IOrder.OrderKind.ASC));
         }

@@ -13,8 +13,8 @@ import org.apache.asterix.optimizer.rules.am.*;
 import org.apache.asterix.optimizer.rules.am.array.JoinFromSubplanRewrite;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -56,7 +56,7 @@ public class InteractiveJoinRule extends AbstractIntroduceAccessMethodRule {
         registerAccessMethod(RTreeAccessMethod.INSTANCE, accessMethods);
         registerAccessMethod(InvertedIndexAccessMethod.INSTANCE, accessMethods);
         for (Pair<FunctionIdentifier, Boolean> optFunc : BTreeAccessMethod.INSTANCE.getOptimizableFunctions()) {
-            JoinFromSubplanRewrite.addOptimizableFunction(optFunc.first);
+            JoinFromSubplanRewrite.addOptimizableFunction(optFunc.getLeft());
         }
     }
 

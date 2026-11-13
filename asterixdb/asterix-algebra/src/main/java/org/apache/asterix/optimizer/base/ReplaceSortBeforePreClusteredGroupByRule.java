@@ -90,8 +90,8 @@ import java.util.List;
 
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -195,8 +195,7 @@ public class ReplaceSortBeforePreClusteredGroupByRule
         List<Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>>> orderExprs = new ArrayList<>();
         List<OrderColumn> orderColsList = new ArrayList<>();
         for (LogicalVariable v : orderVars) {
-            orderExprs
-                    .add(new Pair<>(OrderOperator.ASC_ORDER, new MutableObject<>(new VariableReferenceExpression(v))));
+            orderExprs.add(Pair.of(OrderOperator.ASC_ORDER, new MutableObject<>(new VariableReferenceExpression(v))));
             orderColsList.add(new OrderColumn(v, OrderOperator.IOrder.OrderKind.ASC));
         }
 
@@ -227,7 +226,7 @@ public class ReplaceSortBeforePreClusteredGroupByRule
             return result;
         }
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : gby.getGroupByList()) {
-            ILogicalExpression e = p.second.getValue();
+            ILogicalExpression e = p.getRight().getValue();
             if (e.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                 // Use the source (input-side) var (e.g., $$98), not the output var (e.g., $$p_brand)
                 result.add(((VariableReferenceExpression) e).getVariableReference());

@@ -38,9 +38,8 @@ public class PlaqueThetaJoinPOperator extends AbstractJoinPOperator {
     private final LogicalVariable outerJoinVar;
     private final int eagerBatchSize;
 
-    public PlaqueThetaJoinPOperator(JoinKind kind, JoinPartitioningType partitioningType,
-            String handle, boolean isMax, boolean strictComparison, LogicalVariable outerJoinVar,
-            int eagerBatchSize) {
+    public PlaqueThetaJoinPOperator(JoinKind kind, JoinPartitioningType partitioningType, String handle, boolean isMax,
+            boolean strictComparison, LogicalVariable outerJoinVar, int eagerBatchSize) {
         super(kind, partitioningType);
         this.handle = handle;
         this.isMax = isMax;
@@ -66,8 +65,7 @@ public class PlaqueThetaJoinPOperator extends AbstractJoinPOperator {
         org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator op =
                 (org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator) iop;
         org.apache.hyracks.algebricks.core.algebra.properties.IPartitioningProperty pp;
-        if (op.getExecutionMode()
-                == org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator.ExecutionMode.PARTITIONED) {
+        if (op.getExecutionMode() == org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator.ExecutionMode.PARTITIONED) {
             org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator leftOp =
                     (org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator) op
                             .getInputs().get(0).getValue();

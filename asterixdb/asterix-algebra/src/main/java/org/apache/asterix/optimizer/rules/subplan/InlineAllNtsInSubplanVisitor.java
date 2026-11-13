@@ -731,7 +731,7 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
         for (LogicalVariable keyVar : correlatedKeyVars) {
             VariableReferenceExpression keyVarRef = new VariableReferenceExpression(keyVar);
             keyVarRef.setSourceLocation(op.getSourceLocation());
-            orderExprList.add(new Pair<>(OrderOperator.ASC_ORDER, new MutableObject<>(keyVarRef)));
+            orderExprList.add(Pair.of(OrderOperator.ASC_ORDER, new MutableObject<>(keyVarRef)));
         }
         orderExprList.addAll(op.getOrderExpressions());
 

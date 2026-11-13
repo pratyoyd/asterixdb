@@ -81,8 +81,8 @@ public class NestedLoopJoin {
     public NestedLoopJoin(IHyracksJobletContext jobletContext, FrameTupleAccessor accessorOuter,
             FrameTupleAccessor accessorInner, int memBudgetInFrames, boolean isLeftOuter,
             IMissingWriter[] missingWriters) throws HyracksDataException {
-        this(jobletContext, accessorOuter, accessorInner, memBudgetInFrames, isLeftOuter, missingWriters, false,
-                null, 0);
+        this(jobletContext, accessorOuter, accessorInner, memBudgetInFrames, isLeftOuter, missingWriters, false, null,
+                0);
     }
 
     public NestedLoopJoin(IHyracksJobletContext jobletContext, FrameTupleAccessor accessorOuter,
@@ -102,8 +102,7 @@ public class NestedLoopJoin {
 
     public NestedLoopJoin(IHyracksJobletContext jobletContext, FrameTupleAccessor accessorOuter,
             FrameTupleAccessor accessorInner, int memBudgetInFrames, boolean isLeftOuter,
-            IMissingWriter[] missingWriters, boolean isReversed, INLJMismatchWriter mismatchWriter,
-            int eagerBatchSize)
+            IMissingWriter[] missingWriters, boolean isReversed, INLJMismatchWriter mismatchWriter, int eagerBatchSize)
             throws HyracksDataException {
         this.accessorInner = accessorInner;
         this.accessorOuter = accessorOuter;
@@ -260,8 +259,8 @@ public class NestedLoopJoin {
             int tupleCount = accessorOuter.getTupleCount();
             totalOuter += tupleCount;
             int limit = outerTupleRunningCount + tupleCount;
-            for (int t = outerMatchedForMismatch.nextClearBit(outerTupleRunningCount); t < limit;
-                    t = outerMatchedForMismatch.nextClearBit(t + 1)) {
+            for (int t = outerMatchedForMismatch.nextClearBit(outerTupleRunningCount); t < limit; t =
+                    outerMatchedForMismatch.nextClearBit(t + 1)) {
                 int localIdx = t - outerTupleRunningCount;
                 mismatchWriter.onUnmatchedOuterTuple(accessorOuter, localIdx);
                 totalUnmatched++;
@@ -269,10 +268,9 @@ public class NestedLoopJoin {
             outerTupleRunningCount += tupleCount;
         }
         if (totalUnmatched > 0 || totalOuter > 0) {
-            System.out.println("PLAQUE_NLJ_NOTIFY: outerFrames=" + outerBufferFrameCount
-                    + " totalOuter=" + totalOuter + " unmatched=" + totalUnmatched
-                    + " matched=" + (totalOuter - totalUnmatched)
-                    + " bitsetCard=" + outerMatchedForMismatch.cardinality());
+            System.out.println("PLAQUE_NLJ_NOTIFY: outerFrames=" + outerBufferFrameCount + " totalOuter=" + totalOuter
+                    + " unmatched=" + totalUnmatched + " matched=" + (totalOuter - totalUnmatched) + " bitsetCard="
+                    + outerMatchedForMismatch.cardinality());
         }
     }
 
@@ -337,8 +335,8 @@ public class NestedLoopJoin {
         // rather than frame count. Re-reading a small run file is free (OS page cache).
         // Threshold: inner fits in one frame worth of tuples (~1600 for 32KB frames).
         int maxInnerTuplesForEager = Math.max(innerBuffer.getFrameSize() / ESTIMATE_AVG_TUPLE_SIZE, 64);
-        eagerMismatchEnabled = (mismatchWriter != null) && (eagerBatchSize > 0)
-                && (cachedInnerTupleCount > 0) && (cachedInnerTupleCount <= maxInnerTuplesForEager);
+        eagerMismatchEnabled = (mismatchWriter != null) && (eagerBatchSize > 0) && (cachedInnerTupleCount > 0)
+                && (cachedInnerTupleCount <= maxInnerTuplesForEager);
     }
 
     public void completeJoin(IFrameWriter writer) throws HyracksDataException {

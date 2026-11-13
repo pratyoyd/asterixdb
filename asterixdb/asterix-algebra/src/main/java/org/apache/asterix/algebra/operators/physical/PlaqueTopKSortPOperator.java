@@ -72,8 +72,8 @@ public class PlaqueTopKSortPOperator extends StableSortPOperator {
 
         PlaqueTopKThresholdObserverFactory observerFactory = new PlaqueTopKThresholdObserverFactory(handle, isMax);
 
-        PlaqueTopKSorterOperatorDescriptor sortOpDesc = new PlaqueTopKSorterOperatorDescriptor(
-                spec, maxNumberOfFrames, topK, sortFields, nkcf, comps, recDescriptor, observerFactory);
+        PlaqueTopKSorterOperatorDescriptor sortOpDesc = new PlaqueTopKSorterOperatorDescriptor(spec, maxNumberOfFrames,
+                topK, sortFields, nkcf, comps, recDescriptor, observerFactory);
 
         sortOpDesc.setSourceLocation(op.getSourceLocation());
         contributeOpDesc(builder, (AbstractLogicalOperator) op, sortOpDesc);

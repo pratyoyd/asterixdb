@@ -72,6 +72,10 @@ public class SortGroupByPOperator extends AbstractGroupByPOperator {
         this.orderColumns = orderColumns;
     }
 
+    public OrderColumn[] getSortColumns() {
+        return orderColumns;
+    }
+
     @Override
     public PhysicalOperatorTag getOperatorTag() {
         return PhysicalOperatorTag.SORT_GROUP_BY;

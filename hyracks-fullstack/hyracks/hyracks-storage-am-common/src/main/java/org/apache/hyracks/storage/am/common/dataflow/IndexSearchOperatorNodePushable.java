@@ -197,7 +197,7 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
         this.ctx = ctx;
         this.isInteractive = isInteractive;
         this.isLeftMostTree = isLeftMostTree;
-        this.appender = new FrameTupleAppender(new VSizeFrame(ctx), true);
+        this.appender = new FrameTupleAppender(ctx.allocateVSizeFrame(), true);
         //TODO(partitioning) partitionsMap should not be null
         this.partitions = partitionsMap != null ? partitionsMap[partition] : new int[] { partition };
         for (int i = 0; i < partitions.length; i++) {

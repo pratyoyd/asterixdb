@@ -58,9 +58,8 @@ public class PlaqueGroupByJobGenRule implements IAlgebraicRewriteRule {
         boolean propagationEnabled = context.getPhysicalOptimizationConfig().getPlaquePropagation();
         int propagationInterval = context.getPhysicalOptimizationConfig().getPlaquePropagationInterval();
 
-        op.setPhysicalOperator(new PlaqueSortGroupByPOperator(
-                gby.getGroupByVarList(), sortGby.getSortColumns(),
-                handle, isMax, propagationEnabled, propagationInterval, groupKeyVar));
+        op.setPhysicalOperator(new PlaqueSortGroupByPOperator(gby.getGroupByVarList(), sortGby.getSortColumns(), handle,
+                isMax, propagationEnabled, propagationInterval, groupKeyVar));
 
         return true;
     }

@@ -1246,7 +1246,7 @@ public class AccessMethodUtils {
                 VariableReferenceExpression pkVarRef = new VariableReferenceExpression(pkVar);
                 pkVarRef.setSourceLocation(sourceLoc);
                 Mutable<ILogicalExpression> vRef = new MutableObject<>(pkVarRef);
-                order.getOrderExpressions().add(new Pair<>(OrderOperator.ASC_ORDER, vRef));
+                order.getOrderExpressions().add(Pair.of(OrderOperator.ASC_ORDER, vRef));
             }
             // The secondary-index search feeds into the sort.
             order.getInputs().add(new MutableObject<>(inputOp));
@@ -1270,7 +1270,7 @@ public class AccessMethodUtils {
         else if (sortPrimaryKeys && !context.getPhysicalOptimizationConfig().getInteractiveMode()) {
             primaryIndexUnnestMapOp.getInputs().add(new MutableObject<>(order));
         } else {
-            primaryIndexUnnestMapOp.getInputs().add(new MutableObject<>(op));
+            primaryIndexUnnestMapOp.getInputs().add(new MutableObject<>(inputOp));
         }
         context.computeAndSetTypeEnvironmentForOperator(primaryIndexUnnestMapOp);
         primaryIndexUnnestMapOp.setExecutionMode(ExecutionMode.PARTITIONED);

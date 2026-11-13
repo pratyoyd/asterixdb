@@ -84,16 +84,15 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
 
         // Cross-expression: use probe variable for page filter, not the expression variable
         if (Boolean.TRUE.equals(aggOp.getAnnotations().get("plaque-cross-expr"))) {
-            LogicalVariable probeVar =
-                    (LogicalVariable) aggOp.getAnnotations().get("plaque-crossexpr-probe-var");
+            LogicalVariable probeVar = (LogicalVariable) aggOp.getAnnotations().get("plaque-crossexpr-probe-var");
             String buildHandle = (String) aggOp.getAnnotations().get("plaque-crossexpr-build-handle");
             Object combineOpObj = aggOp.getAnnotations().get("plaque-crossexpr-combine-op");
             Object filterDirObj = aggOp.getAnnotations().get("plaque-crossexpr-filter-direction");
             if (probeVar == null || buildHandle == null || combineOpObj == null || filterDirObj == null) {
                 return false;
             }
-            return attachCrossExprPageFilter(aggOp, aggOp.getInputs().get(0), handle, isMax,
-                    probeVar, buildHandle, ((Enum<?>) combineOpObj).name(), ((Enum<?>) filterDirObj).name());
+            return attachCrossExprPageFilter(aggOp, aggOp.getInputs().get(0), handle, isMax, probeVar, buildHandle,
+                    ((Enum<?>) combineOpObj).name(), ((Enum<?>) filterDirObj).name());
         }
 
         return attachPageFilter(aggOp, aggOp.getInputs().get(0), handle, isMax, filteredVar);
@@ -150,7 +149,8 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
                 }
                 break;
             }
-            if (current.getInputs().isEmpty()) break;
+            if (current.getInputs().isEmpty())
+                break;
             current = current.getInputs().get(0).getValue();
         }
         if (joinOp == null) {
@@ -160,20 +160,18 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
         // Read cross-expr metadata from the join annotations
         String handle = (String) joinOp.getAnnotations().get("plaque-crossexpr-threshold-handle");
         String buildHandle = (String) joinOp.getAnnotations().get("plaque-crossexpr-build-handle");
-        LogicalVariable probeVar =
-                (LogicalVariable) joinOp.getAnnotations().get("plaque-crossexpr-probe-var");
+        LogicalVariable probeVar = (LogicalVariable) joinOp.getAnnotations().get("plaque-crossexpr-probe-var");
         Object combineOpObj = joinOp.getAnnotations().get("plaque-crossexpr-combine-op");
         Object filterDirObj = joinOp.getAnnotations().get("plaque-crossexpr-filter-direction");
 
-        if (handle == null || buildHandle == null || probeVar == null
-                || combineOpObj == null || filterDirObj == null) {
+        if (handle == null || buildHandle == null || probeVar == null || combineOpObj == null || filterDirObj == null) {
             return false;
         }
 
         boolean isMax = true; // DESC Top-K = MAX direction
 
-        boolean result = attachCrossExprPageFilter(orderOp, orderOp.getInputs().get(0), handle, isMax,
-                probeVar, buildHandle, ((Enum<?>) combineOpObj).name(), ((Enum<?>) filterDirObj).name());
+        boolean result = attachCrossExprPageFilter(orderOp, orderOp.getInputs().get(0), handle, isMax, probeVar,
+                buildHandle, ((Enum<?>) combineOpObj).name(), ((Enum<?>) filterDirObj).name());
         if (result) {
             orderOp.getAnnotations().put("plaque-topk-page-filter-set", true);
         }
@@ -202,8 +200,8 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
         // Find field names for both the aggregate and group key columns
         String aggFieldName = findFieldName(gByOp.getInputs().get(0), filteredVar);
         String groupFieldName = findFieldName(gByOp.getInputs().get(0), groupKeyVar);
-        System.out.println("PLAQUE_GROUPBY_PAGE_FILTER: handle=" + handle + " aggField=" + aggFieldName
-                + " groupField=" + groupFieldName);
+        System.out.println("PLAQUE_GROUPBY_PAGE_FILTER: handle=" + handle + " aggField=" + aggFieldName + " groupField="
+                + groupFieldName);
         if (aggFieldName == null || groupFieldName == null) {
             return false;
         }
@@ -218,11 +216,9 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
             return false;
         }
 
-        ARecordType aggColumnPath = new ARecordType("plaque_groupby_agg_path",
-                new String[] { aggFieldName },
+        ARecordType aggColumnPath = new ARecordType("plaque_groupby_agg_path", new String[] { aggFieldName },
                 new IAType[] { BuiltinType.ANY }, false);
-        ARecordType groupColumnPath = new ARecordType("plaque_groupby_grp_path",
-                new String[] { groupFieldName },
+        ARecordType groupColumnPath = new ARecordType("plaque_groupby_grp_path", new String[] { groupFieldName },
                 new IAType[] { BuiltinType.ANY }, false);
 
         ColumnDatasetProjectionFiltrationInfo columnInfo = (ColumnDatasetProjectionFiltrationInfo) info;
@@ -235,20 +231,21 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
     }
 
     private boolean attachCrossExprPageFilter(AbstractLogicalOperator annotatedOp, Mutable<ILogicalOperator> walkRef,
-            String thresholdHandle, boolean isMax, LogicalVariable probeVar,
-            String buildHandle, String combineOp, String filterDirection) throws AlgebricksException {
+            String thresholdHandle, boolean isMax, LogicalVariable probeVar, String buildHandle, String combineOp,
+            String filterDirection) throws AlgebricksException {
         // For cross-expr, the probeVar is defined in an ASSIGN above the join (e.g., $$68 from l.getField(5))
         // We need to find the field name for this variable from the Lineitem scan
         String fieldName = findFieldName(walkRef, probeVar);
-        System.out.println("PLAQUE_CROSSEXPR_PAGE_FILTER: thresholdHandle=" + thresholdHandle
-                + " buildHandle=" + buildHandle + " probeVar=" + probeVar + " fieldName=" + fieldName);
+        System.out.println("PLAQUE_CROSSEXPR_PAGE_FILTER: thresholdHandle=" + thresholdHandle + " buildHandle="
+                + buildHandle + " probeVar=" + probeVar + " fieldName=" + fieldName);
         if (fieldName == null) {
             return false;
         }
 
         // Find the probe-side DataSourceScan (walk through join's input 0)
         DataSourceScanOperator scanOp = findProbeDataSourceScan(walkRef);
-        System.out.println("PLAQUE_CROSSEXPR_PAGE_FILTER: scanOp=" + (scanOp != null ? scanOp.getDataSource() : "null"));
+        System.out
+                .println("PLAQUE_CROSSEXPR_PAGE_FILTER: scanOp=" + (scanOp != null ? scanOp.getDataSource() : "null"));
         if (scanOp == null) {
             return false;
         }
@@ -258,8 +255,7 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
             return false;
         }
 
-        ARecordType columnPath = new ARecordType("plaque_crossexpr_path",
-                new String[] { fieldName },
+        ARecordType columnPath = new ARecordType("plaque_crossexpr_path", new String[] { fieldName },
                 new IAType[] { BuiltinType.ANY }, false);
 
         ColumnDatasetProjectionFiltrationInfo columnInfo = (ColumnDatasetProjectionFiltrationInfo) info;
@@ -298,8 +294,8 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
     private boolean attachPageFilter(AbstractLogicalOperator annotatedOp, Mutable<ILogicalOperator> walkRef,
             String handle, boolean isMax, LogicalVariable filteredVar) throws AlgebricksException {
         String fieldName = findFieldName(walkRef, filteredVar);
-        System.out.println("PLAQUE_PAGE_FILTER: handle=" + handle + " isMax=" + isMax
-                + " filteredVar=" + filteredVar + " fieldName=" + fieldName);
+        System.out.println("PLAQUE_PAGE_FILTER: handle=" + handle + " isMax=" + isMax + " filteredVar=" + filteredVar
+                + " fieldName=" + fieldName);
         if (fieldName == null) {
             return false;
         }
@@ -315,14 +311,13 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
             return false;
         }
 
-        ARecordType columnPath = new ARecordType("plaque_path",
-                new String[] { fieldName },
-                new IAType[] { BuiltinType.ANY }, false);
+        ARecordType columnPath =
+                new ARecordType("plaque_path", new String[] { fieldName }, new IAType[] { BuiltinType.ANY }, false);
 
         ColumnDatasetProjectionFiltrationInfo columnInfo = (ColumnDatasetProjectionFiltrationInfo) info;
         columnInfo.setPlaqueInfo(handle, isMax, columnPath);
-        System.out.println("PLAQUE_PAGE_FILTER: SUCCESS — set page filter on scan for field=" + fieldName
-                + " handle=" + handle);
+        System.out.println(
+                "PLAQUE_PAGE_FILTER: SUCCESS — set page filter on scan for field=" + fieldName + " handle=" + handle);
 
         annotatedOp.getAnnotations().put("plaque-page-filter-set", true);
         return true;
@@ -344,7 +339,8 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
                         + " looking for " + filteredVar + " idx=" + idx);
                 if (idx >= 0) {
                     ILogicalExpression expr = assignOp.getExpressions().get(idx).getValue();
-                    System.out.println("PLAQUE_PAGE_FILTER findFieldName: expr=" + expr + " class=" + expr.getClass().getSimpleName());
+                    System.out.println("PLAQUE_PAGE_FILTER findFieldName: expr=" + expr + " class="
+                            + expr.getClass().getSimpleName());
                     return extractFieldName(expr, current);
                 }
             }
@@ -369,7 +365,8 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
      */
     private String extractFieldName(ILogicalExpression expr, ILogicalOperator assignOp) throws AlgebricksException {
         if (!(expr instanceof AbstractFunctionCallExpression)) {
-            System.out.println("PLAQUE_PAGE_FILTER extractFieldName: not a function call, class=" + expr.getClass().getSimpleName());
+            System.out.println("PLAQUE_PAGE_FILTER extractFieldName: not a function call, class="
+                    + expr.getClass().getSimpleName());
             return null;
         }
         AbstractFunctionCallExpression funcExpr = (AbstractFunctionCallExpression) expr;
@@ -377,17 +374,18 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
 
         if (funcExpr.getFunctionIdentifier().equals(BuiltinFunctions.FIELD_ACCESS_BY_INDEX)) {
             ILogicalExpression indexExpr = funcExpr.getArguments().get(1).getValue();
-            System.out.println("PLAQUE_PAGE_FILTER extractFieldName: indexExpr class=" + indexExpr.getClass().getSimpleName() + " val=" + indexExpr);
+            System.out.println("PLAQUE_PAGE_FILTER extractFieldName: indexExpr class="
+                    + indexExpr.getClass().getSimpleName() + " val=" + indexExpr);
             if (indexExpr instanceof ConstantExpression) {
                 try {
                     org.apache.asterix.om.constants.AsterixConstantValue cv =
-                            (org.apache.asterix.om.constants.AsterixConstantValue)
-                                    ((ConstantExpression) indexExpr).getValue();
+                            (org.apache.asterix.om.constants.AsterixConstantValue) ((ConstantExpression) indexExpr)
+                                    .getValue();
                     int fieldIndex = ((org.apache.asterix.om.base.AInt32) cv.getObject()).getIntegerValue();
                     System.out.println("PLAQUE_PAGE_FILTER extractFieldName: fieldIndex=" + fieldIndex);
                     // Walk down to find the DataSourceScan to get the record type
-                    DataSourceScanOperator scanOp = assignOp.getInputs().isEmpty() ? null
-                            : findDataSourceScan(assignOp.getInputs().get(0));
+                    DataSourceScanOperator scanOp =
+                            assignOp.getInputs().isEmpty() ? null : findDataSourceScan(assignOp.getInputs().get(0));
                     System.out.println("PLAQUE_PAGE_FILTER extractFieldName: scanOp from assign=" + (scanOp != null));
                     if (scanOp != null) {
                         org.apache.asterix.metadata.declared.DataSource ds =
@@ -397,9 +395,11 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
                         if (itemType instanceof ARecordType) {
                             ARecordType recordType = (ARecordType) itemType;
                             String[] fieldNames = recordType.getFieldNames();
-                            System.out.println("PLAQUE_PAGE_FILTER extractFieldName: fieldNames=" + java.util.Arrays.toString(fieldNames));
+                            System.out.println("PLAQUE_PAGE_FILTER extractFieldName: fieldNames="
+                                    + java.util.Arrays.toString(fieldNames));
                             if (fieldIndex >= 0 && fieldIndex < fieldNames.length) {
-                                System.out.println("PLAQUE_PAGE_FILTER extractFieldName: RESOLVED=" + fieldNames[fieldIndex]);
+                                System.out.println(
+                                        "PLAQUE_PAGE_FILTER extractFieldName: RESOLVED=" + fieldNames[fieldIndex]);
                                 return fieldNames[fieldIndex];
                             }
                         }
