@@ -30,3 +30,5 @@ dist
 asterixdb/asterix-examples/src/main/resources/tweetbook-demo/static/data/*.adm
 asterixdb/asterix-app/data/csv/*.adm
 asterixdb/asterix-app/src/test/resources/runtimets/data/*.adm
+plaque/
+.claude/
