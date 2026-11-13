@@ -19,9 +19,6 @@
 
 package org.apache.asterix.om.pointables.printer.csv;
 
-import static org.apache.asterix.dataflow.data.nontagged.printers.csv.CSVUtils.KEY_HEADER;
-import static org.apache.asterix.dataflow.data.nontagged.printers.csv.CSVUtils.KEY_RECORD_DELIMITER;
-
 import java.io.PrintStream;
 import java.util.Map;
 
@@ -34,21 +31,29 @@ import org.apache.asterix.om.pointables.printer.ARecordPrinter;
 import org.apache.asterix.om.pointables.printer.AbstractPrintVisitor;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.ATypeTag;
+import org.apache.commons.lang3.tuple.MutablePair;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 
 /**
- * This class is a IVisitablePointableVisitor implementation which recursively
- * visit a given record, list or flat value of a given type, and print it to a
+ * This class is an IVisitablePointableVisitor implementation which recursively
+ * visits a given record, list or flat value of a given type, and prints it to a
  * PrintStream in CSV format.
  */
 public class APrintVisitor extends AbstractPrintVisitor {
+    private final IEvaluatorContext context;
     private final ARecordType itemType;
+    private final Map<String, String> formatConfigs;
     private final Map<String, String> configuration;
     private AObjectPrinterFactory objectPrinterFactory;
+    private boolean firstRecord = true;
 
-    public APrintVisitor(ARecordType itemType, Map<String, String> configuration) {
+    public APrintVisitor(IEvaluatorContext context, ARecordType itemType, Map<String, String> formatConfigs,
+            Map<String, String> configuration) {
         super();
+        this.context = context;
         this.itemType = itemType;
+        this.formatConfigs = formatConfigs;
         this.configuration = configuration;
     }
 
@@ -59,18 +64,38 @@ public class APrintVisitor extends AbstractPrintVisitor {
 
     @Override
     protected ARecordPrinter createRecordPrinter(ARecordVisitablePointable accessor) {
-        String delimiter = CSVUtils.getDelimiter(configuration);
-        String recordDelimiter = configuration.get(KEY_RECORD_DELIMITER) == null ? (itemType == null ? "" : "\n")
-                : configuration.get(KEY_RECORD_DELIMITER);
-        return new ACSVRecordPrinter("", "", delimiter, null, recordDelimiter, itemType, configuration.get(KEY_HEADER));
+        boolean header = CSVUtils.getHeader(configuration);
+        String fieldSeparator = CSVUtils.getDelimiter(configuration);
+        String recordDelimiter = CSVUtils.getRecordDelimiter(configuration, itemType != null);
+        return new ACSVRecordPrinter(context.getWarningCollector(), header, fieldSeparator, recordDelimiter, itemType);
     }
 
     @Override
     protected boolean printFlatValue(ATypeTag typeTag, byte[] b, int s, int l, PrintStream ps)
             throws HyracksDataException {
         if (objectPrinterFactory == null) {
-            objectPrinterFactory = AObjectPrinterFactory.createInstance(itemType, configuration);
+            objectPrinterFactory = AObjectPrinterFactory.createInstance(itemType, formatConfigs, configuration);
         }
         return objectPrinterFactory.printFlatValue(typeTag, b, s, l, ps);
+    }
+
+    @Override
+    public Void visit(ARecordVisitablePointable accessor, MutablePair<PrintStream, ATypeTag> arg)
+            throws HyracksDataException {
+        ARecordPrinter printer = raccessorToPrinter.get(accessor);
+        if (printer == null) {
+            printer = createRecordPrinter(accessor);
+            raccessorToPrinter.put(accessor, printer);
+        }
+        boolean first = firstRecord;
+        if (firstRecord) {
+            firstRecord = false;
+        }
+        printer.printRecord(accessor, arg.getLeft(), this, first);
+        return null;
+    }
+
+    public void setFirstRecord(boolean firstRecord) {
+        this.firstRecord = firstRecord;
     }
 }

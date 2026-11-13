@@ -21,8 +21,8 @@ package org.apache.hyracks.algebricks.core.rewriter.base;
 import java.util.List;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -88,8 +88,8 @@ public class HeuristicOptimizer {
             throws AlgebricksException {
         for (Pair<AbstractRuleController, List<IAlgebraicRewriteRule>> ruleList : optimizationSet) {
             for (Mutable<ILogicalOperator> r : plan.getRoots()) {
-                ruleList.first.setContext(context);
-                ruleList.first.rewriteWithRuleCollection(r, ruleList.second);
+                ruleList.getLeft().setContext(context);
+                ruleList.getLeft().rewriteWithRuleCollection(r, ruleList.getRight());
             }
         }
     }
@@ -129,7 +129,7 @@ public class HeuristicOptimizer {
                     context.getPlanStructureVerifier().verifyPlanStructure(opRef);
                 }
             } catch (AlgebricksException e) {
-                throw AlgebricksException.create(ErrorCode.ILLEGAL_STATE,
+                throw AlgebricksException.create(ErrorCode.ILLEGAL_STATE, e,
                         String.format("Initial plan contains illegal %s", e.getMessage()));
             }
         }

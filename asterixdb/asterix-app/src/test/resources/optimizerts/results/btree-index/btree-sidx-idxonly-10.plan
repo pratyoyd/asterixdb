@@ -1,31 +1,32 @@
+distribute result [$$80]
 -- DISTRIBUTE_RESULT  |UNPARTITIONED|
+  exchange
   -- ONE_TO_ONE_EXCHANGE  |UNPARTITIONED|
+    aggregate [$$80] <- [agg-sql-sum($$87)]
     -- AGGREGATE  |UNPARTITIONED|
+      exchange
       -- RANDOM_MERGE_EXCHANGE  |PARTITIONED|
+        aggregate [$$87] <- [agg-sql-count(1)]
         -- AGGREGATE  |PARTITIONED|
+          exchange
           -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-            -- UNION_ALL  |PARTITIONED|
+            distinct ([$$94])
+            -- PRE_SORTED_DISTINCT_BY  |PARTITIONED|
+              exchange
               -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                -- STREAM_SELECT  |PARTITIONED|
-                  -- ASSIGN  |PARTITIONED|
-                    -- ASSIGN  |PARTITIONED|
-                      -- STREAM_PROJECT  |PARTITIONED|
-                        -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                          -- BTREE_SEARCH (twitter.ds_tweet.ds_tweet)  |PARTITIONED|
-                            -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                              -- SPLIT  |PARTITIONED|
-                                -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                  -- BTREE_SEARCH (twitter.ds_tweet.create_at_status_count_idx)  |PARTITIONED|
-                                    -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                      -- ASSIGN  |PARTITIONED|
-                                        -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
-              -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                -- STREAM_SELECT  |PARTITIONED|
-                  -- STREAM_PROJECT  |PARTITIONED|
-                    -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                      -- SPLIT  |PARTITIONED|
-                        -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                          -- BTREE_SEARCH (twitter.ds_tweet.create_at_status_count_idx)  |PARTITIONED|
-                            -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                              -- ASSIGN  |PARTITIONED|
-                                -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
+                order (ASC, $$94)
+                -- STABLE_SORT [$$94(ASC)]  |PARTITIONED|
+                  exchange
+                  -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                    select (and(lt($$76, 1000000), ge($$76, 0), ge($$81, date: { 1997-05-19 }), lt($$81, date: { 2002-11-09 }))) project: [$$94]
+                    -- STREAM_SELECT  |PARTITIONED|
+                      exchange
+                      -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                        unnest-map [$$81, $$76, $$94] <- index-search("create_at_status_count_idx", 0, "Default", "twitter", "ds_tweet", false, false, 2, $$88, $$89, 2, $$90, $$91, true, true, false)
+                        -- BTREE_SEARCH  |PARTITIONED|
+                          exchange
+                          -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                            assign [$$88, $$89, $$90, $$91] <- [date: { 1997-05-19 }, 0, date: { 2002-11-09 }, 1000000]
+                            -- ASSIGN  |PARTITIONED|
+                              empty-tuple-source
+                              -- EMPTY_TUPLE_SOURCE  |PARTITIONED|

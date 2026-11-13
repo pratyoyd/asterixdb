@@ -21,8 +21,8 @@ package org.apache.hyracks.algebricks.core.algebra.operators.physical;
 
 import java.util.List;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
@@ -36,6 +36,8 @@ import org.apache.hyracks.algebricks.data.IBinaryComparatorFactoryProvider;
 import org.apache.hyracks.algebricks.data.INormalizedKeyComputerFactoryProvider;
 import org.apache.hyracks.api.dataflow.value.IBinaryComparatorFactory;
 import org.apache.hyracks.api.dataflow.value.INormalizedKeyComputerFactory;
+import org.apache.hyracks.api.job.HyracksJobProperty;
+import org.apache.hyracks.api.job.JobSpecification;
 import org.apache.hyracks.dataflow.common.data.partition.range.DynamicRangeMapSupplier;
 import org.apache.hyracks.dataflow.common.data.partition.range.RangeMap;
 import org.apache.hyracks.dataflow.common.data.partition.range.RangeMapSupplier;
@@ -106,7 +108,7 @@ abstract class AbstractRangeExchangePOperator extends AbstractExchangePOperator 
             comps[i] = bcfp.getBinaryComparatorFactory(type, oc.getOrder() == OrderOperator.IOrder.OrderKind.ASC);
             i++;
         }
-        return new Pair<>(sortFields, comps);
+        return Pair.of(sortFields, comps);
     }
 
     protected Triple<int[], IBinaryComparatorFactory[], INormalizedKeyComputerFactory> createOrderColumnsAndComparatorsWithNormKeyComputer(
@@ -131,5 +133,10 @@ abstract class AbstractRangeExchangePOperator extends AbstractExchangePOperator 
             i++;
         }
         return new Triple<>(sortFields, comps, nkcf);
+    }
+
+    @Override
+    protected void setJobSpecAnnotation(JobSpecification spec) {
+        spec.setProperty(HyracksJobProperty.RESULT_SET_ORDERED, true);
     }
 }

@@ -204,6 +204,18 @@ public class PlanStagesGenerator implements ILogicalOperatorVisitor<Void, Void> 
     }
 
     @Override
+    public Void visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+        visit(op);
+        return null;
+    }
+
+    @Override
+    public Void visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
+        visit(op);
+        return null;
+    }
+
+    @Override
     public Void visitUnnestOperator(UnnestOperator op, Void arg) throws AlgebricksException {
         visit(op);
         return null;

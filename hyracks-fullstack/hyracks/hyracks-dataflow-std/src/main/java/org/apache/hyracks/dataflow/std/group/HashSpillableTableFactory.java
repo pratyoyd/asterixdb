@@ -23,7 +23,6 @@ import java.util.BitSet;
 
 import org.apache.hyracks.api.comm.IFrameTupleAccessor;
 import org.apache.hyracks.api.comm.IFrameWriter;
-import org.apache.hyracks.api.comm.VSizeFrame;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.dataflow.value.IBinaryComparator;
 import org.apache.hyracks.api.dataflow.value.IBinaryHashFunctionFamily;
@@ -131,10 +130,8 @@ public class HashSpillableTableFactory implements ISpillableTableFactory {
 
         final int numPartitions = getNumOfPartitions(inputDataBytesSize / ctx.getInitialFrameSize(), memoryBudget);
         final int entriesPerPartition = (int) Math.ceil(1.0 * tableSize / numPartitions);
-        if (LOGGER.isDebugEnabled()) {
-            LOGGER.debug("created hashtable, table size:" + tableSize + " file size:" + inputDataBytesSize
-                    + "  #partitions:" + numPartitions);
-        }
+        LOGGER.trace("created hashtable, table size:{} file size:{}  #partitions:{}", tableSize, inputDataBytesSize,
+                numPartitions);
 
         final ArrayTupleBuilder outputTupleBuilder = new ArrayTupleBuilder(outRecordDescriptor.getFields().length);
 
@@ -162,7 +159,7 @@ public class HashSpillableTableFactory implements ISpillableTableFactory {
             private final PreferToSpillFullyOccupiedFramePolicy spillPolicy =
                     new PreferToSpillFullyOccupiedFramePolicy(bufferManager, spilledSet);
 
-            private final FrameTupleAppender outputAppender = new FrameTupleAppender(new VSizeFrame(ctx));
+            private final FrameTupleAppender outputAppender = new FrameTupleAppender(ctx.allocateVSizeFrame());
 
             @Override
             public void close() throws HyracksDataException {
@@ -185,10 +182,8 @@ public class HashSpillableTableFactory implements ISpillableTableFactory {
                 if (force || hashTableForTuplePointer.isGarbageCollectionNeeded()) {
                     int numberOfFramesReclaimed =
                             hashTableForTuplePointer.collectGarbage(bufferAccessor, tpcIntermediate);
-                    if (LOGGER.isDebugEnabled()) {
-                        LOGGER.debug("Garbage Collection on Hash table is done. Deallocated frames:"
-                                + numberOfFramesReclaimed);
-                    }
+                    LOGGER.trace("Garbage Collection on Hash table is done. Deallocated frames:{}",
+                            numberOfFramesReclaimed);
                     return numberOfFramesReclaimed != -1;
                 }
                 return false;

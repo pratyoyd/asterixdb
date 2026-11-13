@@ -72,6 +72,8 @@ public class PrimitiveConverterProvider {
                 return getTimeConverter(type, parent, stringFieldName, index, context);
             case DATETIME:
                 return getTimeStampConverter(type, parent, stringFieldName, index, context);
+            case DURATION:
+                return new IntervalConverter(parent, stringFieldName, index, context);
             case ANY:
                 return new JsonStringConverter(parent, stringFieldName, index, context);
             default:
@@ -82,7 +84,11 @@ public class PrimitiveConverterProvider {
     private static PrimitiveConverter getIntConverter(ATypeTag typeTag, PrimitiveType type,
             AbstractComplexConverter parent, String stringFieldName, int index, ParquetConverterContext context)
             throws IOException {
-        IntLogicalTypeAnnotation intType = (IntLogicalTypeAnnotation) type.getLogicalTypeAnnotation();
+        // a date, time or timestamp column read as its stored number arrives here too, so this cannot assume
+        // the annotation is an integer one
+        LogicalTypeAnnotation annotation = type.getLogicalTypeAnnotation();
+        IntLogicalTypeAnnotation intType =
+                annotation instanceof IntLogicalTypeAnnotation ? (IntLogicalTypeAnnotation) annotation : null;
         if (intType != null && !intType.isSigned()) {
             return new UnsignedIntegerConverter(parent, stringFieldName, index, context);
         }
@@ -112,10 +118,10 @@ public class PrimitiveConverterProvider {
             String stringFieldName, int index, ParquetConverterContext context) throws IOException {
         TimestampLogicalTypeAnnotation tsType = (TimestampLogicalTypeAnnotation) type.getLogicalTypeAnnotation();
         if (tsType != null) {
-            int offset = tsType.isAdjustedToUTC() ? context.getTimeZoneOffset() : 0;
-            return new TimestampConverter(parent, stringFieldName, index, context, tsType.getUnit(), offset);
+            return new TimestampConverter(parent, stringFieldName, index, context, tsType.getUnit(),
+                    tsType.isAdjustedToUTC());
         }
         //INT96: the converter will convert the value to millis
-        return new TimestampConverter(parent, stringFieldName, index, context, TimeUnit.MILLIS, 0);
+        return new TimestampConverter(parent, stringFieldName, index, context, TimeUnit.MILLIS, false);
     }
 }

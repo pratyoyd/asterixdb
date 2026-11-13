@@ -1,13 +1,26 @@
+distribute result [$$80]
 -- DISTRIBUTE_RESULT  |UNPARTITIONED|
+  exchange
   -- ONE_TO_ONE_EXCHANGE  |UNPARTITIONED|
+    aggregate [$$80] <- [agg-sql-sum($$87)]
     -- AGGREGATE  |UNPARTITIONED|
+      exchange
       -- RANDOM_MERGE_EXCHANGE  |PARTITIONED|
+        aggregate [$$87] <- [agg-sql-count(1)]
         -- AGGREGATE  |PARTITIONED|
+          select (and(lt($$76, 1000000), ge($$76, 0), ge($$81, date: { 1997-05-19 }), lt($$81, date: { 2002-11-09 })))
           -- STREAM_SELECT  |PARTITIONED|
+            assign [$$76, $$81] <- [$$79.getField(10), $$79.getField(6)] project: [$$76, $$81]
             -- ASSIGN  |PARTITIONED|
+              assign [$$79] <- [$$t.getField(12)] project: [$$79]
               -- ASSIGN  |PARTITIONED|
+                project ([$$t])
                 -- STREAM_PROJECT  |PARTITIONED|
+                  exchange
                   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                    -- DATASOURCE_SCAN (twitter.ds_tweet)  |PARTITIONED|
+                    data-scan []<-[$$78, $$t] <- twitter.ds_tweet
+                    -- DATASOURCE_SCAN  |PARTITIONED|
+                      exchange
                       -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                        empty-tuple-source
                         -- EMPTY_TUPLE_SOURCE  |PARTITIONED|

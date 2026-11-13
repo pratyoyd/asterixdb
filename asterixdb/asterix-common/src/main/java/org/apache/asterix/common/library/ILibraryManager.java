@@ -28,15 +28,18 @@ import java.util.function.Function;
 
 import org.apache.asterix.common.metadata.Namespace;
 import org.apache.asterix.external.ipc.ExternalFunctionResultRouter;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.HyracksException;
 import org.apache.hyracks.api.io.FileReference;
+import org.apache.hyracks.api.io.IIOManager;
 import org.apache.hyracks.control.nc.NodeControllerService;
 import org.apache.hyracks.ipc.impl.IPCSystem;
 
 public interface ILibraryManager {
+
+    String LIBRARY_ARCHIVE_NAME = "library_archive.zip";
 
     List<Pair<Namespace, String>> getLibraryListing() throws IOException;
 
@@ -70,7 +73,14 @@ public interface ILibraryManager {
 
     void unzip(FileReference sourceFile, FileReference outputDir) throws IOException;
 
-    void writeAndForce(FileReference outputFile, InputStream dataStream, byte[] copyBuf) throws IOException;
+    void unzip(FileReference sourceFile, FileReference outputDir, boolean limited) throws IOException;
+
+    long writeAndForce(FileReference outputFile, InputStream dataStream, byte[] copyBuffer, IIOManager localIoManager,
+            boolean limited) throws IOException;
 
     void setUploadClient(Function<ILibraryManager, CloseableHttpClient> f);
+
+    void writeShim(FileReference outputFile, byte[] copyBuf) throws IOException;
+
+    IIOManager getCloudIOManager();
 }

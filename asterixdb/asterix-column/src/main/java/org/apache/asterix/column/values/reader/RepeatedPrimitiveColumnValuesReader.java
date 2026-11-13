@@ -24,6 +24,7 @@ import org.apache.asterix.column.values.IColumnValuesWriter;
 import org.apache.asterix.column.values.reader.value.AbstractValueReader;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.util.InvokeUtil;
 import org.apache.hyracks.storage.am.lsm.btree.column.error.ColumnarValueException;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -99,6 +100,7 @@ public final class RepeatedPrimitiveColumnValuesReader extends AbstractColumnVal
 
         if (isRepeatedValue()) {
             while (!isLastDelimiter()) {
+                InvokeUtil.failIfInterrupted();
                 writeLevel(writer);
                 if (isValue()) {
                     writer.writeValue(this);
@@ -123,14 +125,56 @@ public final class RepeatedPrimitiveColumnValuesReader extends AbstractColumnVal
 
     @Override
     public void skip(int count) throws HyracksDataException {
+        int values = 0;
         for (int i = 0; i < count; i++) {
-            doNextAndCheck();
-            if (isRepeatedValue()) {
-                while (!isLastDelimiter()) {
-                    doNextAndCheck();
-                }
+            values += skipTuple();
+        }
+        valueReader.skip(values);
+    }
+
+    /**
+     * Consumes one tuple's entries, up to and including its last delimiter, and returns the number of values among
+     * them. Runs of plain values are consumed in bulk; only the entries that carry structure (delimiters, nulls,
+     * missing) are stepped over one at a time.
+     */
+    private int skipTuple() throws HyracksDataException {
+        int values = skipPlainEntries();
+        if (values == 0) {
+            values = skipEntry();
+            if (!isRepeatedValue()) {
+                return values;
             }
         }
+        while (!isLastDelimiter()) {
+            // the delimiter is the sole exit; inconsistent delimiter state turns this into a pure-CPU spin
+            InvokeUtil.failIfInterrupted();
+            int plain = skipPlainEntries();
+            values += plain > 0 ? plain : skipEntry();
+        }
+        return values;
+    }
+
+    private int skipPlainEntries() throws HyracksDataException {
+        int plain = skipPlainValues(valueCount - valueIndex);
+        if (plain > 0) {
+            // what setDelimiterIndex() computes for an entry at the max level
+            delimiterIndex = levelToDelimiterMap[maxLevel];
+        }
+        return plain;
+    }
+
+    /**
+     * Steps over a single entry exactly as {@link #next()} does, minus decoding the value; returns 1 if the entry
+     * was a value.
+     */
+    private int skipEntry() throws HyracksDataException {
+        if (valueIndex == valueCount) {
+            throw exhausted();
+        }
+        consumeDelimiterIfAny();
+        nextLevel();
+        setDelimiterIndex();
+        return level == maxLevel ? 1 : 0;
     }
 
     private void consumeDelimiterIfAny() {
@@ -157,9 +201,13 @@ public final class RepeatedPrimitiveColumnValuesReader extends AbstractColumnVal
 
     private void doNextAndCheck() throws HyracksDataException {
         if (!next()) {
-            ColumnarValueException e = new ColumnarValueException();
-            appendReaderInformation(e.createNode(getClass().getSimpleName()));
-            throw e;
+            throw exhausted();
         }
+    }
+
+    private ColumnarValueException exhausted() {
+        ColumnarValueException e = new ColumnarValueException();
+        appendReaderInformation(e.createNode(getClass().getSimpleName()));
+        return e;
     }
 }

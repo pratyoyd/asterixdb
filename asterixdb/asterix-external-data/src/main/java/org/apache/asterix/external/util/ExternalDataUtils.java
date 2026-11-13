@@ -18,42 +18,61 @@
  */
 package org.apache.asterix.external.util;
 
+import static org.apache.asterix.common.exceptions.ErrorCode.EXTERNAL_SOURCE_ERROR;
+import static org.apache.asterix.common.exceptions.ErrorCode.INVALID_PARAM_VALUE_ALLOWED_VALUE;
+import static org.apache.asterix.common.exceptions.ErrorCode.PARSE_ERROR;
+import static org.apache.asterix.common.exceptions.ErrorCode.PROPERTY_INVALID_VALUE_TYPE;
 import static org.apache.asterix.common.metadata.MetadataConstants.DEFAULT_DATABASE;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_DELIMITER;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_EMPTY_STRING_AS_NULL;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_ESCAPE;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_FORCE_QUOTE;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_HEADER;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_QUOTE;
 import static org.apache.asterix.external.util.ExternalDataConstants.DEFINITION_FIELD_NAME;
-import static org.apache.asterix.external.util.ExternalDataConstants.KEY_DELIMITER;
-import static org.apache.asterix.external.util.ExternalDataConstants.KEY_ESCAPE;
+import static org.apache.asterix.external.util.ExternalDataConstants.DISABLE_SSL_VERIFY_FIELD_NAME;
+import static org.apache.asterix.external.util.ExternalDataConstants.ILLEGAL_CHARACTER_HANDLING_FAIL;
+import static org.apache.asterix.external.util.ExternalDataConstants.ILLEGAL_CHARACTER_HANDLING_REPLACE;
+import static org.apache.asterix.external.util.ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_DATALAKE;
+import static org.apache.asterix.external.util.ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_DATALAKE_ALIAS;
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_EXCLUDE;
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_EXTERNAL_SCAN_BUFFER_SIZE;
+import static org.apache.asterix.external.util.ExternalDataConstants.KEY_ILLEGAL_CHARACTER_HANDLING;
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_INCLUDE;
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_PATH;
-import static org.apache.asterix.external.util.ExternalDataConstants.KEY_QUOTE;
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_RECORD_END;
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_RECORD_START;
-import static org.apache.asterix.external.util.aws.s3.S3AuthUtils.configureAwsS3HdfsJobConf;
-import static org.apache.asterix.external.util.azure.blob_storage.AzureUtils.validateAzureBlobProperties;
-import static org.apache.asterix.external.util.azure.blob_storage.AzureUtils.validateAzureDataLakeProperties;
-import static org.apache.asterix.external.util.google.gcs.GCSUtils.configureHdfsJobConf;
-import static org.apache.asterix.external.util.google.gcs.GCSUtils.validateProperties;
+import static org.apache.asterix.external.util.aws.s3.S3Utils.configureAwsS3HdfsJobConf;
+import static org.apache.asterix.external.util.google.GCSUtils.configureHdfsJobConf;
+import static org.apache.asterix.external.util.iceberg.IcebergUtils.isIcebergTable;
 import static org.apache.asterix.om.utils.ProjectionFiltrationTypeUtil.ALL_FIELDS_TYPE;
 import static org.apache.asterix.om.utils.ProjectionFiltrationTypeUtil.EMPTY_TYPE;
 import static org.apache.asterix.runtime.evaluators.functions.StringEvaluatorUtils.RESERVED_REGEX_CHARS;
 import static org.apache.hyracks.api.util.ExceptionUtils.getMessageOrToString;
 import static org.msgpack.core.MessagePack.Code.ARRAY16;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.time.DateTimeException;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.function.BiPredicate;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -69,6 +88,7 @@ import org.apache.asterix.common.library.ILibrary;
 import org.apache.asterix.common.library.ILibraryManager;
 import org.apache.asterix.common.metadata.DataverseName;
 import org.apache.asterix.common.metadata.Namespace;
+import org.apache.asterix.dataflow.data.nontagged.printers.csv.CSVUtils;
 import org.apache.asterix.external.api.IDataParserFactory;
 import org.apache.asterix.external.api.IExternalDataSourceFactory.DataSourceType;
 import org.apache.asterix.external.api.IInputStreamFactory;
@@ -76,13 +96,19 @@ import org.apache.asterix.external.api.IRecordReaderFactory;
 import org.apache.asterix.external.input.record.reader.abstracts.AbstractExternalInputStreamFactory.IncludeExcludeMatcher;
 import org.apache.asterix.external.library.JavaLibrary;
 import org.apache.asterix.external.library.msgpack.MessagePackUtils;
-import org.apache.asterix.external.util.ExternalDataConstants.ParquetOptions;
-import org.apache.asterix.external.util.aws.s3.S3AuthUtils;
+import org.apache.asterix.external.util.aws.AwsConstants;
 import org.apache.asterix.external.util.aws.s3.S3Constants;
 import org.apache.asterix.external.util.aws.s3.S3Utils;
-import org.apache.asterix.external.util.azure.blob_storage.AzureConstants;
-import org.apache.asterix.external.util.google.gcs.GCSConstants;
-import org.apache.asterix.external.util.google.gcs.GCSUtils;
+import org.apache.asterix.external.util.azure.AzureConstants;
+import org.apache.asterix.external.util.azure.blob.BlobUtils;
+import org.apache.asterix.external.util.azure.datalake.DatalakeUtils;
+import org.apache.asterix.external.util.google.GCSConstants;
+import org.apache.asterix.external.util.google.GCSUtils;
+import org.apache.asterix.object.base.AdmArrayNode;
+import org.apache.asterix.object.base.AdmBooleanNode;
+import org.apache.asterix.object.base.AdmObjectNode;
+import org.apache.asterix.object.base.AdmStringNode;
+import org.apache.asterix.object.base.IAdmNode;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.AUnionType;
@@ -99,6 +125,7 @@ import org.apache.hyracks.algebricks.common.exceptions.NotImplementedException;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.IWarningCollector;
 import org.apache.hyracks.api.exceptions.SourceLocation;
+import org.apache.hyracks.api.exceptions.Warning;
 import org.apache.hyracks.data.std.api.IValueReference;
 import org.apache.hyracks.data.std.primitive.TaggedValuePointable;
 import org.apache.hyracks.data.std.util.ArrayBackedValueStorage;
@@ -120,11 +147,15 @@ import org.apache.logging.log4j.Logger;
 
 import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
+import io.delta.kernel.exceptions.KernelEngineException;
 import io.delta.kernel.exceptions.KernelException;
 
 public class ExternalDataUtils {
 
-    private static final Set<String> validTimeZones = Set.of(TimeZone.getAvailableIDs());
+    private static final Set<String> AUTH_FLAGS = Set.of(AwsConstants.INSTANCE_PROFILE_FIELD_NAME,
+            GCSConstants.APPLICATION_DEFAULT_CREDENTIALS_FIELD_NAME, AzureConstants.MANAGED_IDENTITY_FIELD_NAME);
+
+    private static final Map<String, String> validTimeZonesMap = new HashMap<>();
     private static final Map<ATypeTag, IValueParserFactory> valueParserFactoryMap = new EnumMap<>(ATypeTag.class);
     private static final int DEFAULT_MAX_ARGUMENT_SZ = 1024 * 1024;
     private static final int HEADER_FUDGE = 64;
@@ -138,6 +169,9 @@ public class ExternalDataUtils {
         valueParserFactoryMap.put(ATypeTag.BIGINT, LongParserFactory.INSTANCE);
         valueParserFactoryMap.put(ATypeTag.STRING, UTF8StringParserFactory.INSTANCE);
         valueParserFactoryMap.put(ATypeTag.BOOLEAN, BooleanParserFactory.INSTANCE);
+        for (String id : TimeZone.getAvailableIDs()) {
+            validTimeZonesMap.put(id.toLowerCase(Locale.ROOT), id);
+        }
     }
 
     private ExternalDataUtils() {
@@ -146,6 +180,14 @@ public class ExternalDataUtils {
     public static int getOrDefaultBufferSize(Map<String, String> configuration) {
         String bufferSize = configuration.get(KEY_EXTERNAL_SCAN_BUFFER_SIZE);
         return bufferSize != null ? Integer.parseInt(bufferSize) : ExternalDataConstants.DEFAULT_BUFFER_SIZE;
+    }
+
+    // Defaults to replace-and-continue; only "fail" opts into failing fast on an illegal character. The value is
+    // validated against the allowed set (replace/fail) at DDL time in validate(...), so anything reaching here is
+    // already known to be one of those two.
+    public static boolean shouldFailOnIllegalCharacter(Map<String, String> configuration) {
+        String mode = configuration.get(KEY_ILLEGAL_CHARACTER_HANDLING);
+        return ILLEGAL_CHARACTER_HANDLING_FAIL.equalsIgnoreCase(mode);
     }
 
     // Get a delimiter from the given configuration
@@ -159,6 +201,10 @@ public class ExternalDataUtils {
         char quote = validateCharOrDefault(configuration, KEY_QUOTE, ExternalDataConstants.DEFAULT_QUOTE.charAt(0));
         validateDelimiterAndQuote(delimiter, quote);
         return quote;
+    }
+
+    public static boolean isQuoteNeeded(Map<String, String> configuration) {
+        return !CSVUtils.NONE.equalsIgnoreCase(configuration.get(KEY_QUOTE));
     }
 
     public static char validateGetEscape(Map<String, String> configuration, String format) throws HyracksDataException {
@@ -280,7 +326,7 @@ public class ExternalDataUtils {
     }
 
     public static boolean hasHeader(Map<String, String> configuration) {
-        return isTrue(configuration, ExternalDataConstants.KEY_HEADER);
+        return isTrue(configuration, KEY_HEADER);
     }
 
     public static boolean isTrue(Map<String, String> configuration, String key) {
@@ -492,6 +538,9 @@ public class ExternalDataUtils {
                 configuration.put(ExternalDataConstants.KEY_PARSER, ExternalDataConstants.FORMAT_DELTA);
                 configuration.put(ExternalDataConstants.KEY_FORMAT, ExternalDataConstants.FORMAT_DELTA);
             }
+            if (isIcebergTable(configuration)) {
+                return;
+            }
             prepareTableFormat(configuration);
         }
     }
@@ -512,10 +561,9 @@ public class ExternalDataUtils {
             throw new CompilationException(ErrorCode.INVALID_DELTA_TABLE_FORMAT,
                     configuration.get(ExternalDataConstants.KEY_FORMAT));
         }
-        if (configuration.containsKey(ExternalDataConstants.DeltaOptions.TIMEZONE)
-                && !validTimeZones.contains(configuration.get(ExternalDataConstants.DeltaOptions.TIMEZONE))) {
-            throw new CompilationException(ErrorCode.INVALID_TIMEZONE,
-                    configuration.get(ExternalDataConstants.DeltaOptions.TIMEZONE));
+        if (configuration.containsKey(ExternalDataConstants.KEY_TIMEZONE)) {
+            String resolved = resolveTimeZone(configuration.get(ExternalDataConstants.KEY_TIMEZONE));
+            configuration.put(ExternalDataConstants.KEY_TIMEZONE, resolved);
         }
     }
 
@@ -540,7 +588,7 @@ public class ExternalDataUtils {
         io.delta.kernel.Table table = io.delta.kernel.Table.forPath(engine, tableMetadataPath);
         try {
             table.getLatestSnapshot(engine);
-        } catch (KernelException e) {
+        } catch (KernelException | KernelEngineException e) {
             LOGGER.info("Failed to get latest snapshot for table: {}", tableMetadataPath, e);
             throw CompilationException.create(ErrorCode.EXTERNAL_SOURCE_ERROR, e, getMessageOrToString(e));
         }
@@ -554,11 +602,10 @@ public class ExternalDataUtils {
         if (icebergTable instanceof BaseTable) {
             BaseTable baseTable = (BaseTable) icebergTable;
 
-            if (baseTable.operations().current()
-                    .formatVersion() != ExternalDataConstants.SUPPORTED_ICEBERG_FORMAT_VERSION) {
-                throw new AsterixException(ErrorCode.UNSUPPORTED_ICEBERG_FORMAT_VERSION,
-                        "AsterixDB only supports Iceberg version up to "
-                                + ExternalDataConstants.SUPPORTED_ICEBERG_FORMAT_VERSION);
+            int formatVersion = baseTable.operations().current().formatVersion();
+            if (formatVersion != ExternalDataConstants.SUPPORTED_ICEBERG_FORMAT_VERSION) {
+                throw new AsterixException(ErrorCode.UNSUPPORTED_ICEBERG_FORMAT_VERSION, formatVersion,
+                        ExternalDataConstants.SUPPORTED_ICEBERG_FORMAT_VERSION);
             }
 
             try (CloseableIterable<FileScanTask> fileScanTasks = baseTable.newScan().planFiles()) {
@@ -593,9 +640,9 @@ public class ExternalDataUtils {
 
         // If the table is in S3
         if (configuration.get(ExternalDataConstants.KEY_READER).equals(ExternalDataConstants.KEY_ADAPTER_NAME_AWS_S3)) {
-
-            conf.set(S3Constants.HADOOP_ACCESS_KEY_ID, configuration.get(S3Constants.ACCESS_KEY_ID_FIELD_NAME));
-            conf.set(S3Constants.HADOOP_SECRET_ACCESS_KEY, configuration.get(S3Constants.SECRET_ACCESS_KEY_FIELD_NAME));
+            conf.set(S3Constants.HADOOP_ACCESS_KEY_ID, configuration.get(AwsConstants.ACCESS_KEY_ID_FIELD_NAME));
+            conf.set(S3Constants.HADOOP_SECRET_ACCESS_KEY,
+                    configuration.get(AwsConstants.SECRET_ACCESS_KEY_FIELD_NAME));
             tableMetadataPath = S3Constants.HADOOP_S3_PROTOCOL + "://"
                     + configuration.get(ExternalDataConstants.CONTAINER_NAME_FIELD_NAME) + '/'
                     + configuration.get(ExternalDataConstants.DEFINITION_FIELD_NAME);
@@ -627,7 +674,7 @@ public class ExternalDataUtils {
             }
         }
         // normalize "header" parameter
-        putToLowerIfExists(configuration, ExternalDataConstants.KEY_HEADER);
+        putToLowerIfExists(configuration, KEY_HEADER);
         // normalize "redact-warnings" parameter
         putToLowerIfExists(configuration, ExternalDataConstants.KEY_REDACT_WARNINGS);
     }
@@ -640,22 +687,20 @@ public class ExternalDataUtils {
      */
     public static void validate(Map<String, String> configuration) throws HyracksDataException {
         String format = configuration.get(ExternalDataConstants.KEY_FORMAT);
-        String header = configuration.get(ExternalDataConstants.KEY_HEADER);
-        String forceQuote = configuration.get(ExternalDataConstants.KEY_FORCE_QUOTE);
-        String emptyFieldAsNull = configuration.get(ExternalDataConstants.KEY_EMPTY_FIELD_AS_NULL);
+        String header = configuration.get(KEY_HEADER);
+        String forceQuote = configuration.get(KEY_FORCE_QUOTE);
+        String emptyFieldAsNull = configuration.get(KEY_EMPTY_STRING_AS_NULL);
         if (format != null && isHeaderRequiredFor(format) && header == null) {
-            throw new RuntimeDataException(ErrorCode.PARAMETERS_REQUIRED, ExternalDataConstants.KEY_HEADER);
+            throw new RuntimeDataException(ErrorCode.PARAMETERS_REQUIRED, KEY_HEADER);
         }
         if (header != null && !isBoolean(header)) {
-            throw new RuntimeDataException(ErrorCode.INVALID_REQ_PARAM_VAL, ExternalDataConstants.KEY_HEADER, header);
+            throw new RuntimeDataException(ErrorCode.INVALID_REQ_PARAM_VAL, KEY_HEADER, header);
         }
         if (forceQuote != null && !isBoolean(forceQuote)) {
-            throw new RuntimeDataException(ErrorCode.INVALID_REQ_PARAM_VAL, ExternalDataConstants.KEY_FORCE_QUOTE,
-                    forceQuote);
+            throw new RuntimeDataException(ErrorCode.INVALID_REQ_PARAM_VAL, KEY_FORCE_QUOTE, forceQuote);
         }
         if (emptyFieldAsNull != null && !isBoolean(emptyFieldAsNull)) {
-            throw new RuntimeDataException(ErrorCode.INVALID_REQ_PARAM_VAL,
-                    ExternalDataConstants.KEY_EMPTY_FIELD_AS_NULL, emptyFieldAsNull);
+            throw new RuntimeDataException(ErrorCode.INVALID_REQ_PARAM_VAL, KEY_EMPTY_STRING_AS_NULL, emptyFieldAsNull);
         }
         char delimiter = validateGetDelimiter(configuration);
         validateGetQuote(configuration, delimiter);
@@ -664,6 +709,13 @@ public class ExternalDataUtils {
         if (value != null && !isBoolean(value)) {
             throw new RuntimeDataException(ErrorCode.INVALID_REQ_PARAM_VAL, ExternalDataConstants.KEY_REDACT_WARNINGS,
                     value);
+        }
+        String illegalCharacterHandling = configuration.get(KEY_ILLEGAL_CHARACTER_HANDLING);
+        if (illegalCharacterHandling != null
+                && !ILLEGAL_CHARACTER_HANDLING_REPLACE.equalsIgnoreCase(illegalCharacterHandling)
+                && !ILLEGAL_CHARACTER_HANDLING_FAIL.equalsIgnoreCase(illegalCharacterHandling)) {
+            throw new RuntimeDataException(ErrorCode.INVALID_REQ_PARAM_VAL, KEY_ILLEGAL_CHARACTER_HANDLING,
+                    illegalCharacterHandling);
         }
     }
 
@@ -688,10 +740,15 @@ public class ExternalDataUtils {
             return defaultValue;
         }
         validateChar(value, key);
-        return value.charAt(0);
+        return CSVUtils.extractSingleChar(value);
+
     }
 
     public static void validateChar(String parameterValue, String parameterName) throws RuntimeDataException {
+        if (parameterName.equals(KEY_QUOTE) && CSVUtils.NONE.equalsIgnoreCase(parameterValue)) {
+            return;
+
+        }
         if (parameterValue.length() != 1) {
             throw new RuntimeDataException(ErrorCode.INVALID_CHAR_LENGTH, parameterValue, parameterName);
         }
@@ -716,16 +773,16 @@ public class ExternalDataUtils {
 
         switch (type) {
             case ExternalDataConstants.KEY_ADAPTER_NAME_AWS_S3:
-                S3AuthUtils.validateProperties(appCtx, configuration, srcLoc, collector);
+                S3Utils.validateProperties(appCtx, configuration, srcLoc, collector);
                 break;
             case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_BLOB:
-                validateAzureBlobProperties(configuration, srcLoc, collector, appCtx);
+                BlobUtils.validateProperties(configuration, srcLoc, collector, appCtx);
                 break;
-            case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_DATA_LAKE:
-                validateAzureDataLakeProperties(configuration, srcLoc, collector, appCtx);
+            case KEY_ADAPTER_NAME_AZURE_DATALAKE, KEY_ADAPTER_NAME_AZURE_DATALAKE_ALIAS:
+                DatalakeUtils.validateProperties(configuration, srcLoc, collector, appCtx);
                 break;
             case ExternalDataConstants.KEY_ADAPTER_NAME_GCS:
-                validateProperties(configuration, srcLoc, collector);
+                GCSUtils.validateProperties(appCtx, configuration, srcLoc, collector);
                 break;
             case ExternalDataConstants.KEY_ADAPTER_NAME_HDFS:
                 HDFSUtils.validateProperties(configuration, srcLoc, collector);
@@ -977,26 +1034,122 @@ public class ExternalDataUtils {
     }
 
     public static boolean supportsPushdown(Map<String, String> properties) {
-        //Currently, only Apache Parquet/Delta table format is supported
-        return isParquetFormat(properties) || isDeltaTable(properties);
+        //Currently, only Apache Parquet/Delta/Iceberg table format is supported
+        return isParquetFormat(properties) || isDeltaTable(properties) || isIcebergTable(properties);
+    }
+
+    public static String resolveTimeZone(String timeZoneId) throws CompilationException {
+        String canonical = validTimeZonesMap.get(timeZoneId.toLowerCase(Locale.ROOT));
+        if (canonical != null) {
+            return canonical;
+        }
+        try {
+            return parseOffsetZoneId(timeZoneId).getId();
+        } catch (Exception e) {
+            throw CompilationException.create(ErrorCode.INVALID_TIMEZONE, e, timeZoneId);
+        }
     }
 
     /**
-     * Validate Parquet dataset's declared type and configuration
+     * The {@link ZoneId#of} step shared by {@link #resolveTimeZone} and {@link #resolveTimeZoneOrUnset} -- one
+     * helper so the two cannot drift. Only offset forms ({@code GMT+05:30}, {@code UTC-8}, {@code +05:30},
+     * {@code Z}) reach here: every region and legacy short id is caught by the canonical lookup before it.
+     * <p>
+     * Retried upper-cased so the offset forms are accepted case-insensitively, the way region ids already are;
+     * {@code gmt+05:30} means exactly what {@code GMT+05:30} means. The as-is attempt runs first, so nothing that
+     * resolves today resolves differently. Upper-casing cannot mis-resolve anything: no region id survives the
+     * canonical lookup to get here, and case carries no meaning in an offset.
      *
-     * @param properties        external dataset configuration
-     * @param datasetRecordType dataset declared type
+     * @throws DateTimeException when neither spelling is a zone id
      */
+    private static ZoneId parseOffsetZoneId(String timeZoneId) {
+        try {
+            return ZoneId.of(timeZoneId);
+        } catch (DateTimeException e) {
+            return ZoneId.of(timeZoneId.toUpperCase(Locale.ROOT));
+        }
+    }
+
+    /**
+     * Resolves a configured timezone id on the read path, in the same order {@link #resolveTimeZone} validates
+     * it: a canonical id matched case-insensitively, then an offset form {@link ZoneId} understands. Keep the
+     * two in step -- an id accepted at DDL time that resolves differently here is silently wrong data.
+     * <p>
+     * Widens, never narrows. Every id {@code TimeZone.getTimeZone} resolves today is matched by the first step
+     * and keeps its exact offset, including the short ids ({@code EST}, {@code IST}, ...) that {@code
+     * ZoneId.of} rejects outright. What changes is only what previously fell through to GMT: case variants and
+     * the bare-offset forms.
+     * <p>
+     * Returns {@code null} for an unrecognised id rather than throwing -- read as "unset", which is the offset
+     * those ids already got. A collection created before the DDL-time check existed must keep reading.
+     *
+     * @param timeZoneId configured id, possibly null or empty
+     * @return the resolved zone, or {@code null} when unset or unrecognised
+     */
+    /**
+     * Resolves a configured timezone for the read path and reports it when it cannot be resolved, so a
+     * collection whose timezone is being ignored says so instead of silently reading UTC-adjusted values with no
+     * offset. An absent or empty id is not reported: it means no timezone was asked for.
+     *
+     * @param timeZoneId  configured id, possibly null or empty
+     * @param warningSink where to deliver the warning; readers differ in how theirs reaches the user
+     * @return the resolved zone, or {@code null} when unset or unresolvable
+     */
+    public static TimeZone resolveTimeZoneOrWarn(String timeZoneId, Consumer<Warning> warningSink) {
+        TimeZone resolved = resolveTimeZoneOrUnset(timeZoneId);
+        // This warning is for collections that pre-existed before the DDL check, so they continue reading. But all
+        // new collections will fail at creation time if an invalid timezone is used.
+        if (resolved == null && timeZoneId != null && !timeZoneId.isEmpty()) {
+            warningSink.accept(
+                    Warning.of(null, ErrorCode.TIME_ZONE_ID_IGNORED, timeZoneId, ExternalDataConstants.KEY_TIMEZONE));
+        }
+        return resolved;
+    }
+
+    public static TimeZone resolveTimeZoneOrUnset(String timeZoneId) {
+        if (timeZoneId == null || timeZoneId.isEmpty()) {
+            return null;
+        }
+        String canonical = validTimeZonesMap.get(timeZoneId.toLowerCase(Locale.ROOT));
+        if (canonical != null) {
+            return TimeZone.getTimeZone(canonical);
+        }
+        try {
+            return TimeZone.getTimeZone(parseOffsetZoneId(timeZoneId));
+        } catch (DateTimeException e) {
+            return null;
+        }
+    }
+
     public static void validateParquetTypeAndConfiguration(Map<String, String> properties,
             ARecordType datasetRecordType) throws CompilationException {
         if (isParquetFormat(properties)) {
             if (datasetRecordType.getFieldTypes().length != 0) {
                 throw new CompilationException(ErrorCode.UNSUPPORTED_TYPE_FOR_PARQUET, datasetRecordType.getTypeName());
-            } else if (properties.containsKey(ParquetOptions.TIMEZONE)
-                    && !validTimeZones.contains(properties.get(ParquetOptions.TIMEZONE))) {
-                //Ensure the configured time zone id is correct
-                throw new CompilationException(ErrorCode.INVALID_TIMEZONE, properties.get(ParquetOptions.TIMEZONE));
+            } else if (properties.containsKey(ExternalDataConstants.KEY_TIMEZONE)) {
+                String resolved = resolveTimeZone(properties.get(ExternalDataConstants.KEY_TIMEZONE));
+                properties.put(ExternalDataConstants.KEY_TIMEZONE, resolved);
             }
+            validateBoolean(properties, ExternalDataConstants.ParquetOptions.ROW_GROUP_FILTER);
+            validateBoolean(properties, ExternalDataConstants.ParquetOptions.TIMESTAMP_AS_LONG);
+            validateBoolean(properties, ExternalDataConstants.ParquetOptions.DATE_AS_INT);
+            validateBoolean(properties, ExternalDataConstants.ParquetOptions.TIME_AS_INT);
+        }
+    }
+
+    /**
+     * Rejects anything but true or false at DDL time. Empty is rejected too, since {@code parseBoolean} would read
+     * it as a silent off.
+     */
+    private static void validateBoolean(Map<String, String> properties, String propertyName)
+            throws CompilationException {
+        String value = properties.get(propertyName);
+        if (value == null) {
+            return;
+        }
+        if (!ExternalDataConstants.TRUE.equalsIgnoreCase(value)
+                && !ExternalDataConstants.FALSE.equalsIgnoreCase(value)) {
+            throw new CompilationException(ErrorCode.INVALID_REQ_PARAM_VAL, propertyName, value);
         }
     }
 
@@ -1012,6 +1165,12 @@ public class ExternalDataUtils {
         if (isAvroFormat(properties)) {
             if (datasetRecordType.getFieldTypes().length != 0) {
                 throw new CompilationException(ErrorCode.UNSUPPORTED_TYPE_FOR_AVRO, datasetRecordType.getTypeName());
+            }
+            String timeZoneId = properties.get(ExternalDataConstants.KEY_TIMEZONE);
+            // An empty value means "unset", as AvroConverterContext also treats it, so it is left alone rather
+            // than rejected. The resolved id is stored back to match the parquet and delta validators.
+            if (timeZoneId != null && !timeZoneId.isEmpty()) {
+                properties.put(ExternalDataConstants.KEY_TIMEZONE, resolveTimeZone(timeZoneId));
             }
         }
     }
@@ -1083,6 +1242,32 @@ public class ExternalDataUtils {
         return Arrays.stream(parameters).filter(field -> configuration.get(field) != null).findFirst();
     }
 
+    /**
+     * Whether an authentication flag, such as {@code instanceProfile}, is set. The flag takes {@code true} or
+     * {@code false} in any letter case, and is not set when absent.
+     *
+     * @throws CompilationException if the flag has any other value
+     */
+    public static boolean isAuthFlagSet(Map<String, String> configuration, String flag) throws CompilationException {
+        return validateAndGetBooleanProperty(flag, configuration.get(flag));
+    }
+
+    /**
+     * As {@link #getFirstNotNull}, except that an authentication flag is provided only when it is set: a flag set to
+     * {@code false} selects no authentication method, and so conflicts with none.
+     */
+    public static Optional<String> getFirstProvided(Map<String, String> configuration, String... parameters)
+            throws CompilationException {
+        for (String parameter : parameters) {
+            boolean provided = AUTH_FLAGS.contains(parameter) ? isAuthFlagSet(configuration, parameter)
+                    : configuration.get(parameter) != null;
+            if (provided) {
+                return Optional.of(parameter);
+            }
+        }
+        return Optional.empty();
+    }
+
     public static ATypeTag peekArgument(IAType type, IValueReference valueReference, TaggedValuePointable pointy)
             throws HyracksDataException {
         ATypeTag tag = type.getTypeTag();
@@ -1114,7 +1299,7 @@ public class ExternalDataUtils {
     public static boolean evaluate(String key, BiPredicate<List<Matcher>, String> predicate, List<Matcher> matchers,
             ExternalDataPrefix externalDataPrefix, IExternalFilterEvaluator evaluator,
             IWarningCollector warningCollector) throws HyracksDataException {
-        return !key.endsWith("/") && predicate.test(matchers, key)
+        return !key.isEmpty() && !key.endsWith("/") && predicate.test(matchers, key)
                 && externalDataPrefix.evaluate(key, evaluator, warningCollector);
     }
 
@@ -1122,28 +1307,32 @@ public class ExternalDataUtils {
         return configuration.getOrDefault(DEFINITION_FIELD_NAME, configuration.get(KEY_PATH));
     }
 
-    public static String getProtocolContainerPair(Map<String, String> configurations) {
+    public static String getProtocolContainerPair(Map<String, String> configurations) throws CompilationException {
         String container = configurations.getOrDefault(ExternalDataConstants.CONTAINER_NAME_FIELD_NAME, "");
         String type = configurations.getOrDefault(ExternalDataConstants.KEY_EXTERNAL_SOURCE_TYPE, "");
         String protocol;
         switch (type) {
             case ExternalDataConstants.KEY_ADAPTER_NAME_AWS_S3:
                 protocol = S3Constants.HADOOP_S3_PROTOCOL;
-                break;
+                return protocol + "://" + container + "/";
             case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_BLOB:
-                protocol = AzureConstants.HADOOP_AZURE_BLOB_PROTOCOL;
-                break;
-            case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_DATA_LAKE:
-                protocol = AzureConstants.HADOOP_AZURE_DATALAKE_PROTOCOL;
-                break;
+            case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_BLOB_ALIAS:
+                protocol = AzureConstants.HADOOP_AZURE_PROTOCOL;
+                String blobEndpoint = BlobUtils.getEndpointFromClient(configurations);
+                return protocol + "://" + container + "@" + blobEndpoint + "/";
+            case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_DATALAKE:
+            case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_DATALAKE_ALIAS:
+                protocol = AzureConstants.HADOOP_AZURE_PROTOCOL;
+                String dataLakeEndpoint = DatalakeUtils.getEndpointFromClient(configurations);
+                return protocol + "://" + container + "@" + dataLakeEndpoint + "/";
             case ExternalDataConstants.KEY_ADAPTER_NAME_GCS:
                 protocol = GCSConstants.HADOOP_GCS_PROTOCOL;
-                break;
+                return protocol + "://" + container + "/";
             case ExternalDataConstants.KEY_ADAPTER_NAME_LOCALFS:
                 String path = getDefinitionOrPath(configurations);
                 String[] nodePathPair = path.trim().split("://");
                 protocol = nodePathPair[0];
-                break;
+                return protocol + "://" + container + "/";
             case ExternalDataConstants.KEY_ADAPTER_NAME_HDFS:
                 // Remove trailing slashes as prefixes/paths in hdfs start with a slash (absolute paths)
                 return configurations.get(ExternalDataConstants.KEY_HDFS_URL).replaceAll("/+$", "");
@@ -1151,7 +1340,6 @@ public class ExternalDataUtils {
                 return "";
         }
 
-        return protocol + "://" + container + "/";
     }
 
     public static void validateType(Map<String, String> properties, ARecordType itemType) throws CompilationException {
@@ -1168,7 +1356,7 @@ public class ExternalDataUtils {
         switch (normalizedAdapter) {
             case ExternalDataConstants.KEY_ADAPTER_NAME_AWS_S3:
             case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_BLOB:
-            case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_DATA_LAKE:
+            case ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_DATALAKE:
             case ExternalDataConstants.KEY_ADAPTER_NAME_GCS:
                 return ExternalDataConstants.DEFINITION_FIELD_NAME;
             default:
@@ -1178,5 +1366,82 @@ public class ExternalDataUtils {
 
     public static boolean isGzipCompression(String compression) {
         return ExternalDataConstants.KEY_COMPRESSION_GZIP.equalsIgnoreCase(compression);
+    }
+
+    public static boolean getDisableSslVerify(Map<String, String> configuration) throws CompilationException {
+        String disableSslVerifyString = configuration.get(DISABLE_SSL_VERIFY_FIELD_NAME);
+        return validateAndGetBooleanProperty(DISABLE_SSL_VERIFY_FIELD_NAME, disableSslVerifyString);
+    }
+
+    public static boolean validateAndGetBooleanProperty(String propertyKey, String propertyValue)
+            throws CompilationException {
+        if (propertyValue == null) {
+            return false;
+        }
+        if (!"true".equalsIgnoreCase(propertyValue) && !"false".equalsIgnoreCase(propertyValue)) {
+            throw new CompilationException(INVALID_PARAM_VALUE_ALLOWED_VALUE, propertyKey, "true, false");
+        }
+        return "true".equalsIgnoreCase(propertyValue);
+    }
+
+    public static Map<String, String> convertStringArrayParamIntoNumberedParameters(AdmObjectNode withObjectNode,
+            SourceLocation sourceLocation) throws CompilationException {
+        Map<String, String> properties = new HashMap<>();
+        for (Map.Entry<String, IAdmNode> me : withObjectNode.getFields()) {
+            String fieldName = me.getKey();
+            IAdmNode fieldValue = me.getValue();
+            String fieldValueStr;
+            switch (fieldValue.getType()) {
+                case STRING:
+                    fieldValueStr = ((AdmStringNode) fieldValue).get();
+                    break;
+                case BOOLEAN:
+                    fieldValueStr = Boolean.toString(((AdmBooleanNode) fieldValue).get());
+                    break;
+                case ARRAY:
+                    AdmArrayNode arrayNode = (AdmArrayNode) fieldValue;
+                    Iterator<IAdmNode> iterator = arrayNode.iterator();
+                    int i = 0;
+                    while (iterator.hasNext()) {
+                        IAdmNode node = iterator.next();
+                        if (node.getType() != ATypeTag.STRING) {
+                            throw new CompilationException(PROPERTY_INVALID_VALUE_TYPE, fieldName,
+                                    ATypeTag.STRING.toString());
+                        }
+                        properties.put(fieldName + "#" + i++, ((AdmStringNode) node).get());
+                    }
+                    continue;
+                default:
+                    throw new CompilationException(PARSE_ERROR, sourceLocation, fieldName);
+            }
+            properties.put(fieldName, fieldValueStr);
+        }
+        return properties;
+    }
+
+    public static ARecordType getExpectedType(String encodedRequestedFields) throws IOException {
+        if (ALL_FIELDS_TYPE.getTypeName().equals(encodedRequestedFields)) {
+            //By default, return the entire records
+            return ALL_FIELDS_TYPE;
+        } else if (EMPTY_TYPE.getTypeName().equals(encodedRequestedFields)) {
+            //No fields were requested
+            return EMPTY_TYPE;
+        }
+        //A subset of the fields was requested
+        Base64.Decoder decoder = Base64.getDecoder();
+        byte[] typeBytes = decoder.decode(encodedRequestedFields);
+        DataInputStream dataInputStream = new DataInputStream(new ByteArrayInputStream(typeBytes));
+        return ExternalDatasetProjectionFiltrationInfo.createTypeField(dataInputStream);
+    }
+
+    public static Map<String, FunctionCallInformation> getFunctionCallInformationMap(
+            String encodedFunctionCallInformation) throws IOException {
+        if (encodedFunctionCallInformation != null && !encodedFunctionCallInformation.isEmpty()) {
+            Base64.Decoder decoder = Base64.getDecoder();
+            byte[] functionCallInfoMapBytes = decoder.decode(encodedFunctionCallInformation);
+            DataInputStream dataInputStream = new DataInputStream(new ByteArrayInputStream(functionCallInfoMapBytes));
+            return ExternalDatasetProjectionFiltrationInfo.createFunctionCallInformationMap(dataInputStream);
+        }
+        return null;
     }
 }

@@ -1,0 +1,610 @@
+
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.asterix.runtime.operators.kmeans;
+
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
+import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.exceptions.RuntimeDataException;
+import org.apache.asterix.common.vector.VectorSimilarityMetric;
+import org.apache.asterix.formats.nontagged.SerializerDeserializerProvider;
+import org.apache.asterix.om.base.AInt32;
+import org.apache.asterix.om.base.AMutableInt32;
+import org.apache.asterix.om.types.BuiltinType;
+import org.apache.hyracks.api.comm.IFrameWriter;
+import org.apache.hyracks.api.comm.VSizeFrame;
+import org.apache.hyracks.api.context.IHyracksTaskContext;
+import org.apache.hyracks.api.dataflow.ActivityId;
+import org.apache.hyracks.api.dataflow.IActivityGraphBuilder;
+import org.apache.hyracks.api.dataflow.IOperatorNodePushable;
+import org.apache.hyracks.api.dataflow.TaskId;
+import org.apache.hyracks.api.dataflow.value.IRecordDescriptorProvider;
+import org.apache.hyracks.api.dataflow.value.ISerializerDeserializer;
+import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
+import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.exceptions.Warning;
+import org.apache.hyracks.api.job.IOperatorDescriptorRegistry;
+import org.apache.hyracks.dataflow.common.comm.io.ArrayTupleBuilder;
+import org.apache.hyracks.dataflow.common.comm.io.FrameTupleAccessor;
+import org.apache.hyracks.dataflow.common.comm.io.FrameTupleAppender;
+import org.apache.hyracks.dataflow.common.comm.util.FrameUtils;
+import org.apache.hyracks.dataflow.common.data.accessors.FrameTupleReference;
+import org.apache.hyracks.dataflow.common.data.marshalling.DoubleSerializerDeserializer;
+import org.apache.hyracks.dataflow.common.data.marshalling.IntegerSerializerDeserializer;
+import org.apache.hyracks.dataflow.std.base.AbstractActivityNode;
+import org.apache.hyracks.dataflow.std.base.AbstractOperatorDescriptor;
+import org.apache.hyracks.dataflow.std.base.AbstractOperatorNodePushable;
+import org.apache.hyracks.dataflow.std.base.AbstractUnaryInputSinkOperatorNodePushable;
+import org.apache.hyracks.dataflow.std.misc.MaterializerTaskState;
+import org.apache.hyracks.dataflow.std.misc.SinkOperatorNodePushable;
+
+/**
+ * The Lloyd loop head: materializes this partition's vectors and payload columns once -- or, when seeded by
+ * k-means||, reads the oversampling loop's files and stores nothing -- runs every refinement iteration against
+ * them without leaving the operator, then emits every row labelled with its cluster id (output 0).
+ * <p>
+ * An iteration is one assignment pass: each resident vector is charged to its nearest current centroid, and the
+ * partition emits one {@code (count, sum)} partial per centroid that attracted anything. The reduce that turns
+ * those partials into the next centroid set is a separate single-node operator, so the iteration crosses the
+ * network twice — out as partials, back as centroids — on ordinary pipelined connectors. Iteration is paced by
+ * this partition's permit: the head emits, then parks until the tail has published the new centroids.
+ * <p>
+ * Iterating inside one operator keeps the plan a fixed size: the vectors sit in a single run file that is
+ * re-streamed each round, so neither the graph nor the materialization grows with the iteration count. It also
+ * makes a data-dependent count expressible, since the graph is the same however many times it runs, though the
+ * count passed in today is a constant.
+ * <p>
+ * Vectors never move between nodes: only the per-centroid partials (O(k · dim) per partition) and the centroid
+ * set travel, both independent of the input size.
+ */
+public class KMeansLloydControllerOperatorDescriptor extends AbstractOperatorDescriptor {
+    private static final long serialVersionUID = 1L;
+    private static final int STORE_VECTORS_ACTIVITY_ID = 0;
+    private static final int STORE_CENTROIDS_ACTIVITY_ID = 1;
+    private static final int LLOYD_LOOP_ACTIVITY_ID = 2;
+    private static final int OUT_ROWS = 0; // the labelled rows: payload columns, cluster id[, centroid]
+    private static final int OUT_PARTIALS = 1; // per-iteration (count, sum) partials -> CentroidMerge
+    /** The ADM order of two arrays of doubles: element by element, then the shorter first. */
+    private static final Comparator<double[]> LEXICOGRAPHIC = (a, b) -> {
+        for (int i = 0; i < a.length && i < b.length; i++) {
+            int c = Double.compare(a[i], b[i]);
+            if (c != 0) {
+                return c;
+            }
+        }
+        return Integer.compare(a.length, b.length);
+    };
+    private final String loopKey;
+    // Key of the oversampling loop whose vector file this loop reads, or null. Both loops run on the same
+    // locations; each partition file set covers the input once, which is all the update needs.
+    private final String sharedVectorsKey;
+    private final int vectorColumn; // vector column in input 0
+    // Input-0 columns emitted ahead of the cluster id.
+    private final int[] payloadColumns;
+    // Whether each row also carries its centroid after the cluster id.
+    private final boolean emitCentroid;
+    private final int centroidColumn; // vector column in input 1 (the initial centroids)
+    private final int iterations;
+    // The k the query asked for; the final centroid count is checked against it (see labelRows).
+    private final int numClusters;
+    private final int framesLimit; // budget for the scan block, the slot window and the centroid stream
+    // The declared Dimension, enforced by the decoders (see KMeansVectorCodec.ListVectorDecoder).
+    private final int dimension;
+    // The metric every distance in this stage is measured with. Validation refuses the metrics with no usable
+    // centroid update, so only ones the algorithm can converge under reach here.
+    private final VectorSimilarityMetric metric;
+
+    public KMeansLloydControllerOperatorDescriptor(IOperatorDescriptorRegistry spec, RecordDescriptor labelledRecDesc,
+            RecordDescriptor partialRecDesc, String loopKey, String sharedVectorsKey, int vectorColumn,
+            int[] payloadColumns, boolean emitCentroid, int centroidColumn, int iterations, int numClusters,
+            int framesLimit, int dimension, VectorSimilarityMetric metric) {
+        super(spec, 2, 2);
+        this.metric = metric;
+        this.loopKey = loopKey;
+        this.sharedVectorsKey = sharedVectorsKey;
+        this.vectorColumn = vectorColumn;
+        this.payloadColumns = payloadColumns;
+        this.emitCentroid = emitCentroid;
+        this.centroidColumn = centroidColumn;
+        this.iterations = iterations;
+        this.numClusters = numClusters;
+        this.framesLimit = framesLimit;
+        this.dimension = dimension;
+        outRecDescs[OUT_ROWS] = labelledRecDesc;
+        outRecDescs[OUT_PARTIALS] = partialRecDesc;
+    }
+
+    @Override
+    public void contributeActivities(IActivityGraphBuilder builder) {
+        StoreVectorsActivity storeVectors = new StoreVectorsActivity(new ActivityId(odId, STORE_VECTORS_ACTIVITY_ID));
+        StoreCentroidsActivity storeCentroids =
+                new StoreCentroidsActivity(new ActivityId(odId, STORE_CENTROIDS_ACTIVITY_ID));
+        LloydLoopActivity loop = new LloydLoopActivity(new ActivityId(odId, LLOYD_LOOP_ACTIVITY_ID));
+        builder.addActivity(this, storeVectors);
+        builder.addSourceEdge(0, storeVectors, 0);
+        builder.addActivity(this, storeCentroids);
+        builder.addSourceEdge(1, storeCentroids, 0);
+        builder.addActivity(this, loop);
+        builder.addTargetEdge(OUT_ROWS, loop, OUT_ROWS);
+        builder.addTargetEdge(OUT_PARTIALS, loop, OUT_PARTIALS);
+        builder.addBlockingEdge(storeVectors, loop);
+        builder.addBlockingEdge(storeCentroids, loop);
+    }
+
+    /**
+     * Materializes the partition's resident vectors into a raw-double run file for repeated re-streaming, with
+     * the payload columns beside it. With a shared vector file, the input is drained unread.
+     */
+    private final class StoreVectorsActivity extends AbstractActivityNode {
+        private static final long serialVersionUID = 1L;
+
+        private StoreVectorsActivity(ActivityId id) {
+            super(id);
+        }
+
+        @Override
+        public IOperatorNodePushable createPushRuntime(IHyracksTaskContext ctx,
+                IRecordDescriptorProvider recordDescProvider, int partition, int nPartitions) {
+            if (sharedVectorsKey != null) {
+                return new SinkOperatorNodePushable();
+            }
+            final RecordDescriptor inRecDesc = recordDescProvider.getInputRecordDescriptor(getActivityId(), 0);
+            return new AbstractUnaryInputSinkOperatorNodePushable() {
+                private final FrameTupleAccessor accessor = new FrameTupleAccessor(inRecDesc);
+                private final FrameTupleReference tuple = new FrameTupleReference();
+                private final KMeansVectorCodec.ListVectorDecoder decoder =
+                        new KMeansVectorCodec.ListVectorDecoder(dimension);
+                private final ArrayTupleBuilder tb = new ArrayTupleBuilder(1);
+                private MaterializerTaskState state;
+                private MaterializerTaskState payloadState; // null without payload columns
+                private KMeansLoopIO.PayloadColumnWriter payload;
+                private VSizeFrame frame;
+                private FrameTupleAppender appender;
+
+                @Override
+                public void open() throws HyracksDataException {
+                    state = LoopControlState.sharedRunFile(ctx, LoopControlState.vectorsStateId(loopKey, partition));
+                    frame = new VSizeFrame(ctx);
+                    appender = new FrameTupleAppender(frame);
+                    if (payloadColumns.length > 0) {
+                        payloadState = LoopControlState.sharedRunFile(ctx,
+                                LoopControlState.payloadStateId(loopKey, partition));
+                        payload = new KMeansLoopIO.PayloadColumnWriter(payloadState, ctx, payloadColumns);
+                    }
+                }
+
+                @Override
+                public void nextFrame(ByteBuffer buffer) throws HyracksDataException {
+                    accessor.reset(buffer);
+                    int tupleCount = accessor.getTupleCount();
+                    for (int i = 0; i < tupleCount; i++) {
+                        tuple.reset(accessor, i);
+                        double[] vec = decoder.decode(tuple, vectorColumn);
+                        if (vec == null) {
+                            // Not a numeric array of the declared width: skip the row with a warning.
+                            if (ctx.getWarningCollector().shouldWarn()) {
+                                ctx.getWarningCollector()
+                                        .warn(Warning.of(null, ErrorCode.CLUSTER_BY_INVALID_INPUT,
+                                                "a row's clustering expression is not a numeric array of the declared "
+                                                        + "dimension " + dimension + "; the row was excluded"));
+                            }
+                            continue;
+                        }
+                        tb.reset();
+                        KMeansLoopIO.writeRawVector(tb, vec);
+                        if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
+                            flushToState();
+                            if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
+                                throw new RuntimeDataException(ErrorCode.CLUSTER_BY_INVALID_INPUT,
+                                        "a vector is too large to fit in a frame");
+                            }
+                        }
+                        if (payload != null) {
+                            payload.append(accessor, i); // entry i of both files is the same row
+                        }
+                    }
+                }
+
+                private void flushToState() throws HyracksDataException {
+                    if (appender.getTupleCount() > 0) {
+                        state.appendFrame(appender.getBuffer());
+                        appender.reset(frame, true);
+                    }
+                }
+
+                @Override
+                public void close() throws HyracksDataException {
+                    if (state == null) {
+                        return; // open() threw, or fail() already deleted the run file: nothing to publish
+                    }
+                    flushToState();
+                    // Fully written; readers open their own independent handles via createReader.
+                    state.close();
+                    if (payload != null) {
+                        payload.finish();
+                        ctx.setStateObject(payloadState);
+                    }
+                    ctx.setStateObject(state);
+                }
+
+                @Override
+                public void fail() throws HyracksDataException {
+                    // Created in open(), registered only in close(): on this path nothing else will close or
+                    // delete them, and the loop that would read them never runs.
+                    try {
+                        KMeansLoopIO.discard(state);
+                    } finally {
+                        state = null;
+                        KMeansLoopIO.discard(payloadState);
+                        payloadState = null;
+                    }
+                }
+            };
+        }
+    }
+
+    /**
+     * Seeds the loop: reads the (broadcast, hence complete) initial centroid set into this partition's store and
+     * registers the control state, so the co-located tail can rendezvous even before the loop body starts.
+     */
+    private final class StoreCentroidsActivity extends AbstractActivityNode {
+        private static final long serialVersionUID = 1L;
+
+        private StoreCentroidsActivity(ActivityId id) {
+            super(id);
+        }
+
+        @Override
+        public IOperatorNodePushable createPushRuntime(IHyracksTaskContext ctx,
+                IRecordDescriptorProvider recordDescProvider, int partition, int nPartitions) {
+            final RecordDescriptor inRecDesc = recordDescProvider.getInputRecordDescriptor(getActivityId(), 0);
+            return new AbstractUnaryInputSinkOperatorNodePushable() {
+                private final FrameTupleAccessor accessor = new FrameTupleAccessor(inRecDesc);
+                private final FrameTupleReference tuple = new FrameTupleReference();
+                private final KMeansVectorCodec.ListVectorDecoder decoder =
+                        new KMeansVectorCodec.ListVectorDecoder(dimension);
+                private boolean building;
+                private boolean failed;
+                private LoopControlState control;
+
+                @Override
+                public void open() throws HyracksDataException {
+                    control = new LoopControlState(ctx.getJobletContext().getJobId(),
+                            LoopControlState.controlStateId(loopKey, partition),
+                            new TaskId(getActivityId(), partition));
+                    ctx.setStateObject(control);
+                }
+
+                @Override
+                public void nextFrame(ByteBuffer buffer) throws HyracksDataException {
+                    accessor.reset(buffer);
+                    int tupleCount = accessor.getTupleCount();
+                    for (int i = 0; i < tupleCount; i++) {
+                        tuple.reset(accessor, i);
+                        double[] centroid = decoder.decode(tuple, centroidColumn);
+                        if (centroid == null) {
+                            // Skip, not raise: under init_mode "random" this input is raw user rows, where a
+                            // bad value is ordinary input. Dropping it shrinks k, which labelRows
+                            // reports.
+                            if (ctx.getWarningCollector().shouldWarn()) {
+                                ctx.getWarningCollector()
+                                        .warn(Warning.of(null, ErrorCode.CLUSTER_BY_INVALID_INPUT,
+                                                "an initial centroid is not a numeric array of the declared dimension "
+                                                        + dimension + "; it was excluded"));
+                            }
+                            continue;
+                        }
+                        // Streamed straight into the store, since buffering the seed set here would put the
+                        // O(k * dim) back on the heap that the store exists to keep off it.
+                        if (!building) {
+                            control.getCentroids().beginPut(ctx);
+                            building = true;
+                        }
+                        control.getCentroids().put(centroid);
+                    }
+                }
+
+                @Override
+                public void close() throws HyracksDataException {
+                    // No end marker here -- close IS the end of the seed set. An empty seed still publishes,
+                    // as an empty set, which is what the loop's first iteration then reads.
+                    if (control == null || failed) {
+                        return; // open() threw, or fail() discarded the store: no seed set to publish
+                    }
+                    CentroidStore store = control.getCentroids();
+                    if (!building) {
+                        store.beginPut(ctx);
+                    }
+                    store.endPut();
+                    building = false;
+                }
+
+                @Override
+                public void fail() throws HyracksDataException {
+                    // The seed set never lands, so the loop body cannot run and the tail will never release.
+                    // Guarded like close(): both still run after an open() that threw.
+                    failed = true;
+                    if (control != null) {
+                        control.abort();
+                        // Nothing will read the half-built set: the loop sits behind this activity's blocking
+                        // edge and the tail only receives what the loop emits. Delete it now.
+                        control.getCentroids().destroy();
+                    }
+                }
+            };
+        }
+    }
+
+    /** The inline loop: a 0-input, 2-output source behind both store blocking edges. */
+    private final class LloydLoopActivity extends AbstractActivityNode {
+        private static final long serialVersionUID = 1L;
+
+        private LloydLoopActivity(ActivityId id) {
+            super(id);
+        }
+
+        @Override
+        public IOperatorNodePushable createPushRuntime(IHyracksTaskContext ctx,
+                IRecordDescriptorProvider recordDescProvider, int partition, int nPartitions) {
+            return new AbstractOperatorNodePushable() {
+                private final IFrameWriter[] writers = new IFrameWriter[2];
+
+                @Override
+                public int getInputArity() {
+                    return 0;
+                }
+
+                @Override
+                public IFrameWriter getInputFrameWriter(int index) {
+                    // 0-input source: the framework never asks for an input writer. Unchecked by
+                    // necessity -- IOperatorNodePushable.getInputFrameWriter declares no exception.
+                    throw new IllegalStateException(
+                            "kmeans loop source has no inputs; getInputFrameWriter(" + index + ") is unreachable");
+                }
+
+                @Override
+                public void setOutputFrameWriter(int index, IFrameWriter writer, RecordDescriptor recordDesc) {
+                    writers[index] = writer;
+                }
+
+                @Override
+                public void initialize() throws HyracksDataException {
+                    final IFrameWriter rowWriter = writers[OUT_ROWS];
+                    final IFrameWriter partialWriter = writers[OUT_PARTIALS];
+                    rowWriter.open();
+                    partialWriter.open();
+                    // Held outside the try so the finally can release the centroid handoff on every path. The
+                    // loop is over by then either way, and nothing reads the store after this activity ends.
+                    LoopControlState control = null;
+                    MaterializerTaskState vectorState = null;
+                    MaterializerTaskState payloadState = null;
+                    try {
+                        // Registered by the store activities, which addBlockingEdge (contributeActivities) joins
+                        // ahead of this activity -- so these are already present; no wait is warranted.
+                        control = (LoopControlState) LoopControlState.required(ctx,
+                                LoopControlState.controlStateId(loopKey, partition));
+                        // A shared file is complete and registered: its store activity closed before the
+                        // oversampling loop ran, whose output seeded this loop's StoreCentroids, which this activity
+                        // is ordered behind. It is left for this loop to delete.
+                        String storeKey = sharedVectorsKey != null ? sharedVectorsKey : loopKey;
+                        vectorState = (MaterializerTaskState) LoopControlState.required(ctx,
+                                LoopControlState.vectorsStateId(storeKey, partition));
+                        if (payloadColumns.length > 0) {
+                            payloadState = (MaterializerTaskState) LoopControlState.required(ctx,
+                                    LoopControlState.payloadStateId(storeKey, partition));
+                        }
+                        runLoop(control, vectorState, partialWriter);
+                        labelRows(control, vectorState, payloadState, rowWriter);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        rowWriter.fail();
+                        partialWriter.fail();
+                        throw HyracksDataException.create(e);
+                    } catch (Exception e) {
+                        rowWriter.fail();
+                        partialWriter.fail();
+                        throw HyracksDataException.create(e);
+                    } finally {
+                        try {
+                            try {
+                                KMeansLoopIO.discard(vectorState);
+                            } finally {
+                                try {
+                                    KMeansLoopIO.discard(payloadState);
+                                } finally {
+                                    if (control != null) {
+                                        control.getCentroids().destroy();
+                                    }
+                                }
+                            }
+                        } finally {
+                            rowWriter.close();
+                            partialWriter.close();
+                        }
+                    }
+                }
+
+                private void runLoop(LoopControlState control, MaterializerTaskState vectorState,
+                        IFrameWriter partialWriter) throws HyracksDataException, InterruptedException {
+                    FrameTupleAppender appender = new FrameTupleAppender(new VSizeFrame(ctx));
+                    ArrayTupleBuilder tb = new ArrayTupleBuilder(6);
+                    for (int it = 0; it < iterations; it++) {
+                        final int iter = it;
+                        final CentroidStore centroids = control.getCentroids();
+                        final int slots = centroids.size();
+                        // Assignment and accumulation are separated for the same reason the terminal weigh
+                        // separates them: the (count, sum) slots are written at whichever centroid a vector turned
+                        // out to be nearest to, so there is no side to stream, and holding one slot per centroid
+                        // grew with k. Pass A scores the vectors against the set -- itself streamed, not held --
+                        // and records the assignment; pass B sweeps the slot range in windows the budget allows.
+                        MaterializerTaskState column = new MaterializerTaskState(ctx.getJobletContext().getJobId(),
+                                new TaskId(getActivityId(), partition));
+                        column.open(ctx);
+                        try {
+                            final KMeansLoopIO.ScoreColumnWriter scores =
+                                    new KMeansLoopIO.ScoreColumnWriter(column, ctx);
+                            final int[] dimension = { 0 };
+                            KMeansLoopIO.streamScoredAgainstPool(KMeansLoopIO.source(vectorState, ctx),
+                                    sink -> centroids.stream(ctx, sink), ctx, framesLimit,
+                                    KMeansLoopIO.distanceFunction(metric), (vecs, n, nearest, nearestIdx) -> {
+                                        if (dimension[0] == 0 && n > 0) {
+                                            dimension[0] = vecs[0].length;
+                                        }
+                                        scores.append(nearest, nearestIdx, n);
+                                    });
+                            scores.finish();
+                            if (dimension[0] > 0) {
+                                int window = KMeansLoopIO.blockCapacity(ctx, framesLimit, dimension[0]);
+                                KMeansLoopIO.accumulateInWindows(KMeansLoopIO.source(vectorState, ctx), column, ctx,
+                                        slots, window, (index, count, sum) -> emitPartial(partialWriter, appender, tb,
+                                                iter, index, count, sum));
+                            }
+                        } finally {
+                            KMeansLoopIO.discard(column);
+                        }
+                        emitEnd(partialWriter, appender, tb, it);
+                        appender.write(partialWriter, true);
+                        partialWriter.flush();
+                        // Park until the tail has published this iteration's centroid set.
+                        control.awaitTurn("kmeans Lloyd loop");
+                    }
+                }
+
+                private void emitPartial(IFrameWriter partialWriter, FrameTupleAppender appender, ArrayTupleBuilder tb,
+                        int iter, int seq, long count, double[] sum) throws HyracksDataException {
+                    tb.reset();
+                    tb.addField(IntegerSerializerDeserializer.INSTANCE, iter);
+                    tb.addField(IntegerSerializerDeserializer.INSTANCE, partition);
+                    tb.addField(IntegerSerializerDeserializer.INSTANCE, seq);
+                    tb.addField(IntegerSerializerDeserializer.INSTANCE, KMeansLoopIO.KIND_DRAW);
+                    tb.addField(DoubleSerializerDeserializer.INSTANCE, (double) count);
+                    KMeansLoopIO.writeRawVector(tb, sum);
+                    // One iteration emits one partial per non-empty centroid, so the batch is O(k * dim) and
+                    // outgrows a frame well before k gets large; therefore a full frame flushes and carries on.
+                    FrameUtils.appendToWriter(partialWriter, appender, tb.getFieldEndOffsets(), tb.getByteArray(), 0,
+                            tb.getSize());
+                }
+
+                private void emitEnd(IFrameWriter partialWriter, FrameTupleAppender appender, ArrayTupleBuilder tb,
+                        int iter) throws HyracksDataException {
+                    tb.reset();
+                    tb.addField(IntegerSerializerDeserializer.INSTANCE, iter);
+                    tb.addField(IntegerSerializerDeserializer.INSTANCE, partition);
+                    tb.addField(IntegerSerializerDeserializer.INSTANCE, 0);
+                    tb.addField(IntegerSerializerDeserializer.INSTANCE, KMeansLoopIO.KIND_END);
+                    tb.addField(DoubleSerializerDeserializer.INSTANCE, 0.0d);
+                    KMeansLoopIO.writeRawVector(tb, new double[] { 0.0d }); // ignored for end markers
+                    FrameUtils.appendToWriter(partialWriter, appender, tb.getFieldEndOffsets(), tb.getByteArray(), 0,
+                            tb.getSize());
+                }
+
+                /**
+                 * Labels this partition's rows: the cluster id is the position of the nearest centroid in the
+                 * final set ordered by value (ADM array order), ties to the first, so ids do not depend on the
+                 * order the loop produced the set in. The set is the same on every partition (it was broadcast).
+                 * It is held in the heap for the sort (k x dim, outside the frame budget).
+                 */
+                private void labelRows(LoopControlState control, MaterializerTaskState vectorState,
+                        MaterializerTaskState payloadState, IFrameWriter rowWriter) throws HyracksDataException {
+                    CentroidStore finalCentroids = control.getCentroids();
+                    // A backstop, not the primary report. When the input has fewer distinct vectors than k,
+                    // RECLUSTER says so and names that count -- it is the only stage that knows it. What
+                    // reaches here is what SURVIVED: initMode "random" seeds Lloyd directly and has no
+                    // RECLUSTER to warn for it, and a cluster can also lose every row during refinement.
+                    // Neither says how many distinct vectors the input holds, so this claims nothing about
+                    // that; like RECLUSTER it warns and returns the clusters that do exist. Partition 0 only.
+                    if (partition == 0 && finalCentroids.size() < numClusters
+                            && ctx.getWarningCollector().shouldWarn()) {
+                        int remaining = finalCentroids.size();
+                        ctx.getWarningCollector().warn(Warning.of(null, ErrorCode.CLUSTER_BY_INVALID_INPUT,
+                                "NumClusters is " + numClusters + " but only " + remaining + " cluster(s) remain"
+                                        + (remaining == 0 ? " -- no row matched the declared Dimension"
+                                                : ": the input yielded fewer starting centroids, or a cluster"
+                                                        + " lost every row during refinement")));
+                    }
+                    if (finalCentroids.size() == 0) {
+                        return; // no centroid to place a row by: no clusters
+                    }
+                    final List<double[]> byValue = new ArrayList<>(finalCentroids.size());
+                    finalCentroids.stream(ctx, byValue::add);
+                    byValue.sort(LEXICOGRAPHIC);
+
+                    final FrameTupleAppender appender = new FrameTupleAppender(new VSizeFrame(ctx));
+                    final ArrayTupleBuilder tb = new ArrayTupleBuilder(payloadColumns.length + (emitCentroid ? 2 : 1));
+                    final KMeansLoopIO.PayloadColumnReader payload = payloadState == null ? null
+                            : new KMeansLoopIO.PayloadColumnReader(payloadState, ctx, payloadColumns.length);
+                    final KMeansVectorCodec.VectorListWriter centroidWriter = new KMeansVectorCodec.VectorListWriter();
+                    final AMutableInt32 cid = new AMutableInt32(0);
+                    @SuppressWarnings("unchecked")
+                    final ISerializerDeserializer<AInt32> cidSerde =
+                            SerializerDeserializerProvider.INSTANCE.getSerializerDeserializer(BuiltinType.AINT32);
+                    try {
+                        // Both files are in the same order, so they advance in lockstep.
+                        KMeansLoopIO.streamScoredAgainstPool(KMeansLoopIO.source(vectorState, ctx), sink -> {
+                            for (double[] centroid : byValue) {
+                                sink.accept(centroid);
+                            }
+                        }, ctx, framesLimit, KMeansLoopIO.distanceFunction(metric), (vecs, n, nearest, nearestIdx) -> {
+                            for (int i = 0; i < n; i++) {
+                                if (payload != null) {
+                                    payload.advance();
+                                }
+                                // No finite distance to any centroid: the row is not placed.
+                                if (nearestIdx[i] < 0) {
+                                    if (ctx.getWarningCollector().shouldWarn()) {
+                                        ctx.getWarningCollector()
+                                                .warn(Warning.of(null, ErrorCode.CLUSTER_BY_INVALID_INPUT,
+                                                        "a row's clustering "
+                                                                + "expression has no finite distance to any "
+                                                                + "centroid; the row was excluded"));
+                                    }
+                                    continue;
+                                }
+                                tb.reset();
+                                if (payload != null) {
+                                    payload.copyInto(tb);
+                                }
+                                cid.setValue(nearestIdx[i]);
+                                tb.addField(cidSerde, cid);
+                                if (emitCentroid) {
+                                    centroidWriter.addField(tb, byValue.get(nearestIdx[i]));
+                                }
+                                FrameUtils.appendToWriter(rowWriter, appender, tb.getFieldEndOffsets(),
+                                        tb.getByteArray(), 0, tb.getSize());
+                            }
+                        });
+                        appender.write(rowWriter, true);
+                    } finally {
+                        if (payload != null) {
+                            payload.close();
+                        }
+                    }
+                }
+
+                @Override
+                public void deinitialize() throws HyracksDataException {
+                }
+            };
+        }
+    }
+}

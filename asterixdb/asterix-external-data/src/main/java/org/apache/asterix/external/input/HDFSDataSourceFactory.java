@@ -33,6 +33,8 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.apache.asterix.common.api.IApplicationContext;
+import org.apache.asterix.common.config.CompilerProperties;
+import org.apache.asterix.common.dataflow.ICcApplicationContext;
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.common.external.IExternalFilterEvaluator;
@@ -42,10 +44,13 @@ import org.apache.asterix.external.api.IExternalDataRuntimeContext;
 import org.apache.asterix.external.api.IExternalDataSourceFactory;
 import org.apache.asterix.external.api.IRecordReader;
 import org.apache.asterix.external.api.IRecordReaderFactory;
+import org.apache.asterix.external.input.filter.ParquetFilterEvaluatorFactory;
+import org.apache.asterix.external.input.filter.ParquetFilterExpression;
 import org.apache.asterix.external.input.filter.embedder.IExternalFilterValueEmbedder;
 import org.apache.asterix.external.input.record.reader.abstracts.AbstractExternalInputStreamFactory;
 import org.apache.asterix.external.input.record.reader.hdfs.HDFSRecordReader;
 import org.apache.asterix.external.input.record.reader.hdfs.avro.AvroFileRecordReader;
+import org.apache.asterix.external.input.record.reader.hdfs.parquet.MapredParquetInputFormat;
 import org.apache.asterix.external.input.record.reader.hdfs.parquet.ParquetFileRecordReader;
 import org.apache.asterix.external.input.record.reader.stream.StreamRecordReader;
 import org.apache.asterix.external.input.stream.HDFSInputStream;
@@ -56,11 +61,13 @@ import org.apache.asterix.external.util.ExternalDataPrefix;
 import org.apache.asterix.external.util.ExternalDataUtils;
 import org.apache.asterix.external.util.HDFSUtils;
 import org.apache.avro.generic.GenericRecord;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.mapred.FileInputFormat;
+import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.RecordReader;
@@ -132,6 +139,12 @@ public class HDFSDataSourceFactory implements IRecordReaderFactory<Object>, IExt
         configureHdfsConf(hdfsConf, configuration);
     }
 
+    private boolean getParquetFileSplitsConfig(Map<String, String> configuration, ICcApplicationContext appCtx) {
+        String fileSplits = configuration.get(CompilerProperties.COMPILER_PARQUET_FILESPLITS_KEY);
+        return fileSplits != null ? Boolean.parseBoolean(fileSplits)
+                : appCtx.getCompilerProperties().isParquetFileSplitsEnabled();
+    }
+
     private void extractRequiredFiles(IServiceContext serviceCtx, Map<String, String> configuration,
             IWarningCollector warningCollector, IExternalFilterEvaluatorFactory filterEvaluatorFactory,
             JobConf hdfsConf) throws HyracksDataException, AlgebricksException {
@@ -166,7 +179,8 @@ public class HDFSDataSourceFactory implements IRecordReaderFactory<Object>, IExt
         } catch (InterruptedException ex) {
             throw HyracksDataException.create(ex);
         } catch (IOException ex) {
-            throw CompilationException.create(ErrorCode.EXTERNAL_SOURCE_ERROR, ExceptionUtils.getMessageOrToString(ex));
+            throw CompilationException.create(ErrorCode.EXTERNAL_SOURCE_ERROR, ex,
+                    ExceptionUtils.getMessageOrToString(ex));
         }
     }
 
@@ -176,7 +190,8 @@ public class HDFSDataSourceFactory implements IRecordReaderFactory<Object>, IExt
         this.configuration = configuration;
         this.filterEvaluatorFactory = filterEvaluatorFactory;
         init((ICCServiceContext) serviceCtx);
-        return HDFSUtils.configureHDFSJobConf(configuration);
+        return HDFSUtils.configureHDFSJobConf(configuration,
+                (ICcApplicationContext) serviceCtx.getApplicationContext());
     }
 
     protected void configureHdfsConf(JobConf conf, Map<String, String> configuration)
@@ -224,11 +239,26 @@ public class HDFSDataSourceFactory implements IRecordReaderFactory<Object>, IExt
         }
     }
 
-    private InputSplit[] getInputSplits(JobConf conf, int numPartitions) throws IOException {
-        if (HDFSUtils.isEmpty(conf)) {
-            return Scheduler.EMPTY_INPUT_SPLITS;
+    private InputSplit[] getInputSplits(JobConf conf, int numPartitions) throws IOException, CompilationException {
+        try {
+            if (HDFSUtils.isEmpty(conf)) {
+                return Scheduler.EMPTY_INPUT_SPLITS;
+            }
+            boolean useFileSplits = getParquetFileSplitsConfig(configuration,
+                    (ICcApplicationContext) serviceCtx.getApplicationContext());
+            if (useFileSplits && conf.getInputFormat() instanceof MapredParquetInputFormat) {
+                FileStatus[] fs = ((MapredParquetInputFormat) conf.getInputFormat()).listStatus(conf);
+                List<InputSplit> splits = new ArrayList<>();
+                for (FileStatus file : fs) {
+                    splits.add(new FileSplit(file.getPath(), 0, file.getLen(), conf));
+                }
+                return splits.toArray(new InputSplit[0]);
+            }
+            return conf.getInputFormat().getSplits(conf, numPartitions);
+        } catch (IllegalArgumentException e) {
+            throw CompilationException.create(ErrorCode.EXTERNAL_SOURCE_ERROR, e, getMessageOrToString(e)
+                    + " . If your file path contains colons then this can lead to this error. HDFS does not support colons in file paths.");
         }
-        return conf.getInputFormat().getSplits(conf, numPartitions);
     }
 
     /*
@@ -320,9 +350,8 @@ public class HDFSDataSourceFactory implements IRecordReaderFactory<Object>, IExt
             }
             restoreConfig(ctx);
             JobConf readerConf = conf;
-            if (ctx.getWarningCollector().shouldWarn()
-                    && configuration.get(ExternalDataConstants.KEY_INPUT_FORMAT.trim())
-                            .equals(ExternalDataConstants.INPUT_FORMAT_PARQUET)) {
+            if (configuration.get(ExternalDataConstants.KEY_INPUT_FORMAT.trim())
+                    .equals(ExternalDataConstants.INPUT_FORMAT_PARQUET)) {
                 /*
                  * JobConf is used to pass warnings from the ParquetReadSupport to ParquetReader. As multiple
                  * partitions can issue different warnings, we might have a race condition on JobConf. Thus, we
@@ -331,7 +360,7 @@ public class HDFSDataSourceFactory implements IRecordReaderFactory<Object>, IExt
                 readerConf = confFactory.getConf();
             }
             return createRecordReader(configuration, read, inputSplits, readSchedule, nodeName, readerConf, context,
-                    ugi);
+                    ugi, rowGroupFilter());
         } catch (Exception e) {
             throw HyracksDataException.create(e);
         }
@@ -354,12 +383,23 @@ public class HDFSDataSourceFactory implements IRecordReaderFactory<Object>, IExt
         return new ExternalStreamRuntimeDataContext(context, partition, valueEmbedder);
     }
 
+    /**
+     * The row-group filter is handed to the reader rather than written into the {@link JobConf}, because the conf
+     * the node reads from is a snapshot taken in {@link #configureHdfsConf}; anything put into the live conf after
+     * that point never leaves the coordinator.
+     */
+    private ParquetFilterExpression rowGroupFilter() {
+        return filterEvaluatorFactory instanceof ParquetFilterEvaluatorFactory
+                ? ((ParquetFilterEvaluatorFactory) filterEvaluatorFactory).getFilterExpression() : null;
+    }
+
     private static IRecordReader<?> createRecordReader(Map<String, String> configuration, boolean[] read,
             InputSplit[] inputSplits, String[] readSchedule, String nodeName, JobConf conf,
-            IExternalDataRuntimeContext context, UserGroupInformation ugi) {
+            IExternalDataRuntimeContext context, UserGroupInformation ugi, ParquetFilterExpression rowGroupFilter) {
         if (configuration.get(ExternalDataConstants.KEY_INPUT_FORMAT).trim()
                 .equals(ExternalDataConstants.INPUT_FORMAT_PARQUET)) {
-            return new ParquetFileRecordReader<>(read, inputSplits, readSchedule, nodeName, conf, context, ugi);
+            return new ParquetFileRecordReader<>(read, inputSplits, readSchedule, nodeName, conf, context, ugi,
+                    rowGroupFilter);
         } else if (configuration.get(ExternalDataConstants.KEY_INPUT_FORMAT).trim()
                 .equals(ExternalDataConstants.INPUT_FORMAT_AVRO)) {
             return new AvroFileRecordReader<>(read, inputSplits, readSchedule, nodeName, conf, context, ugi);

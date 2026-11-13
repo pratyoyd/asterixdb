@@ -22,13 +22,14 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.hyracks.api.comm.IFrameWriter;
+import org.apache.hyracks.api.dataflow.ILazyTimeContainingWriter;
 import org.apache.hyracks.api.dataflow.ITimedWriter;
 import org.apache.hyracks.api.dataflow.ProfiledFrameWriter;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.job.profiling.IOperatorStats;
 
-public class ProfiledPushRuntime extends ProfiledFrameWriter implements IPushRuntime {
+public class ProfiledPushRuntime extends ProfiledFrameWriter implements IProfiledPushRuntime {
 
     private final IPushRuntime wrapped;
     private final IOperatorStats stats;
@@ -45,9 +46,16 @@ public class ProfiledPushRuntime extends ProfiledFrameWriter implements IPushRun
         this.last = last;
     }
 
+    public IOperatorStats getStats() {
+        return stats;
+    }
+
     @Override
-    public void close() throws HyracksDataException {
-        super.close();
+    public void computeTimings() {
+        //mainly to push through to subplans
+        if (wrapped instanceof ILazyTimeContainingWriter) {
+            ((ILazyTimeContainingWriter) wrapped).computeTimings();
+        }
         long ownTime = getTotalTime();
         //for micro union all. accumulate the time of each input into the counter.
         //then, on input 0, subtract the output from the accumulated time.
@@ -60,10 +68,6 @@ public class ProfiledPushRuntime extends ProfiledFrameWriter implements IPushRun
             ownTime -= w.getTotalTime();
         }
         stats.getTimeCounter().set(ownTime);
-    }
-
-    public IOperatorStats getStats() {
-        return stats;
     }
 
     @Override

@@ -25,26 +25,34 @@ import static org.apache.asterix.common.utils.Servlets.QUERY_SERVICE;
 import static org.apache.asterix.common.utils.Servlets.QUERY_STATUS;
 import static org.apache.asterix.common.utils.Servlets.UDF;
 import static org.apache.asterix.common.utils.Servlets.UDF_RECOVERY;
+import static org.apache.hyracks.api.util.JavaSerializationUtils.registerReplacement;
 import static org.apache.hyracks.control.common.controllers.ControllerConfig.Option.CLOUD_DEPLOYMENT;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.asterix.algebra.base.ILangExtension;
 import org.apache.asterix.api.http.server.BasicAuthServlet;
+import org.apache.asterix.api.http.server.NCQueryResultApiServlet;
 import org.apache.asterix.api.http.server.NCQueryServiceServlet;
+import org.apache.asterix.api.http.server.NCQueryStatusApiServlet;
 import org.apache.asterix.api.http.server.NCUdfApiServlet;
+import org.apache.asterix.api.http.server.NCUdfDSApiServlet;
 import org.apache.asterix.api.http.server.NCUdfRecoveryServlet;
 import org.apache.asterix.api.http.server.NetDiagnosticsApiServlet;
-import org.apache.asterix.api.http.server.QueryResultApiServlet;
-import org.apache.asterix.api.http.server.QueryStatusApiServlet;
 import org.apache.asterix.api.http.server.ServletConstants;
 import org.apache.asterix.api.http.server.StorageApiServlet;
 import org.apache.asterix.app.config.ConfigValidator;
@@ -61,6 +69,7 @@ import org.apache.asterix.common.api.INcApplicationContext;
 import org.apache.asterix.common.api.IPropertiesFactory;
 import org.apache.asterix.common.api.IReceptionistFactory;
 import org.apache.asterix.common.config.AsterixExtension;
+import org.apache.asterix.common.config.ConfigConstraints;
 import org.apache.asterix.common.config.ExtensionProperties;
 import org.apache.asterix.common.config.ExternalProperties;
 import org.apache.asterix.common.config.GlobalConfig;
@@ -93,15 +102,17 @@ import org.apache.asterix.utils.RedactionUtil;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.api.application.INCServiceContext;
 import org.apache.hyracks.api.application.IServiceContext;
 import org.apache.hyracks.api.client.NodeStatus;
+import org.apache.hyracks.api.config.IApplicationConfig;
 import org.apache.hyracks.api.config.IConfigManager;
 import org.apache.hyracks.api.control.CcId;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.IFileDeviceResolver;
 import org.apache.hyracks.api.job.resource.NodeCapacity;
+import org.apache.hyracks.api.util.JavaSerializationUtils.SerializableExceptionProxy;
 import org.apache.hyracks.control.common.controllers.NCConfig;
 import org.apache.hyracks.control.nc.BaseNCApplication;
 import org.apache.hyracks.control.nc.NodeControllerService;
@@ -114,6 +125,12 @@ import org.apache.hyracks.util.LoggingConfigUtil;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.projectnessie.client.http.HttpClientException;
+import org.projectnessie.client.rest.NessieServiceException;
+import org.projectnessie.error.BaseNessieClientServerException;
+
+import com.azure.storage.blob.models.BlobStorageException;
+import com.azure.storage.file.datalake.models.DataLakeStorageException;
 
 public class NCApplication extends BaseNCApplication {
     private static final Logger LOGGER = LogManager.getLogger();
@@ -124,6 +141,7 @@ public class NCApplication extends BaseNCApplication {
     protected boolean startupCompleted;
     protected WebManager webManager;
     private HttpServer apiServer;
+    private HttpServer udfServer;
 
     @Override
     public void registerConfig(IConfigManager configManager) {
@@ -141,6 +159,15 @@ public class NCApplication extends BaseNCApplication {
                 new AsterixThreadFactory(ncServiceCtx.getThreadFactory(), ncServiceCtx.getLifeCycleComponentManager()));
         validateEnvironment();
         configurePersistedResourceRegistry();
+        registerSerializationReplacements();
+    }
+
+    private void registerSerializationReplacements() {
+        registerReplacement(BlobStorageException.class, SerializableExceptionProxy::new);
+        registerReplacement(DataLakeStorageException.class, SerializableExceptionProxy::new);
+        registerReplacement(BaseNessieClientServerException.class, SerializableExceptionProxy::new);
+        registerReplacement(NessieServiceException.class, SerializableExceptionProxy::new);
+        registerReplacement(HttpClientException.class, SerializableExceptionProxy::new);
     }
 
     @Override
@@ -173,6 +200,7 @@ public class NCApplication extends BaseNCApplication {
             }
             updateOnNodeJoin();
         }
+        checkConfigConstraints();
         runtimeContext.initialize(getRecoveryManagerFactory(), getReceptionistFactory(), getConfigValidatorFactory(),
                 getReplicationStrategyFactory(), runtimeContext.getNodeProperties().isInitialRun());
         MessagingProperties messagingProperties = runtimeContext.getMessagingProperties();
@@ -221,6 +249,26 @@ public class NCApplication extends BaseNCApplication {
         return new ReplicationStrategyFactory();
     }
 
+    /**
+     * Fails startup with the reason when the configuration cannot work, rather than letting the first component
+     * to use it fail with an arithmetic error. Violations that only affect queries are logged instead, since a node
+     * that cannot run queries can still recover and be reconfigured.
+     */
+    private void checkConfigConstraints() {
+        List<ConfigConstraints.Violation> violations = ConfigConstraints.check(ncServiceCtx.getAppConfig()::get);
+        List<ConfigConstraints.Violation> fatal = new ArrayList<>();
+        for (ConfigConstraints.Violation violation : violations) {
+            if (violation.isFatalAtStartup()) {
+                fatal.add(violation);
+            } else {
+                LOGGER.warn("invalid configuration: {}", violation.getMessage());
+            }
+        }
+        if (!fatal.isEmpty()) {
+            throw new IllegalStateException("Invalid configuration: " + ConfigConstraints.describe(fatal));
+        }
+    }
+
     protected IConfigValidatorFactory getConfigValidatorFactory() {
         return ConfigValidator::new;
     }
@@ -250,19 +298,38 @@ public class NCApplication extends BaseNCApplication {
         apiServer.setAttribute(ServletConstants.CREDENTIAL_MAP,
                 parseCredentialMap(((NodeControllerService) ncServiceCtx.getControllerService()).getConfiguration()
                         .getCredentialFilePath()));
-        Pair<Map<String, String>, Map<String, String>> auth = BasicAuthServlet.generateSysAuthHeader(apiServer.ctx());
-        apiServer
-                .addServlet(new BasicAuthServlet(apiServer.ctx(),
-                        new NCUdfApiServlet(apiServer.ctx(), new String[] { UDF }, getApplicationContext(),
-                                apiServer.getScheme(), apiServer.getAddress().getPort()),
-                        auth.getFirst(), auth.getSecond()));
-        apiServer.addServlet(new BasicAuthServlet(
-                apiServer.ctx(), new NCUdfRecoveryServlet(apiServer.ctx(), new String[] { UDF_RECOVERY },
-                        getApplicationContext(), apiServer.getScheme(), apiServer.getAddress().getPort()),
-                auth.getFirst(), auth.getSecond()));
-        apiServer.addServlet(new QueryStatusApiServlet(apiServer.ctx(), getApplicationContext(), QUERY_STATUS));
-        apiServer.addServlet(new QueryResultApiServlet(apiServer.ctx(), getApplicationContext(), QUERY_RESULT));
+        if (!getApplicationContext().isCloudDeployment()) {
+            Pair<Map<String, String>, Map<String, String>> auth =
+                    BasicAuthServlet.generateSysAuthHeader(apiServer.ctx());
+            apiServer.addServlet((new BasicAuthServlet(apiServer.ctx(),
+                    new NCUdfApiServlet(apiServer.ctx(), new String[] { UDF }, getApplicationContext(),
+                            apiServer.getScheme(), externalProperties.getNcApiPort()),
+                    auth.getLeft(), auth.getRight())));
+            apiServer.addServlet(new BasicAuthServlet(apiServer.ctx(),
+                    new NCUdfRecoveryServlet(apiServer.ctx(), new String[] { UDF_RECOVERY }, getApplicationContext()),
+                    auth.getLeft(), auth.getRight()));
+        } else {
+            //UDF deployment server
+            IApplicationConfig appCfg = getApplicationContext().getServiceContext().getAppConfig();
+            Path udfSockPath = Path.of(appCfg.getString(NCConfig.Option.UDF_API_DS_PATH)).toAbsolutePath();
+            if (!Files.exists(udfSockPath.getParent())) {
+                Set<PosixFilePermission> noOthers = PosixFilePermissions.fromString("rwxr-x---");
+                FileAttribute<?> permissions = PosixFilePermissions.asFileAttribute(noOthers);
+                Files.createDirectories(udfSockPath.getParent(), permissions);
+            }
+            udfServer = new HttpServer(webManager.getBosses(), webManager.getWorkers(), udfSockPath, config);
+            Pair<Map<String, String>, Map<String, String>> auth =
+                    BasicAuthServlet.generateSysAuthHeader(apiServer.ctx());
+            udfServer.addServlet(new BasicAuthServlet(apiServer.ctx(),
+                    new NCUdfDSApiServlet(apiServer.ctx(), new String[] { UDF }, getApplicationContext()),
+                    auth.getLeft(), auth.getRight()));
+            webManager.add(udfServer);
+
+        }
+        apiServer.addServlet(new NCQueryStatusApiServlet(apiServer.ctx(), getApplicationContext(), QUERY_STATUS));
+        apiServer.addServlet(new NCQueryResultApiServlet(apiServer.ctx(), getApplicationContext(), QUERY_RESULT));
         webManager.add(apiServer);
+
     }
 
     protected List<AsterixExtension> getExtensions() throws Exception {
@@ -299,6 +366,7 @@ public class NCApplication extends BaseNCApplication {
 
     @Override
     public void preStop() throws Exception {
+        webManager.closeChannels();
         runtimeContext.preStop();
     }
 
@@ -370,7 +438,7 @@ public class NCApplication extends BaseNCApplication {
         return nodeStatus == NodeStatus.IDLE && (primaryCc == null || primaryCc.equals(registeredCc));
     }
 
-    private SystemState getCurrentSystemState() {
+    private SystemState getCurrentSystemState() throws HyracksDataException {
         final NodeProperties nodeProperties = runtimeContext.getNodeProperties();
         IRecoveryManager recoveryMgr = runtimeContext.getTransactionSubsystem().getRecoveryManager();
         SystemState state = recoveryMgr.getSystemState();

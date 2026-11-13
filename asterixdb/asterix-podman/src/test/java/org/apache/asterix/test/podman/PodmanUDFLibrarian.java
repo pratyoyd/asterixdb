@@ -19,11 +19,10 @@
 package org.apache.asterix.test.podman;
 
 import java.io.IOException;
-import java.net.URI;
 
 import org.apache.asterix.app.external.IExternalUDFLibrarian;
 import org.apache.asterix.common.exceptions.AsterixException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 
@@ -42,15 +41,15 @@ public class PodmanUDFLibrarian implements IExternalUDFLibrarian {
     }
 
     @Override
-    public void install(URI path, String type, String libPath, Pair<String, String> credentials) throws Exception {
+    public void install(String path, String type, String libPath, Pair<String, String> credentials) throws Exception {
         Container.ExecResult curlResult = null;
         int retryCt = 0;
         while (retryCt < 10) {
             try {
                 curlResult = asterix.execInContainer("curl", "--no-progress-meter", "-X", "POST", "-u",
-                        credentials.first + ":" + credentials.second, "-F",
+                        credentials.getLeft() + ":" + credentials.getRight(), "-F",
                         "data=@" + "/var/tmp/asterix-app/" + libPath, "-F", "type=" + type,
-                        "http://localhost:19004" + path.getRawPath());
+                        "http://localhost:19004" + path);
                 handleResponse(curlResult);
                 return;
             } catch (RuntimeException e) {
@@ -62,14 +61,29 @@ public class PodmanUDFLibrarian implements IExternalUDFLibrarian {
     }
 
     @Override
-    public void uninstall(URI path, Pair<String, String> credentials) throws IOException, AsterixException {
+    public void uninstall(String path, Pair<String, String> credentials) throws IOException, AsterixException {
         try {
             Container.ExecResult curlResult = asterix.execInContainer("curl", "-X", "DELETE", "-u",
-                    credentials.first + ":" + credentials.second, "http://localhost:19004" + path.getPath());
+                    credentials.getLeft() + ":" + credentials.getRight(), "http://localhost:19004" + path);
             handleResponse(curlResult);
         } catch (InterruptedException e) {
             throw new IOException(e);
         }
+    }
+
+    @Override
+    public String list(String path, Pair<String, String> credentials) throws Exception {
+        Container.ExecResult curlResult = asterix.execInContainer("curl", "--no-progress-meter", "-u",
+                credentials.getLeft() + ":" + credentials.getRight(), "http://localhost:19004" + path);
+        handleResponse(curlResult);
+        return curlResult.getStdout();
+    }
+
+    @Override
+    public SocketType getSocketType() {
+        // install()/uninstall() build their own "http://localhost:19004" + path URL for curl to run
+        // inside the container, so TestExecutor must hand us the bare path, not a fully-qualified URI.
+        return SocketType.DOMAIN;
     }
 
     private void handleResponse(Container.ExecResult result) throws AsterixException, JsonProcessingException {

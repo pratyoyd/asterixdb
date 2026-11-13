@@ -19,9 +19,12 @@
 package org.apache.hyracks.cloud.io;
 
 import java.nio.ByteBuffer;
+import java.util.Collection;
 
 import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.io.FileReference;
 import org.apache.hyracks.api.io.IFileHandle;
+import org.apache.hyracks.api.io.IIOManager;
 import org.apache.hyracks.cloud.io.request.ICloudBeforeRetryRequest;
 import org.apache.hyracks.cloud.io.request.ICloudRequest;
 import org.apache.hyracks.cloud.io.stream.CloudInputStream;
@@ -32,6 +35,8 @@ import org.apache.hyracks.cloud.util.CloudRetryableRequestUtil;
  * file operations in a cloud deployment.
  */
 public interface ICloudIOManager {
+    void downloadLibrary(Collection<FileReference> libPath) throws HyracksDataException;
+
     /**
      * Read from the cloud
      *
@@ -71,6 +76,16 @@ public interface ICloudIOManager {
     int localWriter(IFileHandle fHandle, long offset, ByteBuffer data) throws HyracksDataException;
 
     /**
+     * Write to local drive only, gathering from several buffers
+     *
+     * @param fHandle file handle
+     * @param offset  starting offset
+     * @param data    to write
+     * @return number of written bytes
+     */
+    long localWriter(IFileHandle fHandle, long offset, ByteBuffer[] data) throws HyracksDataException;
+
+    /**
      * Write to cloud only
      *
      * @param fHandle file handle
@@ -105,4 +120,8 @@ public interface ICloudIOManager {
      * @param resourcePath to evict
      */
     void evict(String resourcePath) throws HyracksDataException;
+
+    IIOManager getLocalIOManager();
+
+    void reloadConfiguration(ICloudProperties newProperties) throws HyracksDataException;
 }

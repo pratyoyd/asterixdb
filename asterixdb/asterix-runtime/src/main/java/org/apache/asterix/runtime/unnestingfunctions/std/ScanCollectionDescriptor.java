@@ -28,11 +28,11 @@ import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.runtime.evaluators.common.ListAccessor;
 import org.apache.asterix.runtime.unnestingfunctions.base.AbstractUnnestingFunctionDynamicDescriptor;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
 import org.apache.hyracks.algebricks.runtime.base.IUnnestingEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IUnnestingEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 import org.apache.hyracks.data.std.api.IPointable;
@@ -67,6 +67,18 @@ public class ScanCollectionDescriptor extends AbstractUnnestingFunctionDynamicDe
             this.listEvalFactory = arg;
             this.sourceLoc = sourceLoc;
             this.funID = funID;
+        }
+
+        public IScalarEvaluatorFactory getListEvalFactory() {
+            return listEvalFactory;
+        }
+
+        public SourceLocation getSourceLoc() {
+            return sourceLoc;
+        }
+
+        public FunctionIdentifier getFunID() {
+            return funID;
         }
 
         @Override

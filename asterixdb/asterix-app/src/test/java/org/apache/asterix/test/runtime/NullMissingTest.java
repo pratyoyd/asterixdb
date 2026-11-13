@@ -41,12 +41,12 @@ import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.runtime.evaluators.base.AbstractScalarFunctionDynamicDescriptor;
 import org.apache.asterix.runtime.functions.FunctionCollection;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
 import org.apache.hyracks.algebricks.runtime.evaluators.ConstantEvalFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.data.std.api.IPointable;
 import org.apache.hyracks.data.std.primitive.VoidPointable;
 import org.apache.logging.log4j.Level;
@@ -89,12 +89,16 @@ public class NullMissingTest {
             // Include only functions annotated with MissingNullInOutFunction
             if (functionDescriptor.getClass().isAnnotationPresent(MissingNullInOutFunction.class)) {
 
-                // We test all functions except record, cast and full-text contains functions,
-                // which requires type settings or argument settings.
+                // We test all functions except record, cast, full-text contains, and ann-distance
+                // functions, which require type settings or a constant argument (ann-distance requires
+                // its metric argument to be a constant string, so it cannot take a non-constant null/missing).
                 // Instead, we test them in runtime tests.
                 // TODO(ali): ASTERIXDB-2982 do it in a proper way so that it does not exclude classes inadvertently
+                // ann-distance builds its factory via DescriptorFactoryUtil, so its factory class name is
+                // generic; match on the descriptor class name instead.
                 if (!className.contains("record") && !className.contains("Cast")
-                        && !className.contains("FullTextContains")) {
+                        && !className.contains("FullTextContains")
+                        && !functionDescriptor.getClass().getName().contains("ANNDistance")) {
                     tests.add(new Object[] { getTestName(functionDescriptor.getClass()), functionDescriptor });
                 } else {
                     LOGGER.log(Level.INFO, "Excluding " + className);
@@ -142,11 +146,11 @@ public class NullMissingTest {
 
             // Set the IAType if it's needed
             if (functionsRequiringTypes.contains(funcDesc.getIdentifier())) {
-                funcDesc.setImmutableStates((Object[]) argumentsAndTypesPair.second);
+                funcDesc.setImmutableStates((Object[]) argumentsAndTypesPair.getRight());
             }
 
             // Evaluate
-            IScalarEvaluatorFactory evalFactory = funcDesc.createEvaluatorFactory(argumentsAndTypesPair.first);
+            IScalarEvaluatorFactory evalFactory = funcDesc.createEvaluatorFactory(argumentsAndTypesPair.getLeft());
             IEvaluatorContext ctx = mock(IEvaluatorContext.class);
             IScalarEvaluator evaluator = evalFactory.createScalarEvaluator(ctx);
             IPointable resultPointable = new VoidPointable();
@@ -190,7 +194,7 @@ public class NullMissingTest {
                     }
                 }
                 ++index;
-                return new Pair<>(scalarEvaluatorFactories, argumentTypes);
+                return Pair.of(scalarEvaluatorFactories, argumentTypes);
             }
         };
     }
@@ -204,16 +208,12 @@ public class NullMissingTest {
         functionsRequiringTypes.add(BuiltinFunctions.ARRAY_SORT);
         functionsRequiringTypes.add(BuiltinFunctions.ARRAY_DISTINCT);
         functionsRequiringTypes.add(BuiltinFunctions.ARRAY_EXCEPT);
+        functionsRequiringTypes.add(BuiltinFunctions.ARRAY_STAR_FIELD);
         functionsRequiringTypes.add(BuiltinFunctions.EQ);
         functionsRequiringTypes.add(BuiltinFunctions.LT);
         functionsRequiringTypes.add(BuiltinFunctions.GT);
         functionsRequiringTypes.add(BuiltinFunctions.GE);
         functionsRequiringTypes.add(BuiltinFunctions.LE);
         functionsRequiringTypes.add(BuiltinFunctions.NEQ);
-        functionsRequiringTypes.add(BuiltinFunctions.MISSING_IF);
-        functionsRequiringTypes.add(BuiltinFunctions.NAN_IF);
-        functionsRequiringTypes.add(BuiltinFunctions.NEGINF_IF);
-        functionsRequiringTypes.add(BuiltinFunctions.NULL_IF);
-        functionsRequiringTypes.add(BuiltinFunctions.POSINF_IF);
     }
 }

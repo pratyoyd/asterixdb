@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 
 import org.apache.asterix.common.exceptions.CompilationException;
+import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.lang.common.base.AbstractClause;
 import org.apache.asterix.lang.common.base.Expression;
 import org.apache.asterix.lang.common.base.ILangExpression;
@@ -54,6 +55,7 @@ import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.struct.QuantifiedPair;
 import org.apache.asterix.lang.common.struct.VarIdentifier;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateClause;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.HavingClause;
@@ -67,12 +69,14 @@ import org.apache.asterix.lang.sqlpp.clause.SelectRegular;
 import org.apache.asterix.lang.sqlpp.clause.SelectSetOperation;
 import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.CaseExpression;
+import org.apache.asterix.lang.sqlpp.expression.ChangeExpression;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationInput;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationRight;
+import org.apache.asterix.lang.sqlpp.struct.TimeTravelSpec;
 import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppQueryExpressionVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 
 public class DeepCopyVisitor extends AbstractSqlppQueryExpressionVisitor<ILangExpression, Void> {
 
@@ -94,13 +98,14 @@ public class DeepCopyVisitor extends AbstractSqlppQueryExpressionVisitor<ILangEx
         VariableExpr fromVar = (VariableExpr) fromTerm.getLeftVariable().accept(this, arg);
         VariableExpr positionVar = fromTerm.getPositionalVariable() == null ? null
                 : (VariableExpr) fromTerm.getPositionalVariable().accept(this, arg);
+        TimeTravelSpec timeTravel = copy(fromTerm.getTimeTravel(), arg);
 
         // Visits join/unnest/nest clauses.
         List<AbstractBinaryCorrelateClause> correlateClauses = new ArrayList<>();
         for (AbstractBinaryCorrelateClause correlateClause : fromTerm.getCorrelateClauses()) {
             correlateClauses.add((AbstractBinaryCorrelateClause) correlateClause.accept(this, arg));
         }
-        FromTerm copy = new FromTerm(fromExpr, fromVar, positionVar, correlateClauses);
+        FromTerm copy = new FromTerm(fromExpr, fromVar, positionVar, correlateClauses, timeTravel);
         copy.setSourceLocation(fromTerm.getSourceLocation());
         return copy;
     }
@@ -113,7 +118,7 @@ public class DeepCopyVisitor extends AbstractSqlppQueryExpressionVisitor<ILangEx
                 : (VariableExpr) joinClause.getPositionalVariable().accept(this, arg);
         Expression conditionExpresion = (Expression) joinClause.getConditionExpression().accept(this, arg);
         JoinClause copy = new JoinClause(joinClause.getJoinType(), rightExpression, rightVar, rightPositionVar,
-                conditionExpresion, joinClause.getOuterJoinMissingValueType());
+                conditionExpresion, joinClause.getOuterJoinMissingValueType(), copy(joinClause.getTimeTravel(), arg));
         copy.setSourceLocation(joinClause.getSourceLocation());
         return copy;
     }
@@ -180,6 +185,9 @@ public class DeepCopyVisitor extends AbstractSqlppQueryExpressionVisitor<ILangEx
         }
         selectClause = (SelectClause) selectBlock.getSelectClause().accept(this, arg);
         SelectBlock copy = new SelectBlock(selectClause, fromClause, letWhereClauses, gbyClause, gbyLetHavingClauses);
+        if (selectBlock.hasClusterbyClause()) {
+            copy.setClusterbyClause((ClusterbyClause) selectBlock.getClusterbyClause().accept(this, arg));
+        }
         copy.setSourceLocation(selectBlock.getSourceLocation());
         return copy;
     }
@@ -258,8 +266,8 @@ public class DeepCopyVisitor extends AbstractSqlppQueryExpressionVisitor<ILangEx
 
     @Override
     public Query visit(Query q, Void arg) throws CompilationException {
-        Query copy =
-                new Query(q.isExplain(), q.isTopLevel(), (Expression) q.getBody().accept(this, arg), q.getVarCounter());
+        Query copy = new Query(q.isExplain(), q.isAdvise(), q.isTopLevel(), (Expression) q.getBody().accept(this, arg),
+                q.getVarCounter());
         copy.setSourceLocation(q.getSourceLocation());
         return copy;
     }
@@ -267,7 +275,7 @@ public class DeepCopyVisitor extends AbstractSqlppQueryExpressionVisitor<ILangEx
     @Override
     public FunctionDecl visit(FunctionDecl fd, Void arg) throws CompilationException {
         FunctionDecl copy = new FunctionDecl(fd.getSignature(), fd.getParamList(),
-                (Expression) fd.getFuncBody().accept(this, arg), fd.isStored());
+                (Expression) fd.getFuncBody().accept(this, arg), fd.isStored(), fd.isTransform());
         copy.setSourceLocation(fd.getSourceLocation());
         return copy;
     }
@@ -329,6 +337,38 @@ public class DeepCopyVisitor extends AbstractSqlppQueryExpressionVisitor<ILangEx
         GroupbyClause copy = new GroupbyClause(newGbyList, decorPairList, withVarMap, groupVarExpr, groupFieldList,
                 gc.hasHashGroupByHint(), gc.isGroupAll());
         copy.setSourceLocation(gc.getSourceLocation());
+        return copy;
+    }
+
+    @Override
+    public ClusterbyClause visit(ClusterbyClause cc, Void arg) throws CompilationException {
+        Expression newExpr = (Expression) cc.getClusteringExpression().accept(this, arg);
+        VariableExpr newDescVar =
+                cc.hasClusterDescriptorVar() ? (VariableExpr) cc.getClusterDescriptorVar().accept(this, arg) : null;
+        VariableExpr newMembersVar =
+                cc.hasClusterMembersVar() ? (VariableExpr) cc.getClusterMembersVar().accept(this, arg) : null;
+        List<Pair<Expression, Identifier>> newClusterFieldList =
+                cc.hasClusterFieldList() ? copyFieldList(cc.getClusterFieldList(), arg) : null;
+        RecordConstructor newWith =
+                cc.hasWithOptions() ? (RecordConstructor) cc.getWithOptions().accept(this, arg) : null;
+        ClusterbyClause copy = new ClusterbyClause(newExpr, newDescVar, newMembersVar, newClusterFieldList, newWith);
+        copy.setSourceLocation(cc.getSourceLocation());
+        // Shared by reference: the holder is immutable, so the copy carries every resolved option by construction.
+        copy.setResolvedOptions(cc.getResolvedOptions());
+        if (cc.hasDecorList()) {
+            List<GbyVariableExpressionPair> decorList = new ArrayList<>();
+            for (GbyVariableExpressionPair pair : cc.getDecorPairList()) {
+                decorList.add(new GbyVariableExpressionPair((VariableExpr) pair.getVar().accept(this, arg),
+                        (Expression) pair.getExpr().accept(this, arg)));
+            }
+            copy.setDecorPairList(decorList);
+        }
+        if (cc.getClusterIdVar() != null) {
+            copy.setClusterIdVar((VariableExpr) cc.getClusterIdVar().accept(this, arg));
+        }
+        if (cc.getCentroidVar() != null) {
+            copy.setCentroidVar((VariableExpr) cc.getCentroidVar().accept(this, arg));
+        }
         return copy;
     }
 
@@ -532,6 +572,12 @@ public class DeepCopyVisitor extends AbstractSqlppQueryExpressionVisitor<ILangEx
     }
 
     @Override
+    public ILangExpression visit(ChangeExpression changeExpr, Void arg) throws CompilationException {
+        // Change expressions are changed to select expressions before getting to this visitor.
+        throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE, changeExpr.getSourceLocation());
+    }
+
+    @Override
     public ILangExpression visit(WindowExpression winExpr, Void arg) throws CompilationException {
         List<Expression> newExprList = copyExprList(winExpr.getExprList(), arg);
         Expression newAggFilterExpr = winExpr.hasAggregateFilterExpr()
@@ -573,8 +619,18 @@ public class DeepCopyVisitor extends AbstractSqlppQueryExpressionVisitor<ILangEx
             throws CompilationException {
         List<Pair<Expression, Identifier>> newFieldList = new ArrayList<>(fieldList.size());
         for (Pair<Expression, Identifier> field : fieldList) {
-            newFieldList.add(new Pair<>((Expression) field.first.accept(this, arg), field.second));
+            newFieldList.add(Pair.of((Expression) field.getLeft().accept(this, arg), field.getRight()));
         }
         return newFieldList;
+    }
+
+    private TimeTravelSpec copy(TimeTravelSpec timeTravel, Void arg) throws CompilationException {
+        if (timeTravel == null) {
+            return null;
+        }
+        TimeTravelSpec copy = new TimeTravelSpec((Expression) timeTravel.getValueExpression().accept(this, arg),
+                timeTravel.getType());
+        copy.setSourceLocation(timeTravel.getSourceLocation());
+        return copy;
     }
 }

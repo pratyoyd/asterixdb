@@ -26,6 +26,7 @@ import org.apache.asterix.column.filter.range.IColumnRangeFilterEvaluatorFactory
 import org.apache.asterix.column.filter.range.IColumnRangeFilterValueAccessor;
 import org.apache.asterix.column.filter.range.IColumnRangeFilterValueAccessorFactory;
 import org.apache.asterix.column.filter.range.accessor.NoOpColumnRangeFilterValueAccessor;
+import org.apache.asterix.dataflow.data.nontagged.comparators.ComparatorUtil;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.hierachy.ATypeHierarchy;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
@@ -49,11 +50,16 @@ abstract class AbstractColumnFilterComparatorFactory implements IColumnRangeFilt
 
         ATypeTag leftTypeTag = leftAccessor.getTypeTag();
         ATypeTag rightTypeTag = rightAccessor.getTypeTag();
+        // We should not skip different types if they are compatible.
+        // However, we avoid applying range filters on incompatible types as normalization logic
+        // differs between types.
+        // Example: For queries on DOUBLE, we should not skip BIGINT.
         if (isNoOp(leftAccessor, rightAccessor)
                 || leftTypeTag != rightTypeTag && ATypeHierarchy.isCompatible(leftTypeTag, rightTypeTag)) {
             // Cannot compare comparable values with different types. Bail out.
             return TrueColumnFilterEvaluator.INSTANCE;
         } else if (cannotCompare(leftTypeTag, rightTypeTag)) {
+            // Columns with non-comparable types (e.g., DOUBLE and STRING) can be safely skipped.
             return FalseColumnFilterEvaluator.INSTANCE;
         }
         return createComparator(leftAccessor, rightAccessor);
@@ -86,6 +92,15 @@ abstract class AbstractColumnFilterComparatorFactory implements IColumnRangeFilt
         AbstractComparator(IColumnRangeFilterValueAccessor left, IColumnRangeFilterValueAccessor right) {
             this.left = left;
             this.right = right;
+        }
+
+        /**
+         * Compares in the order SQL++ predicates compare doubles (NaN above +INF, -0.0 equal to 0.0), so a mega
+         * leaf node that the predicate could match is never skipped.
+         */
+        protected final int compareDoubles() {
+            return ComparatorUtil.compareDoubles(Double.longBitsToDouble(left.getNormalizedValue()),
+                    Double.longBitsToDouble(right.getNormalizedValue()));
         }
     }
 }

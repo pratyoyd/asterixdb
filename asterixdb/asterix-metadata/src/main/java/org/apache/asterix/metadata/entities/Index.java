@@ -41,8 +41,11 @@ import org.apache.asterix.om.types.AUnionType;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.utils.NonTaggedFormatUtil;
 import org.apache.asterix.om.utils.ProjectionFiltrationTypeUtil;
+import org.apache.asterix.om.vector.VectorIndexParameters;
+import org.apache.asterix.runtime.compression.CompressionManager;
+import org.apache.commons.lang3.tuple.MutablePair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.api.job.profiling.IndexStats;
 import org.apache.hyracks.util.OptionalBoolean;
 
@@ -68,10 +71,23 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
     // Type of pending operations with respect to atomic DDL operation
     private int pendingOp;
     private final Creator creator;
+    private final String compressionScheme;
 
     public Index(String databaseName, DataverseName dataverseName, String datasetName, String indexName,
             IndexType indexType, IIndexDetails indexDetails, boolean isEnforced, boolean isPrimaryIndex, int pendingOp,
             Creator creator) {
+        this(databaseName, dataverseName, datasetName, indexName, indexType, indexDetails, isEnforced, isPrimaryIndex,
+                pendingOp, creator, CompressionManager.NONE);
+    }
+
+    /**
+     * @param compressionScheme
+     *            the block compression scheme of a secondary index. A primary index is compressed with its
+     *            dataset's scheme and ignores this.
+     */
+    public Index(String databaseName, DataverseName dataverseName, String datasetName, String indexName,
+            IndexType indexType, IIndexDetails indexDetails, boolean isEnforced, boolean isPrimaryIndex, int pendingOp,
+            Creator creator, String compressionScheme) {
         boolean categoryOk = (indexType == null && indexDetails == null) || (IndexCategory
                 .of(Objects.requireNonNull(indexType)) == ((AbstractIndexDetails) Objects.requireNonNull(indexDetails))
                         .getIndexCategory());
@@ -88,6 +104,7 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
         this.isEnforced = isEnforced;
         this.pendingOp = pendingOp;
         this.creator = creator;
+        this.compressionScheme = Objects.requireNonNull(compressionScheme);
     }
 
     @Deprecated
@@ -162,12 +179,16 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
         return creator;
     }
 
+    public String getCompressionScheme() {
+        return compressionScheme;
+    }
+
     public boolean isPrimaryKeyIndex() {
         // a primary key index has no key field names
         return indexType == IndexType.BTREE && ((ValueIndexDetails) indexDetails).keyFieldNames.isEmpty();
     }
 
-    public static Pair<IAType, Boolean> getNonNullableType(IAType keyType) {
+    public static MutablePair<IAType, Boolean> getNonNullableType(IAType keyType) {
         boolean nullable = false;
         IAType actualKeyType = keyType;
         // check open field whose type is ANY?
@@ -175,18 +196,18 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
             actualKeyType = ((AUnionType) keyType).getActualType();
             nullable = true;
         }
-        return new Pair<>(actualKeyType, nullable);
+        return new MutablePair<>(actualKeyType, nullable);
     }
 
     public static Pair<IAType, Boolean> getNonNullableOpenFieldType(Index index, IAType fieldType,
             List<String> fieldName, ARecordType recType) throws AlgebricksException {
         // check open field whose type is ANY?
         if (IndexUtil.castDefaultNull(index)) {
-            Pair<IAType, Boolean> nonNullableType = getNonNullableType(fieldType);
-            nonNullableType.second = true;
+            MutablePair<IAType, Boolean> nonNullableType = getNonNullableType(fieldType);
+            nonNullableType.setRight(true);
             return nonNullableType;
         }
-        Pair<IAType, Boolean> keyPairType = null;
+        MutablePair<IAType, Boolean> keyPairType = null;
         IAType subType = recType;
         boolean nullable = false;
         for (int i = 0; i < fieldName.size(); i++) {
@@ -208,16 +229,16 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
         if (subType != null) {
             keyPairType = Index.getNonNullableKeyFieldType(fieldName, recType);
         }
-        keyPairType.second = keyPairType.second || nullable;
+        keyPairType.setRight(keyPairType.getRight() || nullable);
         return keyPairType;
     }
 
-    public static Pair<IAType, Boolean> getNonNullableKeyFieldType(List<String> expr, ARecordType recType)
+    public static MutablePair<IAType, Boolean> getNonNullableKeyFieldType(List<String> expr, ARecordType recType)
             throws AlgebricksException {
         IAType keyType = Index.keyFieldType(expr, recType);
         // check open field whose type is ANY?
-        Pair<IAType, Boolean> pair = getNonNullableType(keyType);
-        pair.second = pair.second || recType.isSubFieldNullable(expr);
+        MutablePair<IAType, Boolean> pair = getNonNullableType(keyType);
+        pair.setRight(pair.getRight() || recType.isSubFieldNullable(expr));
         return pair;
     }
 
@@ -304,6 +325,8 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
             case BTREE:
             case SAMPLE:
                 return ResourceType.LSM_BTREE;
+            case VTREE:
+                return ResourceType.LSM_VTREE;
             case RTREE:
                 return ResourceType.LSM_RTREE;
             case LENGTH_PARTITIONED_NGRAM_INVIX:
@@ -326,7 +349,8 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
         VALUE,
         TEXT,
         ARRAY,
-        SAMPLE;
+        SAMPLE,
+        VTREE;
 
         public static IndexCategory of(IndexType indexType) {
             switch (indexType) {
@@ -342,6 +366,8 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
                     return ARRAY;
                 case SAMPLE:
                     return SAMPLE;
+                case VTREE:
+                    return VTREE;
                 default:
                     throw new IllegalArgumentException(String.valueOf(indexType));
             }
@@ -440,6 +466,76 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
 
         public ARecordType getIndexExpectedType() throws AlgebricksException {
             return ProjectionFiltrationTypeUtil.getRecordType(getKeyFieldNames());
+        }
+    }
+
+    public static final class VectorIndexDetails extends AbstractIndexDetails {
+
+        private static final long serialVersionUID = 2L;
+
+        private final List<String> keyFieldNames;
+
+        private final List<List<String>> includeFieldNames;
+
+        private final List<Integer> includeFieldSourceIndicators;
+
+        private final List<IAType> includeFieldTypes;
+
+        private final boolean overrideKeyFieldTypes;
+
+        private final VectorIndexParameters vectorParameters;
+
+        public VectorIndexDetails(List<String> keyFieldNames, List<List<String>> includeFieldNames,
+                List<Integer> includeFieldSourceIndicators, List<IAType> includeFieldTypes,
+                boolean overrideKeyFieldTypes, VectorIndexParameters vectorParameters) {
+            this.keyFieldNames = keyFieldNames;
+            this.overrideKeyFieldTypes = overrideKeyFieldTypes;
+            this.includeFieldNames = includeFieldNames;
+            this.includeFieldTypes = includeFieldTypes;
+            this.includeFieldSourceIndicators = includeFieldSourceIndicators;
+            // A vector index is never without WITH parameters: `dimension` and `similarity` are mandatory at
+            // DDL time and both are persisted, so every construction path — CREATE INDEX and metadata read
+            // alike — has a validated object here. Enforcing it means consumers read parameters directly.
+            this.vectorParameters = Objects.requireNonNull(vectorParameters, "vector index WITH parameters");
+        }
+
+        @Override
+        IndexCategory getIndexCategory() {
+            return IndexCategory.VTREE;
+        }
+
+        public List<List<String>> getIncludeFieldNames() {
+            return includeFieldNames;
+        }
+
+        public List<Integer> getIncludeFieldSourceIndicators() {
+            return includeFieldSourceIndicators;
+        }
+
+        public List<IAType> getIncludeFieldTypes() {
+            return includeFieldTypes;
+        }
+
+        /** The index's validated {@code WITH} parameters; never {@code null}. */
+        public VectorIndexParameters getVectorParameters() {
+            return vectorParameters;
+        }
+
+        @Override
+        public boolean isOverridingKeyFieldTypes() {
+            return overrideKeyFieldTypes;
+        }
+
+        public List<List<String>> getKeyFieldNames() {
+            return Collections.singletonList(keyFieldNames);
+        }
+
+        public ARecordType getIndexExpectedType() throws AlgebricksException {
+            // For VECTOR indexes, we need to create a record type that includes both the key field and include fields
+            List<List<String>> allFieldNames = new ArrayList<>();
+            allFieldNames.add(keyFieldNames); // Add the vector field as the first field
+            allFieldNames.addAll(includeFieldNames); // Add include fields
+            return ProjectionFiltrationTypeUtil.getRecordType(allFieldNames);
         }
     }
 
@@ -576,6 +672,14 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
         public int getSourceIndicator() {
             return sourceIndicator;
         }
+
+        @Override
+        public boolean equals(Object obj) {
+            return obj instanceof ArrayIndexElement && Objects.equals(unnestList, ((ArrayIndexElement) obj).unnestList)
+                    && Objects.equals(projectList, ((ArrayIndexElement) obj).projectList)
+                    && Objects.equals(typeList, ((ArrayIndexElement) obj).typeList)
+                    && sourceIndicator == ((ArrayIndexElement) obj).sourceIndicator;
+        }
     }
 
     public static class SampleIndexDetails extends AbstractIndexDetails {
@@ -595,11 +699,36 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
         private final int sourceAvgItemSize;
 
         private final long sampleSeed;
+        private final SampleMethod sampleMethod;
         private final Map<String, IndexStats> indexesStats;
+
+        public enum SampleMethod {
+            RANDOM("random"),
+            FULL_SCAN("full-scan");
+
+            private final String metadataName;
+
+            SampleMethod(String metadataName) {
+                this.metadataName = metadataName;
+            }
+
+            public String getMetadataName() {
+                return metadataName;
+            }
+
+            public static SampleMethod fromMetadataName(String metadataName) {
+                for (SampleMethod method : values()) {
+                    if (method.metadataName.equals(metadataName)) {
+                        return method;
+                    }
+                }
+                throw new IllegalArgumentException(metadataName);
+            }
+        }
 
         public SampleIndexDetails(List<List<String>> keyFieldNames, List<Integer> keyFieldSourceIndicators,
                 List<IAType> keyFieldTypes, int sampleCardinalityTarget, long sourceCardinality, int sourceAvgItemSize,
-                long sampleSeed, Map<String, IndexStats> indexesStats) {
+                long sampleSeed, SampleMethod sampleMethod, Map<String, IndexStats> indexesStats) {
             this.keyFieldNames = keyFieldNames;
             this.keyFieldSourceIndicators = keyFieldSourceIndicators;
             this.keyFieldTypes = keyFieldTypes;
@@ -607,6 +736,7 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
             this.sourceCardinality = sourceCardinality;
             this.sourceAvgItemSize = sourceAvgItemSize;
             this.sampleSeed = sampleSeed;
+            this.sampleMethod = sampleMethod;
             this.indexesStats = indexesStats;
         }
 
@@ -646,6 +776,14 @@ public class Index implements IMetadataEntity<Index>, Comparable<Index> {
 
         public long getSampleSeed() {
             return sampleSeed;
+        }
+
+        public SampleMethod getSampleMethod() {
+            return sampleMethod;
+        }
+
+        public boolean isFullScan() {
+            return sampleMethod == SampleMethod.FULL_SCAN;
         }
 
         public Map<String, IndexStats> getIndexesStats() {

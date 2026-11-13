@@ -113,18 +113,21 @@ public class ColumnRangeFilterBuilder {
     private IColumnRangeFilterEvaluatorFactory createEvaluatorsForArgs(AbstractFunctionCallExpression funcExpr,
             Map<ILogicalExpression, ARecordType> filterPaths) {
         List<Mutable<ILogicalExpression>> args = funcExpr.getArguments();
-        FunctionIdentifier fid = funcExpr.getFunctionIdentifier();
-
         //AND/OR have at least two arguments
-        IColumnRangeFilterEvaluatorFactory arg0 = createEvaluator(filterPaths, args.get(0).getValue());
-        IColumnRangeFilterEvaluatorFactory arg1 = createEvaluator(filterPaths, args.get(1).getValue());
+        return createEvaluatorsForArgs(funcExpr.getFunctionIdentifier(), args, 0, args.size(), filterPaths);
+    }
 
-        IColumnRangeFilterEvaluatorFactory left = createEvaluator(fid, arg0, arg1);
-        for (int i = 2; i < args.size(); i++) {
-            IColumnRangeFilterEvaluatorFactory right = createEvaluator(filterPaths, args.get(i).getValue());
-            left = createEvaluator(fid, left, right);
+    // Balanced rather than a chain: a chain is as deep as the argument list, and one from a long IN list overflows
+    // the stack when the job is serialized and again when the filter is evaluated.
+    private IColumnRangeFilterEvaluatorFactory createEvaluatorsForArgs(FunctionIdentifier fid,
+            List<Mutable<ILogicalExpression>> args, int from, int to,
+            Map<ILogicalExpression, ARecordType> filterPaths) {
+        if (to - from == 1) {
+            return createEvaluator(filterPaths, args.get(from).getValue());
         }
-        return left;
+        int mid = (from + to) >>> 1;
+        return createEvaluator(fid, createEvaluatorsForArgs(fid, args, from, mid, filterPaths),
+                createEvaluatorsForArgs(fid, args, mid, to, filterPaths));
     }
 
     private IColumnRangeFilterEvaluatorFactory createComparator(FunctionIdentifier fid, ARecordType path,
@@ -174,18 +177,19 @@ public class ColumnRangeFilterBuilder {
         return new ORColumnFilterEvaluatorFactory(left, right);
     }
 
+    // const <op> col is col <op'> const with the operands swapped, so the operator is mirrored, not negated
     private static ComparisonKind invert(ComparisonKind comparisonKind) {
         switch (comparisonKind) {
             case EQ:
                 return ComparisonKind.EQ;
             case LE:
-                return ComparisonKind.GT;
-            case GE:
-                return ComparisonKind.LT;
-            case LT:
                 return ComparisonKind.GE;
-            case GT:
+            case GE:
                 return ComparisonKind.LE;
+            case LT:
+                return ComparisonKind.GT;
+            case GT:
+                return ComparisonKind.LT;
             default:
                 throw new IllegalStateException("Unsupported comparison type: " + comparisonKind);
         }
@@ -194,6 +198,14 @@ public class ColumnRangeFilterBuilder {
     private static IColumnRangeFilterEvaluatorFactory createEvaluator(ComparisonKind comparisonKind,
             IColumnRangeFilterValueAccessorFactory min, IColumnRangeFilterValueAccessorFactory constVal,
             IColumnRangeFilterValueAccessorFactory max) {
+
+        /*
+        * For a filter condition of the form col < const, the page will be read only if const > min(col).
+        *  Similarly, for col <= const, the page will be read only if const >= min(col).
+        *  for col > const, the page will be read only if const < max(col).
+        *  for col >= const, the page will be read only if const <= max(col).
+        * */
+
         if (comparisonKind == ComparisonKind.LT) {
             return new GTColumnFilterEvaluatorFactory(constVal, min);
         } else if (comparisonKind == ComparisonKind.LE) {

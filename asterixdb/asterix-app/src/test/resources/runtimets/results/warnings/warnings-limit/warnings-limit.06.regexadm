@@ -8,6 +8,7 @@
 \s*\Q,{\E\s*
 \s*\Q"code": 1,\E\s*\Q"msg": "ASX1006: Duplicate field name 'a'\E[^}]+\Q}\E\s*
 \s*\Q],\E
+\s*\Q"cachedPlan": \E(true|false)\Q,\E
 \s*\Q"status": "success",\E
 \s*\Q"metrics": {\E
 \s*\Q"elapsedTime": "\E[^"]+\Q",\E

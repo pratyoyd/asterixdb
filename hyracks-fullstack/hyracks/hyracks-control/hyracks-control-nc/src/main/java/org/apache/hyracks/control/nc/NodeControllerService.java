@@ -265,11 +265,11 @@ public class NodeControllerService implements IControllerService {
 
     private void init() {
         resultPartitionManager = new ResultPartitionManager(this, executor, ncConfig.getResultManagerMemory(),
-                ncConfig.getResultTTL(), ncConfig.getResultSweepThreshold());
+                ncConfig.getResultTTLMillis(), ncConfig.getResultSweepThreshold());
         resultNetworkManager = new ResultNetworkManager(ncConfig.getResultListenAddress(),
                 ncConfig.getResultListenPort(), resultPartitionManager, ncConfig.getNetThreadCount(),
                 ncConfig.getNetBufferCount(), ncConfig.getResultPublicAddress(), ncConfig.getResultPublicPort(),
-                FullFrameChannelInterfaceFactory.INSTANCE, networkSecurityManager.getSocketChannelFactory());
+                FullFrameChannelInterfaceFactory.INSTANCE, networkSecurityManager.getSocketChannelFactory(), executor);
         if (ncConfig.getMessagingListenAddress() != null && serviceCtx.getMessagingChannelInterfaceFactory() != null) {
             messagingNetManager = new MessagingNetworkManager(this, ncConfig.getMessagingListenAddress(),
                     ncConfig.getMessagingListenPort(), ncConfig.getNetThreadCount(),
@@ -283,13 +283,13 @@ public class NodeControllerService implements IControllerService {
         LOGGER.log(Level.INFO, "Starting NodeControllerService");
         ipc = new IPCSystem(new InetSocketAddress(ncConfig.getClusterListenAddress(), ncConfig.getClusterListenPort()),
                 networkSecurityManager.getSocketChannelFactory(), new NodeControllerIPCI(this),
-                new CCNCFunctions.SerializerDeserializer());
+                new CCNCFunctions.SerializerDeserializer(), executor);
         ipc.start();
         partitionManager = new PartitionManager(this);
         netManager = new NetworkManager(ncConfig.getDataListenAddress(), ncConfig.getDataListenPort(), partitionManager,
                 ncConfig.getNetThreadCount(), ncConfig.getNetBufferCount(), ncConfig.getDataPublicAddress(),
                 ncConfig.getDataPublicPort(), FullFrameChannelInterfaceFactory.INSTANCE,
-                networkSecurityManager.getSocketChannelFactory());
+                networkSecurityManager.getSocketChannelFactory(), executor);
         netManager.start();
         startApplication();
         init();
@@ -729,7 +729,8 @@ public class NodeControllerService implements IControllerService {
 
     protected INetworkSecurityManager createNetworkSecurityManager(IApplicationConfig appConfig,
             INCApplication application) {
-        return new NetworkSecurityManager(NetworkSecurityConfig.of(ncConfig.isSslEnabled(), ncConfig.getKeyStorePath(),
-                ncConfig.getKeyStorePassword(), ncConfig.getTrustStorePath()));
+        return new NetworkSecurityManager(NetworkSecurityConfig.of(ncConfig.isSslEnabled(),
+                ncConfig.isSslClusterVerifyPeerIdentity(), ncConfig.isSslRmiVerifyPeerIdentity(),
+                ncConfig.getKeyStorePath(), ncConfig.getKeyStorePassword(), ncConfig.getTrustStorePath()));
     }
 }

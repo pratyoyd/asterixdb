@@ -36,6 +36,7 @@ import org.apache.hyracks.storage.am.common.api.ITupleFilterFactory;
 import org.apache.hyracks.storage.am.common.util.ResourceReleaseUtils;
 import org.apache.hyracks.storage.common.IIndex;
 import org.apache.hyracks.storage.common.IIndexBulkLoader;
+import org.apache.hyracks.storage.common.NoOpSampler;
 import org.apache.hyracks.storage.common.buffercache.NoOpPageWriteCallback;
 
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
@@ -61,6 +62,7 @@ public class IndexBulkLoadOperatorNodePushable extends AbstractUnaryInputUnaryOu
     protected final IIndexBulkLoader[] bulkLoaders;
     protected ITupleFilter tupleFilter;
     protected FrameTupleReference frameTuple;
+    protected boolean failed = false;
 
     public IndexBulkLoadOperatorNodePushable(IIndexDataflowHelperFactory indexHelperFactory, IHyracksTaskContext ctx,
             int partition, int[] fieldPermutation, float fillFactor, boolean verifyInput, long numElementsHint,
@@ -151,19 +153,43 @@ public class IndexBulkLoadOperatorNodePushable extends AbstractUnaryInputUnaryOu
     @Override
     public void fail() throws HyracksDataException {
         writer.fail();
+        failed = true;
     }
 
     protected void initializeBulkLoader(IIndex index, int indexId) throws HyracksDataException {
         bulkLoaders[indexId] = index.createBulkLoader(fillFactor, verifyInput, numElementsHint, checkIfEmptyIndex,
-                NoOpPageWriteCallback.INSTANCE);
+                NoOpSampler.INSTANCE, NoOpPageWriteCallback.INSTANCE);
     }
 
     private void closeBulkLoaders() throws HyracksDataException {
+        Throwable failure = null;
         for (IIndexBulkLoader bulkLoader : bulkLoaders) {
             // bulkloader can be null if an exception is thrown before it is initialized.
-            if (bulkLoader != null) {
-                bulkLoader.end();
+            try {
+                if (bulkLoader != null) {
+                    if (failure == null && !failed) {
+                        bulkLoader.end();
+                    } else {
+                        bulkLoader.abort();
+                    }
+                }
+            } catch (Throwable e) { // NOSONAR: every loader must be released, whatever end()/abort() threw
+                // Catch Throwable, not just HyracksDataException. end()/abort() reach index-specific code
+                // that can throw unchecked exceptions (an NPE from a page manager, say), and letting one
+                // escape here skips the remaining loaders entirely. Each createBulkLoader() has declared an
+                // active I/O operation on its dataset that only end()/abort() releases, so a skipped loader
+                // leaks that declaration permanently -- and a leaked declaration parks the next
+                // DatasetLifecycleManager.unregister() forever in DatasetInfo.waitForIO() while it holds the
+                // manager's monitor, wedging every other index operation on the node.
+                if (failure == null) {
+                    failure = e;
+                } else {
+                    failure.addSuppressed(e);
+                }
             }
+        }
+        if (failure != null) {
+            throw HyracksDataException.create(failure);
         }
     }
 

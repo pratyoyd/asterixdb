@@ -31,9 +31,13 @@ import org.apache.asterix.common.metadata.Namespace;
 import org.apache.asterix.lang.common.base.AbstractStatement;
 import org.apache.asterix.lang.common.base.Statement;
 import org.apache.asterix.lang.common.expression.IndexedTypeExpression;
+import org.apache.asterix.lang.common.expression.RecordConstructor;
 import org.apache.asterix.lang.common.struct.Identifier;
+import org.apache.asterix.lang.common.util.DatasetDeclParametersUtil;
+import org.apache.asterix.lang.common.util.VectorIndexDeclUtil;
 import org.apache.asterix.lang.common.visitor.base.ILangVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.asterix.om.vector.VectorIndexParameters;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 import org.apache.hyracks.util.OptionalBoolean;
@@ -55,9 +59,15 @@ public class CreateIndexStatement extends AbstractStatement {
     private final OptionalBoolean castDefaultNull;
     private final Map<String, String> castConfig;
 
+    private final List<CreateIndexStatement.IndexedElement> includeElements;
+    private final VectorIndexParameters vectorParameters;
+    private final String compressionScheme;
+
     public CreateIndexStatement(Namespace namespace, Identifier datasetName, Identifier indexName, IndexType indexType,
             List<IndexedElement> indexedElements, boolean enforced, int gramLength, String fullTextConfigName,
-            boolean ifNotExists, Boolean excludeUnknownKey, Boolean castDefaultNull, Map<String, String> castConfig) {
+            boolean ifNotExists, Boolean excludeUnknownKey, Boolean castDefaultNull, Map<String, String> castConfig,
+            List<CreateIndexStatement.IndexedElement> includeElements, RecordConstructor withObjectRecord)
+            throws CompilationException {
         this.namespace = namespace;
         this.datasetName = Objects.requireNonNull(datasetName);
         this.indexName = Objects.requireNonNull(indexName);
@@ -70,6 +80,15 @@ public class CreateIndexStatement extends AbstractStatement {
         this.excludeUnknownKey = OptionalBoolean.ofNullable(excludeUnknownKey);
         this.castDefaultNull = OptionalBoolean.ofNullable(castDefaultNull);
         this.castConfig = castConfig == null ? Collections.emptyMap() : castConfig;
+        this.includeElements = includeElements;
+        // A vector index always has a WITH clause, so this is non-null exactly for TYPE VTREE; its clause may also
+        // name a compression scheme. On a BTREE or ARRAY index the clause carries the compression scheme only; the
+        // grammar rejects it on any other type.
+        this.vectorParameters =
+                indexType == IndexType.VTREE ? VectorIndexDeclUtil.validateAndGetParameters(withObjectRecord) : null;
+        this.compressionScheme = indexType == IndexType.VTREE
+                ? DatasetDeclParametersUtil.validateAndGetVectorIndexCompressionScheme(withObjectRecord)
+                : DatasetDeclParametersUtil.validateAndGetIndexCompressionScheme(withObjectRecord);
     }
 
     public String getFullTextConfigName() {
@@ -98,6 +117,10 @@ public class CreateIndexStatement extends AbstractStatement {
 
     public List<IndexedElement> getIndexedElements() {
         return indexedElements;
+    }
+
+    public List<IndexedElement> getIncludeElements() {
+        return includeElements;
     }
 
     public boolean isEnforced() {
@@ -130,6 +153,19 @@ public class CreateIndexStatement extends AbstractStatement {
 
     public Map<String, String> getCastConfig() {
         return castConfig;
+    }
+
+    /** The compression scheme the statement names, or null where it names none. */
+    public String getCompressionScheme() {
+        return compressionScheme;
+    }
+
+    /**
+     * The validated {@code WITH} parameters of a {@code TYPE VTREE} index, never {@code null} for that index
+     * type; {@code null} for every other type.
+     */
+    public VectorIndexParameters getVectorParameters() {
+        return vectorParameters;
     }
 
     @Override
@@ -184,7 +220,7 @@ public class CreateIndexStatement extends AbstractStatement {
         }
 
         public Triple<Integer, List<List<String>>, List<List<String>>> toIdentifier() {
-            List<List<String>> newProjectList = projectList.stream().map(Pair::getFirst).collect(Collectors.toList());
+            List<List<String>> newProjectList = projectList.stream().map(Pair::getLeft).collect(Collectors.toList());
             return new Triple<>(sourceIndicator, unnestList, newProjectList);
         }
 
@@ -197,7 +233,7 @@ public class CreateIndexStatement extends AbstractStatement {
         }
 
         public String getProjectListDisplayForm() {
-            return projectList.stream().map(Pair::getFirst).map(String::valueOf).collect(Collectors.joining(", "));
+            return projectList.stream().map(Pair::getLeft).map(String::valueOf).collect(Collectors.joining(", "));
         }
     }
 }

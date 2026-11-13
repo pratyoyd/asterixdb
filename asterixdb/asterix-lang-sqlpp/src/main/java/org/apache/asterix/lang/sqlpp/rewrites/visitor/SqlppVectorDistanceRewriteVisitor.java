@@ -1,0 +1,168 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.asterix.lang.sqlpp.rewrites.visitor;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import org.apache.asterix.common.annotations.AnnSearchPreferenceAnnotation;
+import org.apache.asterix.common.exceptions.CompilationException;
+import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.functions.FunctionSignature;
+import org.apache.asterix.lang.common.base.Expression;
+import org.apache.asterix.lang.common.base.ILangExpression;
+import org.apache.asterix.lang.common.base.Literal;
+import org.apache.asterix.lang.common.expression.CallExpr;
+import org.apache.asterix.lang.common.expression.LiteralExpr;
+import org.apache.asterix.lang.common.util.ExpressionUtils;
+import org.apache.asterix.lang.common.util.VectorMetricFunctionMapUtil;
+import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppSimpleExpressionVisitor;
+import org.apache.asterix.om.functions.BuiltinFunctions;
+
+/**
+ * Rewrites {@code vector_distance(vec1, vec2, metric)} into the corresponding 2-arg vector builtin when
+ * {@code metric} is a compile-time string literal.
+ */
+public final class SqlppVectorDistanceRewriteVisitor extends AbstractSqlppSimpleExpressionVisitor {
+
+    @Override
+    public Expression visit(CallExpr callExpr, ILangExpression arg) throws CompilationException {
+        List<Expression> rewrittenArgs = new ArrayList<>(callExpr.getExprList().size());
+        for (Expression expr : callExpr.getExprList()) {
+            rewrittenArgs.add(expr.accept(this, arg));
+        }
+        callExpr.setExprList(rewrittenArgs);
+        if (isVectorDistanceCall(callExpr)) {
+            return rewriteVectorDistance(callExpr);
+        }
+        if (isAnnDistanceCall(callExpr)) {
+            return rewriteAnnDistance(callExpr);
+        }
+        return callExpr;
+    }
+
+    private static boolean isVectorDistanceCall(CallExpr callExpr) {
+        FunctionSignature fs = callExpr.getFunctionSignature();
+        return fs != null && BuiltinFunctions.VECTOR_DISTANCE.getArity() == fs.getArity()
+                && BuiltinFunctions.VECTOR_DISTANCE.getName().equals(fs.getName());
+    }
+
+    private static CallExpr rewriteVectorDistance(CallExpr callExpr) throws CompilationException {
+        List<Expression> args = callExpr.getExprList();
+        if (args.size() != BuiltinFunctions.VECTOR_DISTANCE.getArity()) {
+            throw new CompilationException(ErrorCode.COMPILATION_ERROR, callExpr.getSourceLocation(),
+                    "vector_distance expects " + BuiltinFunctions.VECTOR_DISTANCE.getArity() + " arguments");
+        }
+        String metric = ExpressionUtils.getStringLiteral(args.get(2));
+        if (metric == null) {
+            throw new CompilationException(ErrorCode.COMPILATION_ERROR, args.get(2).getSourceLocation(),
+                    "vector_distance metric must be a compile-time string literal");
+        }
+        Optional<String> builtinName = VectorMetricFunctionMapUtil.resolve(metric);
+        if (builtinName.isEmpty()) {
+            throw new CompilationException(ErrorCode.COMPILATION_ERROR, args.get(2).getSourceLocation(),
+                    "unknown vector_distance metric '" + metric + "'; supported metrics: "
+                            + VectorMetricFunctionMapUtil.supportedMetricsMessage());
+        }
+        List<Expression> targetArgs = new ArrayList<>(2);
+        targetArgs.add(args.get(0));
+        targetArgs.add(args.get(1));
+        CallExpr rewritten = new CallExpr(FunctionSignature.newAsterix(builtinName.get(), 2), targetArgs,
+                callExpr.getAggregateFilterExpr());
+        rewritten.setSourceLocation(callExpr.getSourceLocation());
+        return rewritten;
+    }
+
+    // ---- ann_distance ----------------------------------------------------------------------------
+    // ann_distance(vec1, vec2, metric [, min_probe_fraction] [, k_multiplier]) is desugared into the same
+    // 2-arg distance builtin as vector_distance, plus an AnnSearchPreferenceAnnotation that (a) marks the
+    // call as index-eligible for IntroduceTopKAccessMethodRule and (b) carries the ANN-only search
+    // parameters. Metric/parameter validation happens here at compile time.
+
+    private static final double DEFAULT_MIN_PROBE_FRACTION = 0.75;
+    private static final int DEFAULT_K_MULTIPLIER = 1;
+
+    private static boolean isAnnDistanceCall(CallExpr callExpr) {
+        FunctionSignature fs = callExpr.getFunctionSignature();
+        return fs != null && BuiltinFunctions.ANN_DISTANCE.getName().equals(fs.getName());
+    }
+
+    private static CallExpr rewriteAnnDistance(CallExpr callExpr) throws CompilationException {
+        List<Expression> args = callExpr.getExprList();
+        if (args.size() < 3 || args.size() > 5) {
+            throw new CompilationException(ErrorCode.COMPILATION_ERROR, callExpr.getSourceLocation(),
+                    "ann_distance expects 3 to 5 arguments");
+        }
+        String metric = ExpressionUtils.getStringLiteral(args.get(2));
+        if (metric == null) {
+            throw new CompilationException(ErrorCode.COMPILATION_ERROR, args.get(2).getSourceLocation(),
+                    "ann_distance metric must be a compile-time string literal");
+        }
+        Optional<String> builtinName = VectorMetricFunctionMapUtil.resolve(metric);
+        if (builtinName.isEmpty()) {
+            throw new CompilationException(ErrorCode.COMPILATION_ERROR, args.get(2).getSourceLocation(),
+                    "unknown ann_distance metric '" + metric + "'; supported metrics: "
+                            + VectorMetricFunctionMapUtil.supportedMetricsMessage());
+        }
+        double minProbeFraction = DEFAULT_MIN_PROBE_FRACTION;
+        if (args.size() > 3) {
+            minProbeFraction = numericLiteral(args.get(3), "min_probe_fraction");
+            if (minProbeFraction < 0.0 || minProbeFraction > 1.0) {
+                throw new CompilationException(ErrorCode.COMPILATION_ERROR, args.get(3).getSourceLocation(),
+                        "ann_distance min_probe_fraction must be in [0, 1]");
+            }
+        }
+        int kMultiplier = DEFAULT_K_MULTIPLIER;
+        if (args.size() > 4) {
+            double km = numericLiteral(args.get(4), "k_multiplier");
+            if (km != Math.floor(km) || km < 1.0) {
+                throw new CompilationException(ErrorCode.COMPILATION_ERROR, args.get(4).getSourceLocation(),
+                        "ann_distance k_multiplier must be a positive integer");
+            }
+            kMultiplier = (int) km;
+        }
+        List<Expression> targetArgs = new ArrayList<>(2);
+        targetArgs.add(args.get(0));
+        targetArgs.add(args.get(1));
+        CallExpr rewritten = new CallExpr(FunctionSignature.newAsterix(builtinName.get(), 2), targetArgs,
+                callExpr.getAggregateFilterExpr());
+        rewritten.setSourceLocation(callExpr.getSourceLocation());
+        rewritten.addHint(new AnnSearchPreferenceAnnotation(metric, minProbeFraction, kMultiplier));
+        return rewritten;
+    }
+
+    private static double numericLiteral(Expression arg, String paramName) throws CompilationException {
+        if (arg.getKind() == Expression.Kind.LITERAL_EXPRESSION) {
+            Literal lit = ((LiteralExpr) arg).getValue();
+            switch (lit.getLiteralType()) {
+                case DOUBLE:
+                case FLOAT:
+                case LONG:
+                case INTEGER:
+                    return ((Number) lit.getValue()).doubleValue();
+                default:
+                    break;
+            }
+        }
+        throw new CompilationException(ErrorCode.COMPILATION_ERROR, arg.getSourceLocation(),
+                "ann_distance " + paramName + " must be a compile-time numeric literal");
+    }
+}

@@ -42,8 +42,8 @@ import org.apache.asterix.translator.ResultMetadata;
 import org.apache.asterix.translator.SessionConfig;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.compiler.api.ICompiler;
 import org.apache.hyracks.algebricks.compiler.api.ICompilerFactory;
@@ -68,7 +68,9 @@ import org.apache.hyracks.algebricks.core.rewriter.base.IRuleSetKind;
 import org.apache.hyracks.api.comm.IFrame;
 import org.apache.hyracks.api.comm.VSizeFrame;
 import org.apache.hyracks.api.dataflow.value.ISerializerDeserializer;
+import org.apache.hyracks.api.job.HyracksJobProperty;
 import org.apache.hyracks.api.job.JobId;
+import org.apache.hyracks.api.job.JobKind;
 import org.apache.hyracks.api.job.JobSpecification;
 import org.apache.hyracks.api.result.IResultSetReader;
 import org.apache.hyracks.api.result.ResultSetId;
@@ -197,7 +199,7 @@ public class AnalysisUtil {
         if (frameValueExprList.size() != 1) {
             return false;
         }
-        ILogicalExpression frameValueExpr = frameValueExprList.get(0).second.getValue();
+        ILogicalExpression frameValueExpr = frameValueExprList.get(0).getRight().getValue();
         if (frameValueExpr.getExpressionTag() != LogicalExpressionTag.VARIABLE) {
             return false;
         }
@@ -281,7 +283,7 @@ public class AnalysisUtil {
             compiler.optimize();
 
             JobSpecification jobSpec = compiler.createJob(appCtx, new JobEventListenerFactory(newTxnId, false));
-
+            jobSpec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.SYS_QUERY);
             JobId jobId = JobUtils.runJobIfActive(appCtx.getHcc(), jobSpec, true);
 
             IResultSetReader resultSetReader = appCtx.getResultSet().createReader(jobId, resultSetId);

@@ -27,13 +27,15 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
 
+import org.apache.asterix.common.api.IApplicationContext;
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.common.exceptions.RuntimeDataException;
 import org.apache.asterix.external.input.filter.embedder.IExternalFilterValueEmbedder;
 import org.apache.asterix.external.input.record.reader.abstracts.AbstractExternalInputStream;
+import org.apache.asterix.external.input.record.reader.stream.AvailableInputStream;
 import org.apache.asterix.external.util.ExternalDataConstants;
-import org.apache.asterix.external.util.google.gcs.GCSUtils;
+import org.apache.asterix.external.util.google.GCSUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.util.CleanupUtils;
@@ -46,13 +48,15 @@ import com.google.cloud.storage.Storage;
 
 public class GCSInputStream extends AbstractExternalInputStream {
 
+    private final IApplicationContext ncAppCtx;
     private final Storage client;
     private final String container;
     private static final int MAX_ATTEMPTS = 5; // We try a total of 5 times in case of retryable errors
 
-    public GCSInputStream(Map<String, String> configuration, List<String> filePaths,
+    public GCSInputStream(IApplicationContext ncAppCtx, Map<String, String> configuration, List<String> filePaths,
             IExternalFilterValueEmbedder valueEmbedder) throws HyracksDataException {
         super(configuration, filePaths, valueEmbedder);
+        this.ncAppCtx = ncAppCtx;
         this.client = buildClient(configuration);
         this.container = configuration.get(ExternalDataConstants.CONTAINER_NAME_FIELD_NAME);
     }
@@ -69,7 +73,7 @@ public class GCSInputStream extends AbstractExternalInputStream {
 
         // Use gzip stream if needed
         if (StringUtils.endsWithIgnoreCase(fileName, ".gz") || StringUtils.endsWithIgnoreCase(fileName, ".gzip")) {
-            in = new GZIPInputStream(in, ExternalDataConstants.DEFAULT_BUFFER_SIZE);
+            in = new GZIPInputStream(new AvailableInputStream(in), ExternalDataConstants.DEFAULT_BUFFER_SIZE);
         }
         return true;
     }
@@ -136,7 +140,7 @@ public class GCSInputStream extends AbstractExternalInputStream {
 
     private Storage buildClient(Map<String, String> configuration) throws HyracksDataException {
         try {
-            return GCSUtils.buildClient(configuration);
+            return GCSUtils.buildClient(ncAppCtx, configuration);
         } catch (CompilationException ex) {
             throw HyracksDataException.create(ex);
         }

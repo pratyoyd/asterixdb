@@ -26,10 +26,10 @@ public interface Clause extends ILangExpression {
         LET_CLAUSE,
         WHERE_CLAUSE,
         GROUP_BY_CLAUSE,
+        CLUSTER_BY_CLAUSE,
         DISTINCT_BY_CLAUSE,
         ORDER_BY_CLAUSE,
         LIMIT_CLAUSE,
-        UPDATE_CLAUSE,
 
         // SQL related clause
         FROM_CLAUSE,

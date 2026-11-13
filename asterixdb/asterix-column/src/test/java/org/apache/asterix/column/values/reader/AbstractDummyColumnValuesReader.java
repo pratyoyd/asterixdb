@@ -126,6 +126,11 @@ public abstract class AbstractDummyColumnValuesReader implements IColumnValuesRe
     }
 
     @Override
+    public int getInt() {
+        return -1;
+    }
+
+    @Override
     public final double getDouble() {
         return -1.0;
     }
@@ -168,5 +173,15 @@ public abstract class AbstractDummyColumnValuesReader implements IColumnValuesRe
         node.put("valueCount", valueCount);
         node.put("level", level);
         node.put("maxLevel", maxLevel);
+    }
+
+    @Override
+    public void registerCurrentTuple(int tupleIndex) {
+
+    }
+
+    @Override
+    public boolean isColumnMissingForCurrentTuple(int tupleIndex) {
+        return false;
     }
 }

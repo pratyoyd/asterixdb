@@ -26,14 +26,10 @@ import org.apache.asterix.app.message.ExecuteStatementResponseMessage;
 import org.apache.asterix.app.result.ResponsePrinter;
 import org.apache.asterix.app.result.ResultReader;
 import org.apache.asterix.common.api.IApplicationContext;
-import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.translator.IStatementExecutor;
 import org.apache.asterix.translator.SessionOutput;
-import org.apache.commons.lang3.tuple.Triple;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
-import org.apache.hyracks.api.job.JobId;
 import org.apache.hyracks.api.result.IResultSet;
-import org.apache.hyracks.api.result.ResultSetId;
 
 public class NcResultPrinter extends AbstractResultsPrinter {
 
@@ -53,15 +49,16 @@ public class NcResultPrinter extends AbstractResultsPrinter {
     @Override
     public void print(PrintWriter pw) throws HyracksDataException {
         IStatementExecutor.ResultMetadata resultMetadata = responseMsg.getMetadata();
-        List<Triple<JobId, ResultSetId, ARecordType>> resultSets = resultMetadata.getResultSets();
+        List<IStatementExecutor.ResultSetInfo> resultSets = resultMetadata.getResultSets();
         if (delivery == IStatementExecutor.ResultDelivery.IMMEDIATE && !resultSets.isEmpty()) {
             for (int i = 0; i < resultSets.size(); i++) {
-                Triple<JobId, ResultSetId, ARecordType> rsmd = resultSets.get(i);
-                ResultReader resultReader = new ResultReader(resultSet, rsmd.getLeft(), rsmd.getMiddle());
-                ResultUtil.printResults(appCtx, resultReader, sessionOutput, stats, rsmd.getRight());
-                if (i + 1 != resultSets.size()) {
+                IStatementExecutor.ResultSetInfo rsmd = resultSets.get(i);
+                // the reader is opened before the separator, so that failing to open it leaves no dangling comma
+                ResultReader resultReader = new ResultReader(resultSet, rsmd.getJobId(), rsmd.getResultSetId());
+                if (i > 0) {
                     ResponsePrinter.printFieldSeparator(pw);
                 }
+                ResultUtil.printResults(appCtx, resultReader, sessionOutput, stats, rsmd.getRecordType());
             }
         } else {
             pw.append(responseMsg.getResult());

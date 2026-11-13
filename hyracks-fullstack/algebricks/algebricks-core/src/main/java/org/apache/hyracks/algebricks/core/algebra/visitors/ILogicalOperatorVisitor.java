@@ -67,6 +67,10 @@ public interface ILogicalOperatorVisitor<R, T> {
 
     public R visitIntersectOperator(IntersectOperator op, T arg) throws AlgebricksException;
 
+    public R visitClusterByOperator(ClusterByOperator op, T arg) throws AlgebricksException;
+
+    public R visitKMeansStageOperator(KMeansStageOperator op, T arg) throws AlgebricksException;
+
     public R visitUnnestOperator(UnnestOperator op, T arg) throws AlgebricksException;
 
     public R visitLeftOuterUnnestOperator(LeftOuterUnnestOperator op, T arg) throws AlgebricksException;

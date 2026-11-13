@@ -21,15 +21,16 @@ package org.apache.hyracks.algebricks.core.algebra.metadata;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
 import org.apache.hyracks.algebricks.core.algebra.functions.IFunctionInfo;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.IOperatorSchema;
+import org.apache.hyracks.algebricks.core.algebra.properties.INodeDomain;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenContext;
 import org.apache.hyracks.algebricks.data.IAWriterFactory;
 import org.apache.hyracks.algebricks.data.IPrinterFactory;
@@ -40,6 +41,7 @@ import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
 import org.apache.hyracks.api.dataflow.IOperatorDescriptor;
 import org.apache.hyracks.api.dataflow.value.IBinaryComparatorFactory;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
+import org.apache.hyracks.api.exceptions.IWarningCollector;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 import org.apache.hyracks.api.job.JobSpecification;
 import org.apache.hyracks.api.result.IResultMetadata;
@@ -67,7 +69,7 @@ public interface IMetadataProvider<S, I> {
 
     Pair<IPushRuntimeFactory, AlgebricksPartitionConstraint> getWriteDatabaseWithKeyRuntime(int sourceColumn,
             IScalarEvaluatorFactory[] keyEvaluatorFactories, IWriteDataSink sink, RecordDescriptor inputDesc,
-            Object sourceType) throws AlgebricksException;
+            Object sourceType, IWarningCollector warningCollector) throws AlgebricksException;
 
     Pair<IOperatorDescriptor, AlgebricksPartitionConstraint> getResultHandleRuntime(IDataSink sink, int[] printColumns,
             IPrinterFactory[] printerFactories, IAWriterFactory writerFactory,
@@ -203,5 +205,12 @@ public interface IMetadataProvider<S, I> {
     Map<String, Object> getConfig();
 
     boolean isBlockingOperatorDisabled();
+
+    /**
+     * Returns the cluster partitions map when the input node domain is the same as the cluster. Otherwise, null.
+     * @param nodeDomain input node domain
+     * @return the cluster partitions map.
+     */
+    int[][] getPartitionsMap(INodeDomain nodeDomain);
 
 }

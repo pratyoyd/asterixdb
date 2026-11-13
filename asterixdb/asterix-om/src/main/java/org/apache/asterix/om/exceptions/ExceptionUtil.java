@@ -28,8 +28,9 @@ import java.util.function.Supplier;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.EnumDeserializer;
+import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.IWarningCollector;
 import org.apache.hyracks.api.exceptions.SourceLocation;
@@ -90,6 +91,15 @@ public final class ExceptionUtil {
                     default:
                         return i + "th";
                 }
+        }
+    }
+
+    public static void warnValueOutOfRange(IEvaluatorContext ctx, SourceLocation srcLoc, FunctionIdentifier fid,
+            int inputPosition, int lowerBound, int upperBound, int actual) {
+        IWarningCollector warningCollector = ctx.getWarningCollector();
+        if (warningCollector.shouldWarn()) {
+            warningCollector.warn(Warning.of(srcLoc, ErrorCode.VALUE_OUT_OF_RANGE, fid,
+                    ExceptionUtil.indexToPosition(inputPosition), lowerBound, upperBound, actual));
         }
     }
 
@@ -161,6 +171,16 @@ public final class ExceptionUtil {
         if (warningCollector.shouldWarn()) {
             warningCollector.warn(
                     Warning.of(srcLoc, errorCode, fid.getName(), indexToPosition(argIdx), Double.toString(argValue)));
+        }
+    }
+
+    public static void warnEmptySamples(double sampleCard, SourceLocation sourceLocation, IOptimizationContext optCtx) {
+        if (sampleCard == 0) {
+            IWarningCollector warningCollector = optCtx.getWarningCollector();
+            if (warningCollector.shouldWarn()) {
+                warningCollector.warn(Warning.of(sourceLocation,
+                        org.apache.asterix.common.exceptions.ErrorCode.SAMPLE_HAS_ZERO_ROWS));
+            }
         }
     }
 

@@ -24,12 +24,13 @@ import java.io.IOException;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Supplier;
 
-import org.apache.asterix.app.external.ExternalCredentialsCache;
-import org.apache.asterix.app.external.ExternalCredentialsCacheUpdater;
+import org.apache.asterix.app.cache.QueryPlanCache;
+import org.apache.asterix.app.external.ExternalStatsTracker;
 import org.apache.asterix.app.result.ResultReader;
 import org.apache.asterix.common.api.IConfigValidator;
 import org.apache.asterix.common.api.IConfigValidatorFactory;
 import org.apache.asterix.common.api.ICoordinationService;
+import org.apache.asterix.common.api.IExtensionManager;
 import org.apache.asterix.common.api.IMetadataLockManager;
 import org.apache.asterix.common.api.INamespacePathResolver;
 import org.apache.asterix.common.api.INamespaceResolver;
@@ -37,6 +38,7 @@ import org.apache.asterix.common.api.INodeJobTracker;
 import org.apache.asterix.common.api.IReceptionist;
 import org.apache.asterix.common.api.IReceptionistFactory;
 import org.apache.asterix.common.api.IRequestTracker;
+import org.apache.asterix.common.cache.IQueryPlanCache;
 import org.apache.asterix.common.cluster.IClusterStateManager;
 import org.apache.asterix.common.cluster.IGlobalRecoveryManager;
 import org.apache.asterix.common.cluster.IGlobalTxManager;
@@ -57,8 +59,7 @@ import org.apache.asterix.common.context.IStorageComponentProvider;
 import org.apache.asterix.common.dataflow.ICcApplicationContext;
 import org.apache.asterix.common.dataflow.IDataPartitioningProvider;
 import org.apache.asterix.common.external.IAdapterFactoryService;
-import org.apache.asterix.common.external.IExternalCredentialsCache;
-import org.apache.asterix.common.external.IExternalCredentialsCacheUpdater;
+import org.apache.asterix.common.external.IExternalStatsTracker;
 import org.apache.asterix.common.metadata.IMetadataBootstrap;
 import org.apache.asterix.common.metadata.IMetadataLockUtil;
 import org.apache.asterix.common.replication.INcLifecycleCoordinator;
@@ -81,6 +82,7 @@ import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.job.IJobLifecycleListener;
 import org.apache.hyracks.api.result.IResultSet;
 import org.apache.hyracks.client.result.ResultSet;
+import org.apache.hyracks.control.common.controllers.CCConfig;
 import org.apache.hyracks.control.nc.io.IOManager;
 import org.apache.hyracks.ipc.impl.HyracksConnection;
 import org.apache.hyracks.storage.common.IStorageManager;
@@ -93,31 +95,31 @@ import org.apache.hyracks.util.NetworkUtil;
  */
 public class CcApplicationContext implements ICcApplicationContext {
 
-    private ICCServiceContext ccServiceCtx;
-    private IStorageComponentProvider storageComponentProvider;
-    private IGlobalRecoveryManager globalRecoveryManager;
-    private IResourceIdManager resourceIdManager;
-    private CompilerProperties compilerProperties;
-    private ExternalProperties externalProperties;
-    private MetadataProperties metadataProperties;
-    private StorageProperties storageProperties;
-    private TransactionProperties txnProperties;
-    private ActiveProperties activeProperties;
-    private BuildProperties buildProperties;
-    private ReplicationProperties replicationProperties;
-    private ExtensionProperties extensionProperties;
-    private MessagingProperties messagingProperties;
-    private NodeProperties nodeProperties;
+    private final ICCServiceContext ccServiceCtx;
+    private final IStorageComponentProvider storageComponentProvider;
+    private final IGlobalRecoveryManager globalRecoveryManager;
+    private final IResourceIdManager resourceIdManager;
+    private final CompilerProperties compilerProperties;
+    private final ExternalProperties externalProperties;
+    private final MetadataProperties metadataProperties;
+    private final StorageProperties storageProperties;
+    private final TransactionProperties txnProperties;
+    private final ActiveProperties activeProperties;
+    private final BuildProperties buildProperties;
+    private final ReplicationProperties replicationProperties;
+    private final ExtensionProperties extensionProperties;
+    private final MessagingProperties messagingProperties;
+    private final NodeProperties nodeProperties;
     private final CloudProperties cloudProperties;
-    private Supplier<IMetadataBootstrap> metadataBootstrapSupplier;
+    private final Supplier<IMetadataBootstrap> metadataBootstrapSupplier;
     private volatile HyracksConnection hcc;
     private volatile ResultSet resultSet;
-    private Object extensionManager;
-    private INcLifecycleCoordinator ftStrategy;
-    private IJobLifecycleListener activeLifeCycleListener;
-    private IMetadataLockManager mdLockManager;
-    private IMetadataLockUtil mdLockUtil;
-    private IClusterStateManager clusterStateManager;
+    private final IExtensionManager extensionManager;
+    private final INcLifecycleCoordinator ftStrategy;
+    private final IJobLifecycleListener activeLifeCycleListener;
+    private final IMetadataLockManager mdLockManager;
+    private final IMetadataLockUtil mdLockUtil;
+    private final IClusterStateManager clusterStateManager;
     private final INodeJobTracker nodeJobTracker;
     private final ITxnIdFactory txnIdFactory;
     private final ICompressionManager compressionManager;
@@ -125,21 +127,21 @@ public class CcApplicationContext implements ICcApplicationContext {
     private final IRequestTracker requestTracker;
     private final IConfigValidator configValidator;
     private final IAdapterFactoryService adapterFactoryService;
+    private final IQueryPlanCache cache;
     private final ReentrantReadWriteLock compilationLock = new ReentrantReadWriteLock(true);
     private final IDataPartitioningProvider dataPartitioningProvider;
     private final IGlobalTxManager globalTxManager;
     private final IOManager ioManager;
     private final INamespacePathResolver namespacePathResolver;
     private final INamespaceResolver namespaceResolver;
-    private final IExternalCredentialsCache externalCredentialsCache;
-    private final IExternalCredentialsCacheUpdater externalCredentialsCacheUpdater;
+    private final IExternalStatsTracker externalStatsTracker;
 
     public CcApplicationContext(ICCServiceContext ccServiceCtx, HyracksConnection hcc,
             Supplier<IMetadataBootstrap> metadataBootstrapSupplier, IGlobalRecoveryManager globalRecoveryManager,
             INcLifecycleCoordinator ftStrategy, IJobLifecycleListener activeLifeCycleListener,
             IStorageComponentProvider storageComponentProvider, IMetadataLockManager mdLockManager,
             IMetadataLockUtil mdLockUtil, IReceptionistFactory receptionistFactory,
-            IConfigValidatorFactory configValidatorFactory, Object extensionManager,
+            IConfigValidatorFactory configValidatorFactory, IExtensionManager extensionManager,
             IAdapterFactoryService adapterFactoryService, IGlobalTxManager globalTxManager, IOManager ioManager,
             CloudProperties cloudProperties, INamespaceResolver namespaceResolver,
             INamespacePathResolver namespacePathResolver) throws AlgebricksException, IOException {
@@ -178,13 +180,14 @@ public class CcApplicationContext implements ICcApplicationContext {
         requestTracker = new RequestTracker(this);
         configValidator = configValidatorFactory.create();
         this.adapterFactoryService = adapterFactoryService;
+        this.cache = new QueryPlanCache(
+                ccServiceCtx.getAppConfig().getInt(CCConfig.Option.COMPILER_QUERY_PLAN_CACHE_CAPACITY));
         this.namespacePathResolver = namespacePathResolver;
         this.namespaceResolver = namespaceResolver;
         this.globalTxManager = globalTxManager;
         this.ioManager = ioManager;
         dataPartitioningProvider = DataPartitioningProvider.create(this);
-        externalCredentialsCache = new ExternalCredentialsCache(this);
-        externalCredentialsCacheUpdater = new ExternalCredentialsCacheUpdater(this);
+        externalStatsTracker = new ExternalStatsTracker();
     }
 
     @Override
@@ -240,7 +243,8 @@ public class CcApplicationContext implements ICcApplicationContext {
                         NetworkUtil.closeQuietly(rs);
 
                         NetworkUtil.closeQuietly(hc);
-                        hcc = hc = new HyracksConnection(hcc.getHost(), hcc.getPort());
+                        hcc = hc = new HyracksConnection(hcc.getHost(), hcc.getPort(),
+                                ccServiceCtx.getControllerService().getExecutor());
                     } catch (Exception e) {
                         throw HyracksDataException.create(e);
                     }
@@ -285,7 +289,7 @@ public class CcApplicationContext implements ICcApplicationContext {
     }
 
     @Override
-    public Object getExtensionManager() {
+    public IExtensionManager getExtensionManager() {
         return extensionManager;
     }
 
@@ -425,12 +429,12 @@ public class CcApplicationContext implements ICcApplicationContext {
     }
 
     @Override
-    public IExternalCredentialsCache getExternalCredentialsCache() {
-        return externalCredentialsCache;
+    public IExternalStatsTracker getExternalStatsTracker() {
+        return externalStatsTracker;
     }
 
     @Override
-    public IExternalCredentialsCacheUpdater getExternalCredentialsCacheUpdater() {
-        return externalCredentialsCacheUpdater;
+    public IQueryPlanCache getQueryPlanCache() {
+        return cache;
     }
 }

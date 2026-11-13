@@ -23,9 +23,9 @@ import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.functions.IFunctionDescriptorFactory;
 import org.apache.asterix.runtime.evaluators.base.AbstractScalarFunctionDynamicDescriptor;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 
 /**
@@ -49,7 +49,7 @@ public class IfNanDescriptor extends AbstractScalarFunctionDynamicDescriptor {
 
             @Override
             public IScalarEvaluator createScalarEvaluator(final IEvaluatorContext ctx) throws HyracksDataException {
-                return new IfNanOrInfDescriptor.AbstractIfInfOrNanEval(ctx, args, true) {
+                return new IfNanOrInfDescriptor.AbstractIfInfOrNanEval(ctx, args) {
                     @Override
                     protected boolean skipDouble(double d) {
                         return Double.isNaN(d);

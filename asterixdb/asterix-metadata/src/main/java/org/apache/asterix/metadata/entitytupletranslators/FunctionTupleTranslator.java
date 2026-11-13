@@ -28,6 +28,7 @@ import static org.apache.asterix.metadata.bootstrap.MetadataRecordTypes.FIELD_NA
 import static org.apache.asterix.metadata.bootstrap.MetadataRecordTypes.FIELD_NAME_RETURN_TYPE_DATAVERSE_NAME;
 import static org.apache.asterix.metadata.bootstrap.MetadataRecordTypes.FIELD_NAME_TYPE;
 import static org.apache.asterix.metadata.bootstrap.MetadataRecordTypes.FIELD_NAME_VALUE;
+import static org.apache.asterix.metadata.bootstrap.MetadataRecordTypes.FUNCTION_ARECORD_FUNCTION_BATCHED_FIELD_NAME;
 import static org.apache.asterix.metadata.bootstrap.MetadataRecordTypes.FUNCTION_ARECORD_FUNCTION_DETERMINISTIC_FIELD_NAME;
 import static org.apache.asterix.metadata.bootstrap.MetadataRecordTypes.FUNCTION_ARECORD_FUNCTION_EXTERNAL_IDENTIFIER_FIELD_NAME;
 import static org.apache.asterix.metadata.bootstrap.MetadataRecordTypes.FUNCTION_ARECORD_FUNCTION_LIBRARY_FIELD_NAME;
@@ -62,6 +63,7 @@ import org.apache.asterix.metadata.bootstrap.FunctionEntity;
 import org.apache.asterix.metadata.bootstrap.MetadataRecordTypes;
 import org.apache.asterix.metadata.entities.Function;
 import org.apache.asterix.metadata.utils.Creator;
+import org.apache.asterix.metadata.utils.TupleTranslatorUtils;
 import org.apache.asterix.om.base.ABoolean;
 import org.apache.asterix.om.base.ANull;
 import org.apache.asterix.om.base.AOrderedList;
@@ -163,11 +165,14 @@ public class FunctionTupleTranslator extends AbstractDatatypeTupleTranslator<Fun
                 externalIdentifier.add(((AString) externalIdentifierCursor.get()).getStringValue());
             }
             libraryName = getString(functionRecord, MetadataRecordTypes.FIELD_NAME_LIBRARY_NAME);
-            String libraryDataverseCanonicalName = getString(functionRecord, FIELD_NAME_LIBRARY_DATAVERSE_NAME);
-            libraryDataverseName = DataverseName.createFromCanonicalForm(libraryDataverseCanonicalName);
-            libraryDatabaseName = getString(functionRecord, FIELD_NAME_LIBRARY_DATABASE_NAME);
-            if (libraryDatabaseName == null) {
-                libraryDatabaseName = MetadataUtil.databaseFor(libraryDataverseName);
+            // an external function that calls out over HTTP has no library
+            if (libraryName != null) {
+                String libraryDataverseCanonicalName = getString(functionRecord, FIELD_NAME_LIBRARY_DATAVERSE_NAME);
+                libraryDataverseName = DataverseName.createFromCanonicalForm(libraryDataverseCanonicalName);
+                libraryDatabaseName = getString(functionRecord, FIELD_NAME_LIBRARY_DATABASE_NAME);
+                if (libraryDatabaseName == null) {
+                    libraryDatabaseName = MetadataUtil.databaseFor(libraryDataverseName);
+                }
             }
             resources = getResources(functionRecord, FUNCTION_ARECORD_FUNCTION_RESOURCES_FIELD_NAME);
             definition = null;
@@ -184,9 +189,11 @@ public class FunctionTupleTranslator extends AbstractDatatypeTupleTranslator<Fun
         }
 
         Boolean nullCall = null;
+        Boolean batched = null;
         Boolean deterministic = null;
         if (externalIdentifier != null) {
             nullCall = getBoolean(functionRecord, FUNCTION_ARECORD_FUNCTION_NULLCALL_FIELD_NAME);
+            batched = getBoolean(functionRecord, FUNCTION_ARECORD_FUNCTION_BATCHED_FIELD_NAME);
             deterministic = getBoolean(functionRecord, FUNCTION_ARECORD_FUNCTION_DETERMINISTIC_FIELD_NAME);
         }
 
@@ -206,9 +213,14 @@ public class FunctionTupleTranslator extends AbstractDatatypeTupleTranslator<Fun
         FunctionSignature signature = new FunctionSignature(databaseName, dataverseName, functionName, arity);
         Creator creator = Creator.createOrDefault(functionRecord);
 
+        int isTransformIndex = functionRecord.getType().getFieldIndex(MetadataRecordTypes.FIELD_NAME_IS_TRANSFORM);
+        boolean transform = false;
+        if (isTransformIndex >= 0) {
+            transform = ((ABoolean) functionRecord.getValueByPos(isTransformIndex)).getBoolean();
+        }
         return new Function(signature, paramNames, paramTypes, returnType, definition, functionKind, language,
                 libraryDatabaseName, libraryDataverseName, libraryName, externalIdentifier, nullCall, deterministic,
-                resources, dependencies, creator);
+                batched, resources, dependencies, creator, transform);
     }
 
     private List<TypeSignature> getParamTypes(ARecord functionRecord, String functionDatabaseName,
@@ -434,7 +446,9 @@ public class FunctionTupleTranslator extends AbstractDatatypeTupleTranslator<Fun
         writeLibrary(function);
         writeNullCall(function);
         writeDeterministic(function);
+        writeBatched(function);
         writeFunctionCreator(function);
+        writeIsTransform(function);
     }
 
     protected void writeResources(Function function) throws HyracksDataException {
@@ -494,31 +508,33 @@ public class FunctionTupleTranslator extends AbstractDatatypeTupleTranslator<Fun
             return;
         }
 
-        if (functionEntity.databaseNameIndex() >= 0) {
+        if (function.getLibraryName() != null) {
+            if (functionEntity.databaseNameIndex() >= 0) {
+                fieldName.reset();
+                aString.setValue(FIELD_NAME_LIBRARY_DATABASE_NAME);
+                stringSerde.serialize(aString, fieldName.getDataOutput());
+                fieldValue.reset();
+                aString.setValue(function.getLibraryDatabaseName());
+                stringSerde.serialize(aString, fieldValue.getDataOutput());
+                recordBuilder.addField(fieldName, fieldValue);
+            }
+
             fieldName.reset();
-            aString.setValue(FIELD_NAME_LIBRARY_DATABASE_NAME);
+            aString.setValue(FIELD_NAME_LIBRARY_DATAVERSE_NAME);
             stringSerde.serialize(aString, fieldName.getDataOutput());
             fieldValue.reset();
-            aString.setValue(function.getLibraryDatabaseName());
+            aString.setValue(function.getLibraryDataverseName().getCanonicalForm());
+            stringSerde.serialize(aString, fieldValue.getDataOutput());
+            recordBuilder.addField(fieldName, fieldValue);
+
+            fieldName.reset();
+            aString.setValue(MetadataRecordTypes.FIELD_NAME_LIBRARY_NAME);
+            stringSerde.serialize(aString, fieldName.getDataOutput());
+            fieldValue.reset();
+            aString.setValue(function.getLibraryName());
             stringSerde.serialize(aString, fieldValue.getDataOutput());
             recordBuilder.addField(fieldName, fieldValue);
         }
-
-        fieldName.reset();
-        aString.setValue(FIELD_NAME_LIBRARY_DATAVERSE_NAME);
-        stringSerde.serialize(aString, fieldName.getDataOutput());
-        fieldValue.reset();
-        aString.setValue(function.getLibraryDataverseName().getCanonicalForm());
-        stringSerde.serialize(aString, fieldValue.getDataOutput());
-        recordBuilder.addField(fieldName, fieldValue);
-
-        fieldName.reset();
-        aString.setValue(MetadataRecordTypes.FIELD_NAME_LIBRARY_NAME);
-        stringSerde.serialize(aString, fieldName.getDataOutput());
-        fieldValue.reset();
-        aString.setValue(function.getLibraryName());
-        stringSerde.serialize(aString, fieldValue.getDataOutput());
-        recordBuilder.addField(fieldName, fieldValue);
 
         fieldName.reset();
         aString.setValue(FUNCTION_ARECORD_FUNCTION_EXTERNAL_IDENTIFIER_FIELD_NAME);
@@ -575,6 +591,18 @@ public class FunctionTupleTranslator extends AbstractDatatypeTupleTranslator<Fun
         stringSerde.serialize(aString, fieldName.getDataOutput());
         fieldValue.reset();
         booleanSerde.serialize(ABoolean.valueOf(function.getNullCall()), fieldValue.getDataOutput());
+        recordBuilder.addField(fieldName, fieldValue);
+    }
+
+    protected void writeBatched(Function function) throws HyracksDataException {
+        if (function.getBatched() == null) {
+            return;
+        }
+        fieldName.reset();
+        aString.setValue(FUNCTION_ARECORD_FUNCTION_BATCHED_FIELD_NAME);
+        stringSerde.serialize(aString, fieldName.getDataOutput());
+        fieldValue.reset();
+        booleanSerde.serialize(ABoolean.valueOf(function.getBatched()), fieldValue.getDataOutput());
         recordBuilder.addField(fieldName, fieldValue);
     }
 
@@ -694,31 +722,18 @@ public class FunctionTupleTranslator extends AbstractDatatypeTupleTranslator<Fun
 
     private void writeFunctionCreator(Function function) throws HyracksDataException {
         if (functionEntity.databaseNameIndex() >= 0) {
-            Creator creatorInfo = function.getCreator();
-            RecordBuilder creatorObject = new RecordBuilder();
-            creatorObject.reset(DefaultOpenFieldType.NESTED_OPEN_RECORD_TYPE);
+            TupleTranslatorUtils.writeCreator(function.getCreator(), recordBuilder, fieldName, fieldValue, aString,
+                    stringSerde);
+        }
+    }
 
+    private void writeIsTransform(Function function) throws HyracksDataException {
+        if (function.isTransform()) {
             fieldName.reset();
-            aString.setValue(MetadataRecordTypes.FIELD_NAME_CREATOR_NAME);
+            aString.setValue(MetadataRecordTypes.FIELD_NAME_IS_TRANSFORM);
             stringSerde.serialize(aString, fieldName.getDataOutput());
             fieldValue.reset();
-            aString.setValue(creatorInfo.getName());
-            stringSerde.serialize(aString, fieldValue.getDataOutput());
-            creatorObject.addField(fieldName, fieldValue);
-
-            fieldName.reset();
-            aString.setValue(MetadataRecordTypes.FIELD_NAME_CREATOR_UUID);
-            stringSerde.serialize(aString, fieldName.getDataOutput());
-            fieldValue.reset();
-            aString.setValue(creatorInfo.getUuid());
-            stringSerde.serialize(aString, fieldValue.getDataOutput());
-            creatorObject.addField(fieldName, fieldValue);
-
-            fieldName.reset();
-            aString.setValue(MetadataRecordTypes.CREATOR_ARECORD_FIELD_NAME);
-            stringSerde.serialize(aString, fieldName.getDataOutput());
-            fieldValue.reset();
-            creatorObject.write(fieldValue.getDataOutput(), true);
+            booleanSerde.serialize(ABoolean.TRUE, fieldValue.getDataOutput());
             recordBuilder.addField(fieldName, fieldValue);
         }
     }

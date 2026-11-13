@@ -1,146 +1,280 @@
+distribute result [$$164]
 -- DISTRIBUTE_RESULT  |UNPARTITIONED|
+  exchange
   -- ONE_TO_ONE_EXCHANGE  |UNPARTITIONED|
+    limit 100
     -- STREAM_LIMIT  |UNPARTITIONED|
+      assign [$$164] <- [{"c": $$c, "ca": $$ca}] project: [$$164]
       -- ASSIGN  |PARTITIONED|
+        project ([$$c, $$ca])
         -- STREAM_PROJECT  |PARTITIONED|
-          -- SORT_MERGE_EXCHANGE [$$192(ASC) ]  |PARTITIONED|
+          exchange
+          -- SORT_MERGE_EXCHANGE [$$208(ASC) ]  |PARTITIONED|
+            limit 100
             -- STREAM_LIMIT  |PARTITIONED|
+              select (or(neq($$186, 0), neq($$187, 0))) project: [$$208, $$c, $$ca]
               -- STREAM_SELECT  |PARTITIONED|
+                project ([$$187, $$208, $$c, $$ca, $$186])
                 -- STREAM_PROJECT  |PARTITIONED|
+                  exchange
                   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                    -- SORT_GROUP_BY[$$201, $$202]  |PARTITIONED|
-                            {
+                    group by ([$$208 := $$217; $$209 := $$218]) decor ([$$c; $$ca; $$186]) {
+                              aggregate [$$187] <- [agg-sum($$216)]
                               -- AGGREGATE  |LOCAL|
+                                nested tuple source
                                 -- NESTED_TUPLE_SOURCE  |LOCAL|
-                            }
-                      -- HASH_PARTITION_EXCHANGE [$$201, $$202]  |PARTITIONED|
-                        -- PRE_CLUSTERED_GROUP_BY[$$189, $$190]  |PARTITIONED|
-                                {
+                           }
+                    -- SORT_GROUP_BY[$$217, $$218]  |PARTITIONED|
+                      exchange
+                      -- HASH_PARTITION_EXCHANGE [$$217, $$218]  |PARTITIONED|
+                        group by ([$$217 := $$205; $$218 := $$206]) decor ([$$c; $$ca; $$186]) {
+                                  aggregate [$$216] <- [agg-count({"cs1": $$cs1, "dd1": $$dd1})]
                                   -- AGGREGATE  |LOCAL|
+                                    select (not(is-missing($$207)))
                                     -- STREAM_SELECT  |LOCAL|
-                                      -- NESTED_TUPLE_SOURCE  |LOCAL|
-                                }
+                                      project ([$$cs1, $$dd1, $$207])
+                                      -- STREAM_PROJECT  |LOCAL|
+                                        nested tuple source
+                                        -- NESTED_TUPLE_SOURCE  |LOCAL|
+                               }
+                        -- PRE_CLUSTERED_GROUP_BY[$$205, $$206]  |PARTITIONED|
+                          exchange
                           -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                            -- STABLE_SORT [$$189(ASC), $$190(ASC)]  |PARTITIONED|
+                            order (ASC, $$205) (ASC, $$206)
+                            -- STABLE_SORT [$$205(ASC), $$206(ASC)]  |PARTITIONED|
+                              exchange
                               -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                project ([$$c, $$ca, $$186, $$cs1, $$dd1, $$207, $$205, $$206])
                                 -- STREAM_PROJECT  |PARTITIONED|
+                                  exchange
                                   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                    -- HYBRID_HASH_JOIN [$$189][$$171]  |PARTITIONED|
-                                      -- HASH_PARTITION_EXCHANGE [$$189]  |PARTITIONED|
-                                        -- SORT_GROUP_BY[$$198, $$199]  |PARTITIONED|
-                                                {
+                                    left outer join (eq($$205, $$185))
+                                    -- HYBRID_HASH_JOIN [$$205][$$185]  |PARTITIONED|
+                                      exchange
+                                      -- HASH_PARTITION_EXCHANGE [$$205]  |PARTITIONED|
+                                        group by ([$$205 := $$214; $$206 := $$215]) decor ([$$c; $$ca]) {
+                                                  aggregate [$$186] <- [agg-sum($$213)]
                                                   -- AGGREGATE  |LOCAL|
+                                                    nested tuple source
                                                     -- NESTED_TUPLE_SOURCE  |LOCAL|
-                                                }
-                                          -- HASH_PARTITION_EXCHANGE [$$198, $$199]  |PARTITIONED|
-                                            -- PRE_CLUSTERED_GROUP_BY[$$186, $$187]  |PARTITIONED|
-                                                    {
+                                               }
+                                        -- SORT_GROUP_BY[$$214, $$215]  |PARTITIONED|
+                                          exchange
+                                          -- HASH_PARTITION_EXCHANGE [$$214, $$215]  |PARTITIONED|
+                                            group by ([$$214 := $$202; $$215 := $$203]) decor ([$$c; $$ca]) {
+                                                      aggregate [$$213] <- [agg-count({"ws1": $$ws1, "dd1": $$dd1})]
                                                       -- AGGREGATE  |LOCAL|
+                                                        select (not(is-missing($$204)))
                                                         -- STREAM_SELECT  |LOCAL|
-                                                          -- NESTED_TUPLE_SOURCE  |LOCAL|
-                                                    }
+                                                          project ([$$ws1, $$dd1, $$204])
+                                                          -- STREAM_PROJECT  |LOCAL|
+                                                            nested tuple source
+                                                            -- NESTED_TUPLE_SOURCE  |LOCAL|
+                                                   }
+                                            -- PRE_CLUSTERED_GROUP_BY[$$202, $$203]  |PARTITIONED|
+                                              exchange
                                               -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                -- STABLE_SORT [$$186(ASC), $$187(ASC)]  |PARTITIONED|
+                                                order (ASC, $$202) (ASC, $$203)
+                                                -- STABLE_SORT [$$202(ASC), $$203(ASC)]  |PARTITIONED|
+                                                  exchange
                                                   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                    project ([$$c, $$ca, $$ws1, $$dd1, $$204, $$202, $$203])
                                                     -- STREAM_PROJECT  |PARTITIONED|
+                                                      exchange
                                                       -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                        -- HYBRID_HASH_JOIN [$$186][$$169]  |PARTITIONED|
-                                                          -- HASH_PARTITION_EXCHANGE [$$186]  |PARTITIONED|
+                                                        left outer join (eq($$202, $$183))
+                                                        -- HYBRID_HASH_JOIN [$$202][$$183]  |PARTITIONED|
+                                                          exchange
+                                                          -- HASH_PARTITION_EXCHANGE [$$202]  |PARTITIONED|
+                                                            select (neq($$179, 0)) project: [$$c, $$ca, $$202, $$203]
                                                             -- STREAM_SELECT  |PARTITIONED|
+                                                              exchange
                                                               -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                -- SORT_GROUP_BY[$$195, $$196]  |PARTITIONED|
-                                                                        {
+                                                                group by ([$$202 := $$211; $$203 := $$212]) decor ([$$c; $$ca]) {
+                                                                          aggregate [$$179] <- [agg-sum($$210)]
                                                                           -- AGGREGATE  |LOCAL|
+                                                                            nested tuple source
                                                                             -- NESTED_TUPLE_SOURCE  |LOCAL|
-                                                                        }
-                                                                  -- HASH_PARTITION_EXCHANGE [$$195, $$196]  |PARTITIONED|
-                                                                    -- PRE_CLUSTERED_GROUP_BY[$$150, $$151]  |PARTITIONED|
-                                                                            {
+                                                                       }
+                                                                -- SORT_GROUP_BY[$$211, $$212]  |PARTITIONED|
+                                                                  exchange
+                                                                  -- HASH_PARTITION_EXCHANGE [$$211, $$212]  |PARTITIONED|
+                                                                    group by ([$$211 := $$166; $$212 := $$167]) decor ([$$c; $$ca]) {
+                                                                              aggregate [$$210] <- [agg-count({"ss1": $$ss1, "dd1": $$dd1})]
                                                                               -- AGGREGATE  |LOCAL|
+                                                                                select (not(is-missing($$201)))
                                                                                 -- STREAM_SELECT  |LOCAL|
-                                                                                  -- NESTED_TUPLE_SOURCE  |LOCAL|
-                                                                            }
+                                                                                  project ([$$ss1, $$dd1, $$201])
+                                                                                  -- STREAM_PROJECT  |LOCAL|
+                                                                                    nested tuple source
+                                                                                    -- NESTED_TUPLE_SOURCE  |LOCAL|
+                                                                           }
+                                                                    -- PRE_CLUSTERED_GROUP_BY[$$166, $$167]  |PARTITIONED|
+                                                                      exchange
                                                                       -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                        -- STABLE_SORT [$$150(ASC), $$151(ASC)]  |PARTITIONED|
+                                                                        order (ASC, $$166) (ASC, $$167)
+                                                                        -- STABLE_SORT [$$166(ASC), $$167(ASC)]  |PARTITIONED|
+                                                                          exchange
                                                                           -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                            project ([$$c, $$ca, $$ss1, $$dd1, $$201, $$166, $$167])
                                                                             -- STREAM_PROJECT  |PARTITIONED|
+                                                                              exchange
                                                                               -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                                -- HYBRID_HASH_JOIN [$$150][$$167]  |PARTITIONED|
-                                                                                  -- HASH_PARTITION_EXCHANGE [$$150]  |PARTITIONED|
+                                                                                left outer join (eq($$166, $$181))
+                                                                                -- HYBRID_HASH_JOIN [$$166][$$181]  |PARTITIONED|
+                                                                                  exchange
+                                                                                  -- HASH_PARTITION_EXCHANGE [$$166]  |PARTITIONED|
+                                                                                    project ([$$c, $$ca, $$166, $$167])
                                                                                     -- STREAM_PROJECT  |PARTITIONED|
+                                                                                      exchange
                                                                                       -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                                        -- HYBRID_HASH_JOIN [$$161][$$151]  |PARTITIONED|
-                                                                                          -- HASH_PARTITION_EXCHANGE [$$161]  |PARTITIONED|
+                                                                                        join (eq($$177, $$167))
+                                                                                        -- HYBRID_HASH_JOIN [$$177][$$167]  |PARTITIONED|
+                                                                                          exchange
+                                                                                          -- HASH_PARTITION_EXCHANGE [$$177]  |PARTITIONED|
+                                                                                            assign [$$177] <- [$$c.getField(4)]
                                                                                             -- ASSIGN  |PARTITIONED|
+                                                                                              exchange
                                                                                               -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                                                -- DATASOURCE_SCAN (tpcds.customer)  |PARTITIONED|
+                                                                                                data-scan []<-[$$166, $$c] <- tpcds.customer
+                                                                                                -- DATASOURCE_SCAN  |PARTITIONED|
+                                                                                                  exchange
                                                                                                   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                                                    empty-tuple-source
                                                                                                     -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
-                                                                                          -- HASH_PARTITION_EXCHANGE [$$151]  |PARTITIONED|
-                                                                                            -- DATASOURCE_SCAN (tpcds.customer_address)  |PARTITIONED|
+                                                                                          exchange
+                                                                                          -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                                            data-scan []<-[$$167, $$ca] <- tpcds.customer_address
+                                                                                            -- DATASOURCE_SCAN  |PARTITIONED|
+                                                                                              exchange
                                                                                               -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                                                empty-tuple-source
                                                                                                 -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
-                                                                                  -- HASH_PARTITION_EXCHANGE [$$167]  |PARTITIONED|
+                                                                                  exchange
+                                                                                  -- HASH_PARTITION_EXCHANGE [$$181]  |PARTITIONED|
+                                                                                    assign [$$201] <- [true]
                                                                                     -- ASSIGN  |PARTITIONED|
+                                                                                      project ([$$ss1, $$181, $$dd1])
                                                                                       -- STREAM_PROJECT  |PARTITIONED|
+                                                                                        exchange
                                                                                         -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                                          -- HYBRID_HASH_JOIN [$$172][$$154]  |PARTITIONED|
-                                                                                            -- HASH_PARTITION_EXCHANGE [$$172]  |PARTITIONED|
+                                                                                          join (eq($$188, $$170))
+                                                                                          -- HYBRID_HASH_JOIN [$$188][$$170]  |PARTITIONED|
+                                                                                            exchange
+                                                                                            -- HASH_PARTITION_EXCHANGE [$$188]  |PARTITIONED|
+                                                                                              assign [$$181, $$188] <- [$$ss1.getField(3), $$ss1.getField(0)]
                                                                                               -- ASSIGN  |PARTITIONED|
+                                                                                                project ([$$ss1])
                                                                                                 -- STREAM_PROJECT  |PARTITIONED|
+                                                                                                  exchange
                                                                                                   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                                                    -- DATASOURCE_SCAN (tpcds.store_sales)  |PARTITIONED|
+                                                                                                    data-scan []<-[$$168, $$169, $$ss1] <- tpcds.store_sales
+                                                                                                    -- DATASOURCE_SCAN  |PARTITIONED|
+                                                                                                      exchange
                                                                                                       -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                                                        empty-tuple-source
                                                                                                         -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
+                                                                                            exchange
                                                                                             -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                                              replicate
                                                                                               -- REPLICATE  |PARTITIONED|
-                                                                                                -- HASH_PARTITION_EXCHANGE [$$154]  |PARTITIONED|
+                                                                                                exchange
+                                                                                                -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                                                  select (and(eq($$dd1.getField(6), 1900), lt($$dd1.getField(10), 4)))
                                                                                                   -- STREAM_SELECT  |PARTITIONED|
+                                                                                                    exchange
                                                                                                     -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                                                      -- DATASOURCE_SCAN (tpcds.date_dim)  |PARTITIONED|
+                                                                                                      data-scan []<-[$$170, $$dd1] <- tpcds.date_dim
+                                                                                                      -- DATASOURCE_SCAN  |PARTITIONED|
+                                                                                                        exchange
                                                                                                         -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                                                          empty-tuple-source
                                                                                                           -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
-                                                          -- HASH_PARTITION_EXCHANGE [$$169]  |PARTITIONED|
+                                                          exchange
+                                                          -- HASH_PARTITION_EXCHANGE [$$183]  |PARTITIONED|
+                                                            assign [$$204] <- [true]
                                                             -- ASSIGN  |PARTITIONED|
+                                                              project ([$$ws1, $$183, $$dd1])
                                                               -- STREAM_PROJECT  |PARTITIONED|
+                                                                exchange
                                                                 -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                  -- HYBRID_HASH_JOIN [$$174][$$157]  |PARTITIONED|
-                                                                    -- HASH_PARTITION_EXCHANGE [$$174]  |PARTITIONED|
+                                                                  join (eq($$190, $$173))
+                                                                  -- HYBRID_HASH_JOIN [$$190][$$173]  |PARTITIONED|
+                                                                    exchange
+                                                                    -- HASH_PARTITION_EXCHANGE [$$190]  |PARTITIONED|
+                                                                      assign [$$183, $$190] <- [$$ws1.getField(4), $$ws1.getField(0)]
                                                                       -- ASSIGN  |PARTITIONED|
+                                                                        project ([$$ws1])
                                                                         -- STREAM_PROJECT  |PARTITIONED|
+                                                                          exchange
                                                                           -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                            -- DATASOURCE_SCAN (tpcds.web_sales)  |PARTITIONED|
+                                                                            data-scan []<-[$$171, $$172, $$ws1] <- tpcds.web_sales
+                                                                            -- DATASOURCE_SCAN  |PARTITIONED|
+                                                                              exchange
                                                                               -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                                empty-tuple-source
                                                                                 -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
+                                                                    exchange
                                                                     -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                      assign [$$173, $$dd1] <- [$$170, $$dd1] project: [$$173, $$dd1]
                                                                       -- ASSIGN  |PARTITIONED|
+                                                                        exchange
                                                                         -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                          replicate
                                                                           -- REPLICATE  |PARTITIONED|
-                                                                            -- HASH_PARTITION_EXCHANGE [$$154]  |PARTITIONED|
+                                                                            exchange
+                                                                            -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                              select (and(eq($$dd1.getField(6), 1900), lt($$dd1.getField(10), 4)))
                                                                               -- STREAM_SELECT  |PARTITIONED|
+                                                                                exchange
                                                                                 -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                                                  -- DATASOURCE_SCAN (tpcds.date_dim)  |PARTITIONED|
+                                                                                  data-scan []<-[$$170, $$dd1] <- tpcds.date_dim
+                                                                                  -- DATASOURCE_SCAN  |PARTITIONED|
+                                                                                    exchange
                                                                                     -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                                      empty-tuple-source
                                                                                       -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
-                                      -- HASH_PARTITION_EXCHANGE [$$171]  |PARTITIONED|
+                                      exchange
+                                      -- HASH_PARTITION_EXCHANGE [$$185]  |PARTITIONED|
+                                        assign [$$207] <- [true]
                                         -- ASSIGN  |PARTITIONED|
+                                          project ([$$cs1, $$185, $$dd1])
                                           -- STREAM_PROJECT  |PARTITIONED|
+                                            exchange
                                             -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                              -- HYBRID_HASH_JOIN [$$176][$$160]  |PARTITIONED|
-                                                -- HASH_PARTITION_EXCHANGE [$$176]  |PARTITIONED|
+                                              join (eq($$192, $$176))
+                                              -- HYBRID_HASH_JOIN [$$192][$$176]  |PARTITIONED|
+                                                exchange
+                                                -- HASH_PARTITION_EXCHANGE [$$192]  |PARTITIONED|
+                                                  assign [$$185, $$192] <- [$$cs1.getField(7), $$cs1.getField(0)]
                                                   -- ASSIGN  |PARTITIONED|
+                                                    project ([$$cs1])
                                                     -- STREAM_PROJECT  |PARTITIONED|
+                                                      exchange
                                                       -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                        -- DATASOURCE_SCAN (tpcds.catalog_sales)  |PARTITIONED|
+                                                        data-scan []<-[$$174, $$175, $$cs1] <- tpcds.catalog_sales
+                                                        -- DATASOURCE_SCAN  |PARTITIONED|
+                                                          exchange
                                                           -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                            empty-tuple-source
                                                             -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
+                                                exchange
                                                 -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                  assign [$$176, $$dd1] <- [$$170, $$dd1] project: [$$176, $$dd1]
                                                   -- ASSIGN  |PARTITIONED|
+                                                    exchange
                                                     -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                      replicate
                                                       -- REPLICATE  |PARTITIONED|
-                                                        -- HASH_PARTITION_EXCHANGE [$$154]  |PARTITIONED|
+                                                        exchange
+                                                        -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                          select (and(eq($$dd1.getField(6), 1900), lt($$dd1.getField(10), 4)))
                                                           -- STREAM_SELECT  |PARTITIONED|
+                                                            exchange
                                                             -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                                                              -- DATASOURCE_SCAN (tpcds.date_dim)  |PARTITIONED|
+                                                              data-scan []<-[$$170, $$dd1] <- tpcds.date_dim
+                                                              -- DATASOURCE_SCAN  |PARTITIONED|
+                                                                exchange
                                                                 -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                                                  empty-tuple-source
                                                                   -- EMPTY_TUPLE_SOURCE  |PARTITIONED|

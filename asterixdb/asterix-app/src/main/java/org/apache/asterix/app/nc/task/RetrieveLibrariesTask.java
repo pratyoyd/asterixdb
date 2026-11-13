@@ -32,9 +32,9 @@ import java.util.List;
 import org.apache.asterix.common.api.INCLifecycleTask;
 import org.apache.asterix.common.api.INcApplicationContext;
 import org.apache.asterix.common.library.ILibraryManager;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.client.utils.URIUtils;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.api.control.CcId;
 import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
@@ -65,12 +65,12 @@ public class RetrieveLibrariesTask implements INCLifecycleTask {
         for (Pair<URI, String> referenceNode : nodes) {
             try {
                 LOGGER.info("Retrieving UDFs from "
-                        + NetworkUtil.toHostPort(URIUtils.extractHost(referenceNode.getFirst())));
-                retrieveLibrary(referenceNode.getFirst(), referenceNode.getSecond(), appContext);
+                        + NetworkUtil.toHostPort(URIUtils.extractHost(referenceNode.getLeft())));
+                retrieveLibrary(referenceNode.getLeft(), referenceNode.getRight(), appContext);
                 success = true;
                 break;
             } catch (HyracksDataException e) {
-                LOGGER.error("Unable to retrieve UDFs from: " + referenceNode.getFirst() + ", trying another node.", e);
+                LOGGER.error("Unable to retrieve UDFs from: " + referenceNode.getLeft() + ", trying another node.", e);
             }
         }
         if (!success) {
@@ -91,7 +91,9 @@ public class RetrieveLibrariesTask implements INCLifecycleTask {
             libraryManager.download(targetFileRef, authToken, libraryURI);
             Path outputDirPath = libraryManager.getStorageDir().getFile().toPath().toAbsolutePath().normalize();
             FileReference outPath = appContext.getIoManager().resolveAbsolutePath(outputDirPath.toString());
-            libraryManager.unzip(targetFileRef, outPath);
+            //we have to bypass limits here on the unzip, because this archive is all libraries, so potentially limit*N
+            //and knowing N here would be difficult since metadata is not available.
+            libraryManager.unzip(targetFileRef, outPath, false);
         } catch (IOException e) {
             LOGGER.error("Unable to retrieve UDFs from " + libraryURI.toString() + " before timeout");
             throw HyracksDataException.create(e);

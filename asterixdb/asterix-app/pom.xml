@@ -38,6 +38,7 @@
     <appendedResourcesDirectory>${basedir}/src/main/appended-resources</appendedResourcesDirectory>
     <sonar.sources>pom.xml,src/main/java,src/main/resources</sonar.sources>
     <pip.path>${project.build.directory}/bin/pip3</pip.path>
+    <pypip.path>${project.build.directory}/bin/python</pypip.path>
     <shiv.path>${project.build.directory}/bin/shiv</shiv.path>
     <asterix-test-datagenerator-maven-plugin.version>${project.version}</asterix-test-datagenerator-maven-plugin.version>
   </properties>
@@ -80,6 +81,8 @@
           <!-- there is no .git directory when building from a source assembly- a static git.properties file (generated
                at source assembly time) is used in this case -->
           <failOnNoGitDirectory>false</failOnNoGitDirectory>
+          <!-- never contact a remote to compute git.local.branch.ahead/behind -->
+          <offline>true</offline>
         </configuration>
       </plugin>
       <plugin>
@@ -109,7 +112,7 @@
       <plugin>
         <groupId>com.googlecode.maven-download-plugin</groupId>
         <artifactId>download-maven-plugin</artifactId>
-        <version>1.4.2</version>
+        <version>1.13.0</version>
         <executions>
           <execution>
             <id>install-fake-gcs</id>
@@ -184,7 +187,7 @@
             <configuration>
               <includeClassifiers>testlib</includeClassifiers>
               <outputDirectory>target/data/externallib</outputDirectory>
-              <overwrite>true</overwrite>
+              <overWriteIfNewer>true</overWriteIfNewer>
               <stripVersion>true</stripVersion>
             </configuration>
           </execution>
@@ -282,35 +285,14 @@
                 <argument>${project.build.directory}${file.separator}TweetSent.pyz</argument>
                 <argument>--site-packages</argument>
                 <argument>${project.build.directory}${file.separator}..${file.separator}src${file.separator}test${file.separator}resources${file.separator}TweetSent</argument>
-                <argument>scikit-learn</argument>
+                <argument>--prefer-binary</argument>
+                <argument>msgpack</argument>
+                <argument>numpy</argument>
               </arguments>
               <environmentVariables>
                 <VIRTUALENV>${project.build.directory}</VIRTUALENV>
                 <PATH>${project.build.directory}${path.separator}${env.PATH}${file.separator}bin</PATH>
               </environmentVariables>
-            </configuration>
-          </execution>
-          <execution>
-            <id>azurite</id>
-            <phase>${azurite.stage}</phase>
-            <goals>
-              <goal>exec</goal>
-            </goals>
-            <configuration>
-              <!--suppress UnresolvedMavenProperty -->
-              <executable>${project.build.directory}/npm/node_modules/.bin/azurite-blob</executable>
-              <workingDirectory>${project.build.directory}</workingDirectory>
-              <environmentVariables>
-                <PATH>${project.build.directory}/npm/node</PATH>
-              </environmentVariables>
-              <arguments>
-                <argument>--blobPort</argument>
-                <argument>15055</argument>
-                <argument>--location</argument>
-                <argument>${project.build.directory}/azurite</argument>
-              </arguments>
-              <async>true</async>
-              <outputFile>${project.build.directory}/azurite/logs/azurite.log</outputFile>
             </configuration>
           </execution>
           <execution>
@@ -337,6 +319,88 @@
               <async>true</async>
             </configuration>
           </execution>
+          <execution>
+            <id>clone-ch2</id>
+            <phase>${prepare-env.stage}</phase>
+            <goals>
+              <goal>exec</goal>
+            </goals>
+            <configuration>
+              <executable>git</executable>
+              <arguments>
+                <argument>clone</argument>
+                <argument>https://github.com/couchbaselabs/ch2.git</argument>
+                <argument>${project.build.directory}/ch2</argument>
+              </arguments>
+            </configuration>
+          </execution>
+          <execution>
+          <id>checkout-ch2</id>
+          <phase>${prepare-env.stage}</phase>
+          <goals>
+            <goal>exec</goal>
+          </goals>
+          <configuration>
+            <executable>git</executable>
+            <workingDirectory>${project.build.directory}/ch2</workingDirectory>
+            <arguments>
+              <argument>checkout</argument>
+              <argument>f8fea792672c3bcb1c40166fcabda48e8aac4942</argument>
+            </arguments>
+          </configuration>
+          </execution>
+          <execution>
+            <id>numpy-install</id>
+            <phase>${prepare-env.stage}</phase>
+            <goals>
+              <goal>exec</goal>
+            </goals>
+            <configuration>
+              <executable>${pip.path}</executable>
+              <workingDirectory>${project.build.directory}</workingDirectory>
+              <arguments>
+                <argument>install</argument>
+                <argument>--prefer-binary</argument>
+                <argument>-r </argument>
+                <argument>ch2/requirements.txt</argument>
+              </arguments>
+              <environmentVariables>
+                <VIRTUALENV>${project.build.directory}</VIRTUALENV>
+                <PATH>${project.build.directory}${path.separator}${env.PATH}${file.separator}bin</PATH>
+              </environmentVariables>
+            </configuration>
+          </execution>
+          <execution>
+            <id>ch2-datagen</id>
+            <phase>${prepare-env.stage}</phase>
+            <goals>
+              <goal>exec</goal>
+            </goals>
+            <configuration>
+              <executable>${pypip.path}</executable>
+              <workingDirectory>${project.build.directory}/ch2/ch2driver/pytpcc</workingDirectory>
+              <arguments>
+                <argument>tpcc.py</argument>
+                <argument>nestcollectionsdocgen</argument>
+                <argument>--warehouses</argument>
+                <argument>1</argument>
+                <argument>--tclients</argument>
+                <argument>1</argument>
+                <argument>--no-execute</argument>
+                <argument>--bulkload-batch-size</argument>
+                <argument>100000000</argument>
+                <argument>--docgen-load</argument>
+                <argument>--datagenSeed</argument>
+                <argument>12345</argument>
+                <argument>--config</argument>
+                <argument>${project.basedir}/src/test/resources/ch2_docgen.conf</argument>
+              </arguments>
+              <environmentVariables>
+                <VIRTUALENV>${project.build.directory}</VIRTUALENV>
+                <PATH>${project.build.directory}${path.separator}${env.PATH}${file.separator}bin</PATH>
+              </environmentVariables>
+            </configuration>
+          </execution>
         </executions>
       </plugin>
       <plugin>
@@ -358,6 +422,8 @@
                 <exclude>src/test/resources/**/results/**</exclude>
                 <exclude>src/test/resources/**/results_cbo/**</exclude>
                 <exclude>src/test/resources/**/results_column/**</exclude>
+                <exclude>src/test/resources/**/results_cloud/**</exclude>
+                <exclude>src/test/resources/**/results_ncservice/**</exclude>
                 <exclude>src/test/resources/**/results_less_parallelism/**</exclude>
                 <exclude>src/test/resources/**/results_full_parallelism/**</exclude>
                 <exclude>src/test/resources/fuzzyjoin/pub/fuzzy-join-aql*.dot</exclude>
@@ -420,6 +486,14 @@
           </execution>
         </executions>
       </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+      </plugin>
     </plugins>
     <pluginManagement>
       <plugins>
@@ -427,7 +501,6 @@
         <plugin>
           <groupId>org.eclipse.m2e</groupId>
           <artifactId>lifecycle-mapping</artifactId>
-          <version>1.0.0</version>
           <configuration>
             <lifecycleMappingMetadata>
               <pluginExecutions>
@@ -482,11 +555,11 @@
       <id>asterix-gerrit-asterix-app</id>
       <properties>
         <test.excludes>
-          **/CloudStorageTest.java,**/CloudStorageGCSTest.java,**/CloudStorageUnstableTest.java,
+          **/CloudStorageTest.java,**/CloudStorageSparseTest,**/CloudStorageCancellationTest.java,**/CloudStorageGCSTest.java,**/CloudStorageUnstableTest.java,
           **/SqlppExecutionWithCancellationTest.java,**/DmlTest.java,**/RepeatedTest.java,**/SqlppExecutionTest.java,
           **/SqlppExecutionColumnTest.java,**/*StaticPartitioning*Test.java,**/*Ssl*Test.java,**/Podman*.java,
-          **/*AnalyzedExecutionTest.java,**/SqlppProfiledExecutionTest.java,**/CloudPythonTest.java,
-          **/CloudStorageAzTest.java,**/AzureBlobStorageExternalDatasetTest.java,
+          **/*AnalyzedExecutionTest.java,**/SqlppProfiledExecutionTest.java,**/CloudPython*Test.java,
+          **/CloudStorageAzTest.java,**/AzureBlobStorageExternalDatasetTest.java,**/GCSCloudStorageUnstableTest,
           **/AzureBlobStorageExternalDatasetOnePartitionTest.java,**/SqlppSinglePointLookupExecutionTest.java,
           **/Atomic*.java, **/AwsS3*.java, **/*SqlppHdfs*.java, **/*RQGTest.java, **/*RQJTest.java
         </test.excludes>
@@ -496,20 +569,43 @@
     <profile>
       <id>asterix-gerrit-asterix-app-sql-execution</id>
       <properties>
-        <test.includes>**/SqlppProfiledExecutionTest.java,**/SqlppExecutionTest.java</test.includes>
+        <test.includes>
+          **/SqlppProfiledExecutionTest.java,**/SqlppExecutionTest.java,**/CloudPython*Test.java
+        </test.includes>
         <itest.includes>
-          **/SqlppExecution*IT.java,**/ExternalPythonFunctionIT.java,**/CloudPythonTest.java
+          **/SqlppExecution*IT.java,**/ExternalPythonFunctionIT.java
         </itest.includes>
         <failIfNoTests>false</failIfNoTests>
       </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <failIfNoTests>false</failIfNoTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
     <profile>
       <id>asterix-gerrit-asterix-app-sql-rqg</id>
       <properties>
         <test.includes>**/*RQGTest.java, **/*RQJTest.java</test.includes>
         <itest.includes>**/SqlppRQG*IT.java</itest.includes>
-        <failIfNoTests>false</failIfNoTests>
       </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <failIfNoTests>false</failIfNoTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
     <profile>
       <id>asterix-gerrit-ssl-compression</id>
@@ -518,8 +614,18 @@
           **/SqlppExecutionColumnTest.java,**/*Ssl*Test.java
         </test.includes>
         <itest.excludes>**/*.java</itest.excludes>
-        <failIfNoTests>false</failIfNoTests>
       </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <failIfNoTests>false</failIfNoTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
     <profile>
       <id>asterix-gerrit-verify-asterix-app</id>
@@ -530,20 +636,50 @@
         <itest.excludes>**/External*IT.java,**/SqlppExecution*IT.java,**/RebalanceWithCancellationIT.java,**/SqlppRQG*IT.java</itest.excludes>
         <failIfNoTests>false</failIfNoTests>
       </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <failIfNoTests>false</failIfNoTests>
+            </configuration>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <failIfNoTests>false</failIfNoTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
     <profile>
       <id>asterix-gerrit-rebalance-cancellation</id>
       <properties>
         <test.excludes>**/*.java</test.excludes>
         <itest.includes>**/RebalanceWithCancellationIT.java</itest.includes>
-        <failIfNoTests>false</failIfNoTests>
       </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <failIfNoTests>false</failIfNoTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
     <profile>
       <id>asterix-gerrit-cloud-tests</id>
       <properties>
         <test.includes>
           **/CloudStorageTest.java,
+          **/CloudStorageSparseTest.java,
+          **/CloudStorageCancellationTest.java,
           **/SqlppSinglePointLookupExecutionTest.java, **/AwsS3*.java
         </test.includes>
         <failIfNoTests>false</failIfNoTests>
@@ -553,48 +689,11 @@
       <id>asterix-gerrit-cloud-nons3-tests</id>
       <properties>
         <test.includes>
-          **/CloudStorageGCSTest.java, **/CloudStorageAzTest.java,**/AzureBlobStorageExternalDatasetTest.java,
+          **/GCSCloudStorageUnstableTest.java,**/CloudStorageAzTest.java,**/AzureBlobStorageExternalDatasetTest.java,
           **/AzureBlobStorageExternalDatasetOnePartitionTest.java,**/CloudStorageUnstableTest.java, **/*SqlppHdfs*.java
         </test.includes>
         <failIfNoTests>false</failIfNoTests>
       </properties>
-    </profile>
-    <profile>
-        <id>azurite-tests</id>
-        <build>
-            <plugins>
-                <plugin>
-                    <groupId>com.github.eirslett</groupId>
-                    <artifactId>frontend-maven-plugin</artifactId>
-                    <version>1.13.4</version>
-                    <configuration>
-                        <nodeVersion>v14.15.4</nodeVersion>
-                        <npmVersion>6.14.11</npmVersion>
-                        <workingDirectory>target/npm</workingDirectory>
-                        <installDirectory>target/npm</installDirectory>
-                    </configuration>
-                    <executions>
-                        <execution>
-                            <id>install node and yarn</id>
-                            <goals>
-                                <goal>install-node-and-npm</goal>
-                            </goals>
-                            <phase>${azurite.npm.install.stage}</phase>
-                        </execution>
-                        <execution>
-                            <id>azurite blob</id>
-                            <phase>${azurite.install.stage}</phase>
-                            <goals>
-                                <goal>npm</goal>
-                            </goals>
-                            <configuration>
-                                <arguments>install azurite@3.31.0</arguments>
-                            </configuration>
-                        </execution>
-                    </executions>
-                </plugin>
-            </plugins>
-        </build>
     </profile>
   </profiles>
   <dependencies>
@@ -636,6 +735,10 @@
       <groupId>org.apache.asterix</groupId>
       <artifactId>asterix-metadata</artifactId>
       <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.sis.core</groupId>
+      <artifactId>sis-referencing</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.asterix</groupId>
@@ -763,6 +866,35 @@
     <dependency>
       <groupId>org.apache.httpcomponents</groupId>
       <artifactId>httpclient</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.httpcomponents.client5</groupId>
+      <artifactId>httpclient5</artifactId>
+      <version>5.6.5</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.projectreactor.netty</groupId>
+      <artifactId>reactor-netty</artifactId>
+      <scope>test</scope>
+        <exclusions>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-classes-epoll</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-epoll</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-kqueue</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-classes-kqueue</artifactId>
+          </exclusion>
+       </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.asterix</groupId>
@@ -923,6 +1055,18 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
+      <groupId>org.apache.asterix</groupId>
+      <artifactId>asterix-cloud</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>azure</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>postgresql</artifactId>
       <scope>test</scope>
@@ -999,14 +1143,8 @@
     </dependency>
     <dependency>
       <groupId>com.adobe.testing</groupId>
-      <artifactId>s3mock</artifactId>
+      <artifactId>s3mock-testcontainers</artifactId>
       <scope>test</scope>
-      <exclusions>
-        <exclusion>
-          <groupId>org.springframework.boot</groupId>
-          <artifactId>spring-boot-starter-logging</artifactId>
-        </exclusion>
-      </exclusions>
     </dependency>
     <!-- Mock for AWS S3 -->
     <dependency>
@@ -1039,6 +1177,11 @@
       <artifactId>google-cloud-storage</artifactId>
     </dependency>
     <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-netty</artifactId>
+    </dependency>
+    <!-- Needed for inferring the schema for writing Parquet files -->
+    <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-core</artifactId>
       <scope>test</scope>
@@ -1046,15 +1189,48 @@
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-data</artifactId>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-parquet</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.projectnessie.nessie</groupId>
+      <artifactId>nessie-model</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.projectnessie.nessie</groupId>
+      <artifactId>nessie-client</artifactId>
     </dependency>
     <dependency>
       <groupId>tech.allegro.schema.json2avro</groupId>
       <artifactId>converter</artifactId>
-      <version>0.2.15</version>
+      <version>0.3.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client-runtime</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.freemarker</groupId>
+      <artifactId>freemarker</artifactId>
+      <version>2.3.35</version>
+      <scope>test</scope>
+   </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <version>1.86</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <version>1.86</version>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 </project>

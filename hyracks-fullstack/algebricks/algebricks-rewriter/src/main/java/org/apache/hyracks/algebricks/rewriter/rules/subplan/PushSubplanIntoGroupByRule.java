@@ -33,9 +33,9 @@ import java.util.Set;
 
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.common.utils.ListSet;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -212,7 +212,7 @@ public class PushSubplanIntoGroupByRule implements IAlgebraicRewriteRule {
                                     OperatorManipulationUtil.deepCopyWithNewVars(
                                             originalDestOpNestedPlanRootRef.getValue(), context, false);
                             ILogicalOperator copiedDestOpNestedPlanRootRef =
-                                    copiedDestOpNestedPlanRootRefAndVarMap.first;
+                                    copiedDestOpNestedPlanRootRefAndVarMap.getLeft();
 
                             AggregateOperator originalAggOp =
                                     (AggregateOperator) originalDestOpNestedPlanRootRef.getValue();
@@ -227,7 +227,7 @@ public class PushSubplanIntoGroupByRule implements IAlgebraicRewriteRule {
                             // Substitutes variables in the upper nested plan.
                             ILogicalOperator upperSubplanRoot = upperSubplanRootRef.getValue();
                             VariableUtilities.substituteVariablesInDescendantsAndSelf(upperSubplanRoot,
-                                    copiedDestOpNestedPlanRootRefAndVarMap.second, context);
+                                    copiedDestOpNestedPlanRootRefAndVarMap.getRight(), context);
 
                             // Does the actual push.
                             Mutable<ILogicalOperator> copiedDestOpNestedPlanNtsRef = Objects
@@ -237,6 +237,7 @@ public class PushSubplanIntoGroupByRule implements IAlgebraicRewriteRule {
 
                             if (needInnerSubplan) {
                                 SubplanOperator newInnerSubplan = new SubplanOperator(copiedDestOpNestedPlanRootRef);
+                                newInnerSubplan.setFailSafe(upperSubplan.isFailSafe());
                                 NestedTupleSourceOperator newNts =
                                         new NestedTupleSourceOperator(new MutableObject<>(destOp));
                                 newInnerSubplan.getInputs().add(new MutableObject<>(newNts));
@@ -350,6 +351,7 @@ public class PushSubplanIntoGroupByRule implements IAlgebraicRewriteRule {
             ILogicalOperator destOpRoot = destOpRootRef.getValue();
             if (!destOpRootRefs.isEmpty()) {
                 SubplanOperator newSubplanOp = new SubplanOperator(destOpRoot);
+                newSubplanOp.setFailSafe(destOp.isFailSafe());
                 newSubplanOp.setSourceLocation(destOp.getSourceLocation());
                 newSubplanOp.getInputs().add(new MutableObject<>(currentInputOp));
 

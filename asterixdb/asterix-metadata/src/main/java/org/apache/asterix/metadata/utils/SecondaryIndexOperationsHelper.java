@@ -31,6 +31,7 @@ import org.apache.asterix.common.config.DatasetConfig.DatasetType;
 import org.apache.asterix.common.config.OptimizationConfUtil;
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.storage.IndexCompletionMode;
 import org.apache.asterix.common.utils.StoragePathUtil;
 import org.apache.asterix.formats.base.IDataFormat;
 import org.apache.asterix.formats.nontagged.BinaryBooleanInspector;
@@ -58,10 +59,10 @@ import org.apache.asterix.runtime.evaluators.functions.NotDescriptor;
 import org.apache.asterix.runtime.evaluators.functions.OrDescriptor;
 import org.apache.asterix.runtime.operators.LSMIndexBulkLoadOperatorDescriptor;
 import org.apache.asterix.runtime.operators.LSMIndexBulkLoadOperatorDescriptor.BulkLoadUsage;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraintHelper;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
 import org.apache.hyracks.algebricks.data.ISerializerDeserializerProvider;
 import org.apache.hyracks.algebricks.runtime.base.IPushRuntimeFactory;
@@ -139,11 +140,11 @@ public abstract class SecondaryIndexOperationsHelper implements ISecondaryIndexO
         ARecordType recordType = (ARecordType) metadataProvider.findType(dataset.getItemTypeDatabaseName(),
                 dataset.getItemTypeDataverseName(), dataset.getItemTypeName());
         this.metaType = DatasetUtil.getMetaType(metadataProvider, dataset);
-        this.itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(recordType, metaType, dataset);
+        this.itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(recordType, dataset);
 
         Pair<ARecordType, ARecordType> enforcedTypes = getEnforcedType(index, itemType, metaType);
-        this.enforcedItemType = enforcedTypes.first;
-        this.enforcedMetaType = enforcedTypes.second;
+        this.enforcedItemType = enforcedTypes.getLeft();
+        this.enforcedMetaType = enforcedTypes.getRight();
         this.sourceLoc = sourceLoc;
         this.sortNumFrames = getSortNumFrames(metadataProvider, sourceLoc);
     }
@@ -152,13 +153,14 @@ public abstract class SecondaryIndexOperationsHelper implements ISecondaryIndexO
             ARecordType metaRecordType) throws AlgebricksException {
         return index.getIndexDetails().isOverridingKeyFieldTypes()
                 ? TypeUtil.createEnforcedType(aRecordType, metaRecordType, Collections.singletonList(index))
-                : new Pair<>(null, null);
+                : Pair.of(null, null);
     }
 
     private static int getSortNumFrames(MetadataProvider metadataProvider, SourceLocation sourceLoc)
             throws AlgebricksException {
         return OptimizationConfUtil.getSortNumFrames(metadataProvider.getApplicationContext().getCompilerProperties(),
-                metadataProvider.getConfig(), sourceLoc);
+                metadataProvider.getConfig(), sourceLoc,
+                metadataProvider.getApplicationContext().getCompilerProperties().getFrameSize());
     }
 
     public static ISecondaryIndexOperationsHelper createIndexOperationsHelper(Dataset dataset, Index index,
@@ -173,6 +175,10 @@ public abstract class SecondaryIndexOperationsHelper implements ISecondaryIndexO
                 break;
             case BTREE:
                 indexOperationsHelper = new SecondaryBTreeOperationsHelper(dataset, index, metadataProvider, sourceLoc);
+                break;
+            case VTREE:
+                indexOperationsHelper =
+                        new SecondaryVectorOperationsHelper(dataset, index, metadataProvider, sourceLoc);
                 break;
             case RTREE:
                 ensureNotColumnar(dataset, indexType, sourceLoc);
@@ -213,10 +219,18 @@ public abstract class SecondaryIndexOperationsHelper implements ISecondaryIndexO
     }
 
     @Override
-    public abstract JobSpecification buildCreationJobSpec() throws AlgebricksException;
+    public abstract JobSpecification buildCreationJobSpec(IndexCompletionMode completionMode)
+            throws AlgebricksException;
 
     @Override
     public abstract JobSpecification buildLoadingJobSpec() throws AlgebricksException;
+
+    @Override
+    public JobSpecification buildStaticStructureJobSpec() throws AlgebricksException {
+        // Default implementation - only VECTOR indexes support static structure creation
+        throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE, sourceLoc,
+                "a static-structure job was requested for index type " + index.getIndexType());
+    }
 
     @Override
     public abstract JobSpecification buildCompactJobSpec() throws AlgebricksException;
@@ -256,8 +270,8 @@ public abstract class SecondaryIndexOperationsHelper implements ISecondaryIndexO
         numElementsHint = metadataProvider.getCardinalityPerPartitionHint(dataset);
         Pair<ILSMMergePolicyFactory, Map<String, String>> compactionInfo =
                 DatasetUtil.getMergePolicyFactory(dataset, metadataProvider.getMetadataTxnContext());
-        mergePolicyFactory = compactionInfo.first;
-        mergePolicyProperties = compactionInfo.second;
+        mergePolicyFactory = compactionInfo.getLeft();
+        mergePolicyProperties = compactionInfo.getRight();
         if (numFilterFields > 0) {
             setFilterTypeTraitsAndComparators();
         }
@@ -329,9 +343,10 @@ public abstract class SecondaryIndexOperationsHelper implements ISecondaryIndexO
             throws AlgebricksException {
         IFunctionManager funManger = metadataProvider.getFunctionManager();
         IDataFormat dataFormat = metadataProvider.getDataFormat();
-        //if the target type is "BuiltinType.ANY" there is no need to cast. If not we have to cast.
         if (ATypeTag.ANY.equals(targetType.getTypeTag())) {
-            return fieldEvalFactory;
+            // this is to ensure records and lists values are in the open format
+            IScalarEvaluatorFactory[] castArg = new IScalarEvaluatorFactory[] { fieldEvalFactory };
+            return createCastFunction(targetType, BuiltinType.ANY, true, sourceLoc).createEvaluatorFactory(castArg);
         }
 
         // check IndexUtil.castDefaultNull(index), too, because we always want to cast even if the overriding type is
@@ -363,13 +378,13 @@ public abstract class SecondaryIndexOperationsHelper implements ISecondaryIndexO
         IAType targetType = TypeComputeUtils.getActualType(fieldType);
         Pair<FunctionIdentifier, IAObject> constructorWithFmt =
                 IndexUtil.getTypeConstructorDefaultNull(index, targetType, sourceLoc);
-        FunctionIdentifier typeConstructorFun = constructorWithFmt.first;
+        FunctionIdentifier typeConstructorFun = constructorWithFmt.getLeft();
         IFunctionDescriptor typeConstructor = funManager.lookupFunction(typeConstructorFun, sourceLoc);
         IScalarEvaluatorFactory[] args;
         // add the format argument if specified
-        if (constructorWithFmt.second != null) {
+        if (constructorWithFmt.getRight() != null) {
             IScalarEvaluatorFactory fmtEvalFactory =
-                    dataFormat.getConstantEvalFactory(new AsterixConstantValue(constructorWithFmt.second));
+                    dataFormat.getConstantEvalFactory(new AsterixConstantValue(constructorWithFmt.getRight()));
             args = new IScalarEvaluatorFactory[] { fieldEvalFactory, fmtEvalFactory };
         } else {
             args = new IScalarEvaluatorFactory[] { fieldEvalFactory };
@@ -482,7 +497,7 @@ public abstract class SecondaryIndexOperationsHelper implements ISecondaryIndexO
         LSMIndexBulkLoadOperatorDescriptor treeIndexBulkLoadOp = new LSMIndexBulkLoadOperatorDescriptor(spec,
                 secondaryRecDesc, fieldPermutation, fillFactor, false, numElementsHint, false, dataflowHelperFactory,
                 primaryIndexDataflowHelperFactory, BulkLoadUsage.CREATE_INDEX, dataset.getDatasetId(), null,
-                partitionerFactory, partitioningProperties.getComputeStorageMap());
+                partitionerFactory, partitioningProperties.getComputeStorageMap(), true);
         treeIndexBulkLoadOp.setSourceLocation(sourceLoc);
         AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(spec, treeIndexBulkLoadOp,
                 secondaryPartitionConstraint);
@@ -584,7 +599,7 @@ public abstract class SecondaryIndexOperationsHelper implements ISecondaryIndexO
             FileSplit[] fileSplits = partitioningProperties.getSplitsProvider().getFileSplits();
             Pair<IFileSplitProvider, AlgebricksPartitionConstraint> sp =
                     StoragePathUtil.splitProviderAndPartitionConstraints(fileSplits);
-            return PartitioningProperties.of(sp.getFirst(), sp.getSecond(),
+            return PartitioningProperties.of(sp.getLeft(), sp.getRight(),
                     DataPartitioningProvider.getOneToOnePartitionsMap(fileSplits.length));
         }
         return partitioningProperties;

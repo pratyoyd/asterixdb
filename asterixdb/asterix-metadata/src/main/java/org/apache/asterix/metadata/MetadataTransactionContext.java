@@ -27,7 +27,9 @@ import org.apache.asterix.common.metadata.DataverseName;
 import org.apache.asterix.common.metadata.MetadataUtil;
 import org.apache.asterix.common.transactions.TxnId;
 import org.apache.asterix.external.dataset.adapter.AdapterIdentifier;
+import org.apache.asterix.metadata.entities.Catalog;
 import org.apache.asterix.metadata.entities.CompactionPolicy;
+import org.apache.asterix.metadata.entities.CoordinateReferenceSystem;
 import org.apache.asterix.metadata.entities.Database;
 import org.apache.asterix.metadata.entities.Dataset;
 import org.apache.asterix.metadata.entities.DatasourceAdapter;
@@ -163,6 +165,16 @@ public class MetadataTransactionContext extends MetadataCache {
         logAndApply(new MetadataLogicalOperation(feedConnection, true));
     }
 
+    public void addCatalog(Catalog catalog) {
+        droppedCache.dropCatalog(catalog);
+        logAndApply(new MetadataLogicalOperation(catalog, true));
+    }
+
+    public void addCRS(CoordinateReferenceSystem crs) {
+        droppedCache.dropCrs(crs);
+        logAndApply(new MetadataLogicalOperation(crs, true));
+    }
+
     public void dropDataset(String database, DataverseName dataverseName, String datasetName) {
         Dataset dataset = new Dataset(database, dataverseName, datasetName, null, null, null, null, null, null, null,
                 null, null, -1, MetadataUtil.PENDING_NO_OP, null);
@@ -203,7 +215,7 @@ public class MetadataTransactionContext extends MetadataCache {
 
     public void dropFunction(FunctionSignature signature) {
         Function function = new Function(signature, null, null, null, null, null, null, null, null, null, null, false,
-                false, null, null, null);
+                false, false, null, null, null, false);
         droppedCache.addFunctionIfNotExists(function);
         logAndApply(new MetadataLogicalOperation(function, false));
     }
@@ -259,6 +271,18 @@ public class MetadataTransactionContext extends MetadataCache {
                 new FeedConnection(database, dataverseName, feedName, datasetName, null, null, null, null);
         droppedCache.addFeedConnectionIfNotExists(feedConnection);
         logAndApply(new MetadataLogicalOperation(feedConnection, false));
+    }
+
+    public void dropCatalog(String catalogName) {
+        Catalog catalog = new Catalog(catalogName, null, MetadataUtil.PENDING_NO_OP, null);
+        droppedCache.addCatalogIfNotExists(catalog);
+        logAndApply(new MetadataLogicalOperation(catalog, false));
+    }
+
+    public void dropCRS(String database, DataverseName dataverseName, int srid) {
+        CoordinateReferenceSystem crs = new CoordinateReferenceSystem(database, dataverseName, srid, null, null);
+        droppedCache.addCrsIfNotExists(crs);
+        logAndApply(new MetadataLogicalOperation(crs, false));
     }
 
     public void logAndApply(MetadataLogicalOperation op) {
@@ -328,6 +352,14 @@ public class MetadataTransactionContext extends MetadataCache {
     public boolean fullTextFilterIsDropped(String databaseName, DataverseName dataverseName, String filterName) {
         //TODO(DB): check database and dataverse first?
         return droppedCache.getFullTextFilter(databaseName, dataverseName, filterName) != null;
+    }
+
+    public boolean catalogIsDropped(String catalogName) {
+        return droppedCache.getCatalog(catalogName) != null;
+    }
+
+    public boolean crsIsDropped(String database, DataverseName dataverseName, int srid) {
+        return droppedCache.getCrs(database, dataverseName, srid) != null;
     }
 
     public List<MetadataLogicalOperation> getOpLog() {

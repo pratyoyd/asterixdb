@@ -18,8 +18,8 @@
  */
 package org.apache.asterix.external.library.msgpack;
 
-import static org.apache.hyracks.util.string.UTF8StringUtil.getUTFLength;
 import static org.msgpack.core.MessagePack.Code.ARRAY32;
+import static org.msgpack.core.MessagePack.Code.BIN32;
 import static org.msgpack.core.MessagePack.Code.FALSE;
 import static org.msgpack.core.MessagePack.Code.FLOAT32;
 import static org.msgpack.core.MessagePack.Code.FLOAT64;
@@ -39,6 +39,7 @@ import java.util.List;
 import org.apache.asterix.common.exceptions.AsterixException;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.dataflow.data.nontagged.printers.PrintTools;
+import org.apache.asterix.dataflow.data.nontagged.serde.ABinarySerializerDeserializer;
 import org.apache.asterix.dataflow.data.nontagged.serde.ABooleanSerializerDeserializer;
 import org.apache.asterix.dataflow.data.nontagged.serde.ADoubleSerializerDeserializer;
 import org.apache.asterix.dataflow.data.nontagged.serde.AFloatSerializerDeserializer;
@@ -85,6 +86,8 @@ public class MsgPackAccessors {
                 return MsgPackDoubleAccessor::apply;
             case STRING:
                 return MsgPackStringAccessor::apply;
+            case BINARY:
+                return MsgPackBinaryAccessor::apply;
             case MISSING:
             case NULL:
                 return MsgPackNullAccessor::apply;
@@ -176,12 +179,26 @@ public class MsgPackAccessors {
             byte[] b = pointable.getByteArray();
             int s = pointable.getStartOffset();
             out.writeByte(STR32);
-            final int calculatedLength = getUTFLength(b, s + 1);
+            // msgpack strings are standard UTF-8, in which a supplementary character occupies 4 bytes rather than
+            // the 6 it takes as a modified-UTF8 surrogate pair, so the stored length would overstate the payload
+            final int calculatedLength = PrintTools.getUTF8StringRawLength(b, s + 1);
             out.writeInt(calculatedLength);
             PrintTools.writeUTF8StringRaw(b, s + 1, calculatedLength, out);
             return null;
         }
 
+    }
+
+    public static class MsgPackBinaryAccessor {
+        public static Void apply(IPointable pointable, DataOutput out) throws IOException {
+            byte[] b = pointable.getByteArray();
+            int s = pointable.getStartOffset();
+            int contentLength = ABinarySerializerDeserializer.getContentLength(b, s + 1);
+            out.writeByte(BIN32);
+            out.writeInt(contentLength);
+            out.write(b, s + 1 + ABinarySerializerDeserializer.getMetaLength(contentLength), contentLength);
+            return null;
+        }
     }
 
     public static class MsgPackBooleanAccessor {

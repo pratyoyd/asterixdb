@@ -22,10 +22,16 @@ import static org.apache.hyracks.control.common.config.OptionTypes.BOOLEAN;
 import static org.apache.hyracks.control.common.config.OptionTypes.DOUBLE;
 import static org.apache.hyracks.control.common.config.OptionTypes.INTEGER;
 import static org.apache.hyracks.control.common.config.OptionTypes.INTEGER_BYTE_UNIT;
+import static org.apache.hyracks.control.common.config.OptionTypes.LONG;
 import static org.apache.hyracks.control.common.config.OptionTypes.LONG_BYTE_UNIT;
 import static org.apache.hyracks.control.common.config.OptionTypes.NONNEGATIVE_INTEGER;
 import static org.apache.hyracks.control.common.config.OptionTypes.POSITIVE_INTEGER;
+import static org.apache.hyracks.control.common.config.OptionTypes.POSITIVE_INTEGER_BYTE_UNIT;
+import static org.apache.hyracks.control.common.config.OptionTypes.POSITIVE_LONG_BYTE_UNIT;
 import static org.apache.hyracks.control.common.config.OptionTypes.STRING;
+import static org.apache.hyracks.control.common.config.OptionTypes.getRangedDoubleType;
+import static org.apache.hyracks.control.common.config.OptionTypes.getRangedIntegerType;
+import static org.apache.hyracks.control.common.config.OptionTypes.getRangedLongByteUnit;
 import static org.apache.hyracks.util.StorageUtil.StorageUnit.KILOBYTE;
 import static org.apache.hyracks.util.StorageUtil.StorageUnit.MEGABYTE;
 
@@ -40,29 +46,31 @@ import org.apache.hyracks.api.config.IOption;
 import org.apache.hyracks.api.config.IOptionType;
 import org.apache.hyracks.api.config.Section;
 import org.apache.hyracks.storage.common.buffercache.IBufferCache;
+import org.apache.hyracks.util.MXHelper;
 import org.apache.hyracks.util.StorageUtil;
 
 public class StorageProperties extends AbstractProperties {
 
     public enum Option implements IOption {
-        STORAGE_BUFFERCACHE_PAGESIZE(INTEGER_BYTE_UNIT, StorageUtil.getIntSizeInBytes(128, KILOBYTE)),
+        STORAGE_BUFFERCACHE_PAGESIZE(POSITIVE_INTEGER_BYTE_UNIT, StorageUtil.getIntSizeInBytes(128, KILOBYTE)),
         // By default, uses 1/4 of the maximum heap size for read cache, i.e., disk buffer cache.
-        STORAGE_BUFFERCACHE_SIZE(LONG_BYTE_UNIT, MAX_HEAP_BYTES / 4),
+        STORAGE_BUFFERCACHE_SIZE(POSITIVE_LONG_BYTE_UNIT, MAX_HEAP_BYTES / 4),
         STORAGE_BUFFERCACHE_MAXOPENFILES(NONNEGATIVE_INTEGER, Integer.MAX_VALUE),
-        STORAGE_MEMORYCOMPONENT_GLOBALBUDGET(LONG_BYTE_UNIT, MAX_HEAP_BYTES / 4),
-        STORAGE_MEMORYCOMPONENT_PAGESIZE(INTEGER_BYTE_UNIT, StorageUtil.getIntSizeInBytes(128, KILOBYTE)),
+        STORAGE_BUFFER_CACHE_MAX_OPEN_DESCRIPTORS(NONNEGATIVE_INTEGER, 0),
+        STORAGE_MEMORYCOMPONENT_GLOBALBUDGET(POSITIVE_LONG_BYTE_UNIT, MAX_HEAP_BYTES / 4),
+        STORAGE_MEMORYCOMPONENT_PAGESIZE(POSITIVE_INTEGER_BYTE_UNIT, StorageUtil.getIntSizeInBytes(128, KILOBYTE)),
         STORAGE_MEMORYCOMPONENT_NUMCOMPONENTS(POSITIVE_INTEGER, 2),
-        STORAGE_MEMORYCOMPONENT_FLUSH_THRESHOLD(DOUBLE, 0.9d),
+        STORAGE_MEMORYCOMPONENT_FLUSH_THRESHOLD(getRangedDoubleType(Double.MIN_VALUE, 1.0), 0.9d),
         STORAGE_MEMORYCOMPONENT_MAX_SCHEDULED_FLUSHES(NONNEGATIVE_INTEGER, 0),
         STORAGE_FILTERED_MEMORYCOMPONENT_MAX_SIZE(LONG_BYTE_UNIT, 0L),
-        STORAGE_LSM_BLOOMFILTER_FALSEPOSITIVERATE(DOUBLE, 0.01d),
+        STORAGE_LSM_BLOOMFILTER_FALSEPOSITIVERATE(getRangedDoubleType(Double.MIN_VALUE, 1.0), 0.01d),
         STORAGE_COMPRESSION_BLOCK(STRING, "snappy"),
         STORAGE_DISK_FORCE_BYTES(LONG_BYTE_UNIT, StorageUtil.getLongSizeInBytes(16, MEGABYTE)),
         STORAGE_IO_SCHEDULER(STRING, "greedy"),
         STORAGE_WRITE_RATE_LIMIT(LONG_BYTE_UNIT, 0L),
-        STORAGE_MAX_CONCURRENT_FLUSHES_PER_PARTITION(NONNEGATIVE_INTEGER, 2),
+        STORAGE_MAX_CONCURRENT_FLUSHES_PER_PARTITION(NONNEGATIVE_INTEGER, 1),
         STORAGE_MAX_SCHEDULED_MERGES_PER_PARTITION(NONNEGATIVE_INTEGER, 8),
-        STORAGE_MAX_CONCURRENT_MERGES_PER_PARTITION(NONNEGATIVE_INTEGER, 2),
+        STORAGE_MAX_CONCURRENT_MERGES_PER_PARTITION(NONNEGATIVE_INTEGER, 1),
         STORAGE_GLOBAL_CLEANUP(BOOLEAN, true),
         STORAGE_GLOBAL_CLEANUP_TIMEOUT(POSITIVE_INTEGER, (int) TimeUnit.MINUTES.toSeconds(10)),
         STORAGE_COLUMN_MAX_TUPLE_COUNT(NONNEGATIVE_INTEGER, 15000),
@@ -71,7 +79,20 @@ public class StorageProperties extends AbstractProperties {
         STORAGE_FORMAT(STRING, "row"),
         STORAGE_PARTITIONING(STRING, "dynamic"),
         STORAGE_PARTITIONS_COUNT(INTEGER, 8),
-        STORAGE_MAX_COMPONENT_SIZE(LONG_BYTE_UNIT, StorageUtil.getLongSizeInBytes(1, StorageUtil.StorageUnit.TERABYTE));
+        STORAGE_MAX_COMPONENT_SIZE(LONG_BYTE_UNIT, StorageUtil.getLongSizeInBytes(1, StorageUtil.StorageUnit.TERABYTE)),
+        STORAGE_COLUMN_BUFFER_SIZE(INTEGER_BYTE_UNIT, StorageUtil.getIntSizeInBytes(4, KILOBYTE)),
+        STORAGE_COLUMN_BUFFER_POOL_MAX_MEMORY(
+                getRangedLongByteUnit(0, MAX_HEAP_BYTES),
+                (Function<IApplicationConfig, Long>) config -> {
+                    if (MAX_HEAP_BYTES < SMALL_JVM_HEAP_SIZE) {
+                        return StorageUtil.getLongSizeInBytes(100, StorageUtil.StorageUnit.MEGABYTE);
+                    }
+                    return (long) (0.03 * MAX_HEAP_BYTES);
+                }),
+        STORAGE_COLUMN_BUFFER_POOL_MAX_SIZE(getRangedIntegerType(1, 50000), 8000),
+        STORAGE_COLUMN_BUFFER_ACQUIRE_TIMEOUT(LONG, TimeUnit.SECONDS.toMillis(120)),
+        STORAGE_MAX_SAMPLE_LEAF_ATTEMPTS(POSITIVE_INTEGER, 500),
+        STORAGE_SAMPLE_LEAF_DRAW_BATCH_SIZE(POSITIVE_INTEGER, 32768);
 
         private final IOptionType interpreter;
         private final Object defaultValue;
@@ -79,6 +100,11 @@ public class StorageProperties extends AbstractProperties {
         <T> Option(IOptionType<T> interpreter, T defaultValue) {
             this.interpreter = interpreter;
             this.defaultValue = defaultValue;
+        }
+
+        <T> Option(IOptionType<T> interpreter, Function<IApplicationConfig, T> defaultOption) {
+            this.interpreter = interpreter;
+            this.defaultValue = defaultOption;
         }
 
         @Override
@@ -95,6 +121,8 @@ public class StorageProperties extends AbstractProperties {
                 case STORAGE_COLUMN_MAX_TUPLE_COUNT:
                 case STORAGE_COLUMN_FREE_SPACE_TOLERANCE:
                 case STORAGE_COLUMN_MAX_LEAF_NODE_SIZE:
+                case STORAGE_MAX_SAMPLE_LEAF_ATTEMPTS:
+                case STORAGE_SAMPLE_LEAF_DRAW_BATCH_SIZE:
                     return Section.COMMON;
                 default:
                     return Section.NC;
@@ -111,6 +139,11 @@ public class StorageProperties extends AbstractProperties {
                             + " of the buffer cache page size.";
                 case STORAGE_BUFFERCACHE_MAXOPENFILES:
                     return "The maximum number of open files in the buffer cache";
+                case STORAGE_BUFFER_CACHE_MAX_OPEN_DESCRIPTORS:
+                    return "The number of OS file descriptors the buffer cache aims to hold at most. Beyond it, the"
+                            + " descriptors of the least recently used files with no I/O in progress and no unforced"
+                            + " writes are closed, and reopened on their next I/O. 0 means half of the process's"
+                            + " maximum number of open files, or unbounded where that limit cannot be determined";
                 case STORAGE_MEMORYCOMPONENT_GLOBALBUDGET:
                     return "The size of memory allocated to the memory components.  The value should be a multiple "
                             + "of the memory component page size";
@@ -163,6 +196,26 @@ public class StorageProperties extends AbstractProperties {
                             + " changed after any dataset has been created";
                 case STORAGE_MAX_COMPONENT_SIZE:
                     return "The resultant disk component after a merge must not exceed the specified maximum size.";
+                case STORAGE_COLUMN_BUFFER_SIZE:
+                    return "The size in bytes of each buffer in the column buffer pool.";
+                case STORAGE_COLUMN_BUFFER_POOL_MAX_MEMORY:
+                    return "The percentage of the JVM memory allocated to the column buffer pool. This controls the number of the column buffer relative to the total JVM memory.";
+                case STORAGE_COLUMN_BUFFER_POOL_MAX_SIZE:
+                    return "The maximum number of buffers in the column buffer pool.";
+                case STORAGE_COLUMN_BUFFER_ACQUIRE_TIMEOUT:
+                    return "The maximum time in milliseconds to wait for acquiring a buffer from the column buffer pool.";
+                case STORAGE_MAX_SAMPLE_LEAF_ATTEMPTS:
+                    return "The maximum number of attempts to find a random leaf page during B-tree sampling. "
+                            + "If exceeded, the sampling operation stops early and returns a smaller sample.";
+                case STORAGE_SAMPLE_LEAF_DRAW_BATCH_SIZE:
+                    return "The upper bound on the number of random draws performed per refill during B-tree "
+                            + "sampling. The effective batch size is the smaller of this value and the sample "
+                            + "still outstanding, so it has no effect on a sample smaller than it. It is retained "
+                            + "as a resource bound rather than a tuning knob: a sampling cursor allocates draw "
+                            + "buffers proportional to the batch size, so this caps them at about 0.5 MB per "
+                            + "cursor however large a sample is requested. Lowering it below the sample size only "
+                            + "costs I/O locality - batches are always consumed in full, so it cannot affect which "
+                            + "tuples the sample contains.";
                 default:
                     throw new IllegalStateException("NYI: " + this);
             }
@@ -185,11 +238,19 @@ public class StorageProperties extends AbstractProperties {
 
         @Override
         public boolean hidden() {
-            return this == STORAGE_GLOBAL_CLEANUP;
+            switch (this) {
+                case STORAGE_GLOBAL_CLEANUP:
+                case STORAGE_MAX_SAMPLE_LEAF_ATTEMPTS:
+                case STORAGE_SAMPLE_LEAF_DRAW_BATCH_SIZE:
+                    return true;
+                default:
+                    return false;
+            }
         }
     }
 
     public static final long MAX_HEAP_BYTES = Runtime.getRuntime().maxMemory();
+    public static final long SMALL_JVM_HEAP_SIZE = StorageUtil.getByteValue("8 GB");
     private static final int SYSTEM_RESERVED_DATASETS = 0;
 
     public StorageProperties(PropertiesAccessor accessor) {
@@ -206,6 +267,20 @@ public class StorageProperties extends AbstractProperties {
 
     public int getBufferCacheMaxOpenFiles() {
         return accessor.getInt(Option.STORAGE_BUFFERCACHE_MAXOPENFILES);
+    }
+
+    /**
+     * @return the configured descriptor bound, or when it is 0, half the process's open file limit, leaving the rest
+     *         for sockets, logs and everything else the process opens; {@link Integer#MAX_VALUE} (unbounded) if that
+     *         limit cannot be determined
+     */
+    public int getBufferCacheMaxOpenDescriptors() {
+        int configured = accessor.getInt(Option.STORAGE_BUFFER_CACHE_MAX_OPEN_DESCRIPTORS);
+        if (configured > 0) {
+            return configured;
+        }
+        long processLimit = MXHelper.getMaxOpenFileCount();
+        return processLimit > 1 ? (int) Math.min(processLimit / 2, Integer.MAX_VALUE) : Integer.MAX_VALUE;
     }
 
     public int getMemoryComponentPageSize() {
@@ -233,6 +308,41 @@ public class StorageProperties extends AbstractProperties {
         return accessor.getDouble(Option.STORAGE_LSM_BLOOMFILTER_FALSEPOSITIVERATE);
     }
 
+    public int getMaxSampleLeafAttempts() {
+        return accessor.getInt(Option.STORAGE_MAX_SAMPLE_LEAF_ATTEMPTS);
+    }
+
+    /**
+     * Upper bound on one batch of random leaf draws during sampling.
+     * <p>
+     * Both sample cursors size a batch at {@code min(this, outstanding shortfall)}, so at any sane setting this value
+     * does not bind and has no observable effect on the emitted sample. It is nevertheless <b>kept, not deprecated</b>,
+     * because "inert" is not the same as "purposeless": the per-cursor draw buffers are sized to the batch, so this is
+     * the ceiling on that allocation — about 0.5 MB per sampling cursor at the default — and without it a request for a
+     * very large sample would allocate in proportion. Lowering it below the sample size shrinks each batch and costs
+     * I/O locality only: batches are always consumed in full, so the batch size cannot influence <em>which</em> tuples
+     * the sample contains. Removing the option would mean re-deriving that ceiling from something else, for no gain.
+     */
+    public int getSampleLeafDrawBatchSize() {
+        return accessor.getInt(Option.STORAGE_SAMPLE_LEAF_DRAW_BATCH_SIZE);
+    }
+
+    public int getColumnBufferSize() {
+        return accessor.getInt(Option.STORAGE_COLUMN_BUFFER_SIZE);
+    }
+
+    public long getColumnBufferPoolMaxMemory() {
+        return accessor.getLong(Option.STORAGE_COLUMN_BUFFER_POOL_MAX_MEMORY);
+    }
+
+    public int getColumnBufferPoolMaxSize() {
+        return accessor.getInt(Option.STORAGE_COLUMN_BUFFER_POOL_MAX_SIZE);
+    }
+
+    public long getColumnBufferAcquireTimeout() {
+        return accessor.getLong(Option.STORAGE_COLUMN_BUFFER_ACQUIRE_TIMEOUT);
+    }
+
     public int getBufferCacheNumPages() {
         return (int) (getBufferCacheSize() / (getBufferCachePageSize() + IBufferCache.RESERVED_HEADER_BYTES));
     }
@@ -248,6 +358,9 @@ public class StorageProperties extends AbstractProperties {
             int maxConcurrentMerges = getMaxConcurrentMerges(numPartitions);
             int maxConcurrentFlushes = getMaxConcurrentFlushes(numPartitions);
             int writeBufferSize = runtimeContext.getCloudProperties().getWriteBufferSize();
+
+            long columnBufferPoolMaxMemory = getColumnBufferPoolMaxMemory();
+            jobExecutionMemory -= columnBufferPoolMaxMemory;
             jobExecutionMemory -= (long) (maxConcurrentFlushes + maxConcurrentMerges) * writeBufferSize;
 
         }

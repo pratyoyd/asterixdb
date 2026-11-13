@@ -37,6 +37,7 @@ import org.apache.hyracks.algebricks.core.algebra.visitors.ILogicalExpressionRef
 import org.apache.hyracks.algebricks.core.algebra.visitors.ILogicalOperatorVisitor;
 
 public class SubplanOperator extends AbstractOperatorWithNestedPlans {
+    private boolean isFailSafe = false;
 
     public SubplanOperator() {
         super();
@@ -57,6 +58,14 @@ public class SubplanOperator extends AbstractOperatorWithNestedPlans {
         nestedPlans.add(p);
     }
 
+    public void setFailSafe(boolean failSafe) {
+        this.isFailSafe = failSafe;
+    }
+
+    public boolean isFailSafe() {
+        return this.isFailSafe;
+    }
+
     @Override
     public boolean acceptExpressionTransform(ILogicalExpressionReferenceTransform visitor) {
         // do nothing
@@ -70,7 +79,7 @@ public class SubplanOperator extends AbstractOperatorWithNestedPlans {
 
     @Override
     public VariablePropagationPolicy getVariablePropagationPolicy() {
-        return VariablePropagationPolicy.ADDNEWVARIABLES;
+        return VariablePropagationPolicy.ALL;
     }
 
     @Override

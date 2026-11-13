@@ -24,8 +24,9 @@
 * [Query Service API](#queryservice)
 * [Query Status API](#querystatus)
 * [Query Result API](#queryresult)
+* [Plan Cache API](#plancache)
 
-## <a id="queryservice">POST /query/service</a><font size="4"> <a href="#toc">[Back to TOC]</a></font>
+## <a id="queryservice">POST /query/service</a><span style="font-size: medium"> <a href="#toc">[Back to TOC]</a></span>
 
 __Description__ Returns result for query as JSON.
   The response is a JSON object that contains some result metadata along with either an embedded result or an opaque
@@ -49,6 +50,9 @@ __Parameters__
   [DECLARE FUNCTION](sqlpp/manual.html#Declarations), and [SET](sqlpp/manual.html#Performance_tuning)
 * `args` - (SQL++ only) A JSON array where each item is a value of a [positional query parameter](sqlpp/manual.html#Parameter_references)
 * `$parameter_name` - (SQL++ only) a JSON value of a [named query parameter](sqlpp/manual.html#Parameter_references).
+* `result-ttl` - Specifies how long the result set should be retained for `async` or `deferred` queries before being
+  automatically discarded. The value can be specified as a duration string (e.g., `30m`, `1h`, `2d`) or as milliseconds.
+  If not specified, the system default `result.ttl` configuration is used. This parameter is ignored for `immediate` mode.
 
 __Command (immediate result delivery)__
 
@@ -155,7 +159,7 @@ __Sample response__
     }
 
 
-## <a id="querystatus">GET /query/service/status</a><font size="4"> <a href="#toc">[Back to TOC]</a></font>
+## <a id="querystatus">GET /query/service/status</a><span style="font-size: medium"> <a href="#toc">[Back to TOC]</a></span>
 
 __Description__ Returns status of an `async` query request.
   The response is a JSON object that has a similar structure to the responses for the <a
@@ -189,7 +193,7 @@ __Sample response__
         "handle": "http://localhost:19002/query/service/result/9-0"
     }
 
-## <a id="queryresult">GET /query/service/result</a><font size="4"> <a href="#toc">[Back to TOC]</a></font>
+## <a id="queryresult">GET /query/service/result</a><span style="font-size: medium"> <a href="#toc">[Back to TOC]</a></span>
 
 __Description__ Returns result set for an `async` or `deferred` query request.
   The response is a plain result without a wrapping JSON object.
@@ -199,7 +203,7 @@ __Description__ Returns result set for an `async` or `deferred` query request.
 
 __Command__
 
-  This example shows a request/reponse for the (opaque) result handle that was returned by the <a
+  This example shows a request/response for the (opaque) result handle that was returned by the <a
   href="#deferred">deferred result delivery</a> example.
 
     $ curl -v http://localhost:19002/query/service/result/7-0
@@ -219,3 +223,24 @@ __Sample response__
     [ { "$1": 1 }
      ]
 
+## <a id="plancache">DELETE /admin/plancache</a><span style="font-size: medium"> <a href="#toc">[Back to TOC]</a></span>
+
+__Description__ Clears all entries in the query plan cache.
+The response is a JSON object that describes the number of entries that were cleared from the query plan cache.
+
+__Command__
+
+    $ curl -X DELETE -v http://localhost:19002/admin/plancache
+
+__Sample response__
+
+    > DELETE /admin/plancache HTTP/1.1
+    > Host: localhost:19002
+    > User-Agent: curl/8.4.0
+    > Accept: */*
+    >
+    < HTTP/1.1 200 OK
+    < connection: keep-alive
+    < content-length: 58
+    <
+    {"status":"2 query plan cache entries have been cleared."}

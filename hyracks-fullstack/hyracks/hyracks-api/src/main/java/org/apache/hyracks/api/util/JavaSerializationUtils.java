@@ -20,6 +20,7 @@ package org.apache.hyracks.api.util;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutput;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectInputStream;
@@ -28,14 +29,53 @@ import java.io.ObjectStreamClass;
 import java.io.Serializable;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
+import java.util.Map;
 
-import org.apache.hyracks.api.comm.DefaultJavaSerializationProvider;
 import org.apache.hyracks.api.comm.IJavaSerializationProvider;
+import org.apache.hyracks.api.comm.ReplacementsAwareJavaSerializationProvider;
+import org.apache.hyracks.util.ThrowingIOFunction;
 
 public class JavaSerializationUtils {
-    private static IJavaSerializationProvider serProvider = DefaultJavaSerializationProvider.INSTANCE;
+    private static final ReplacementsAwareJavaSerializationProvider serProvider =
+            ReplacementsAwareJavaSerializationProvider.INSTANCE;
+    private static final int MAX_UTF_BYTES = 65535;
+    private static final int SAFE_CHAR_LIMIT = MAX_UTF_BYTES / 3;
 
     private JavaSerializationUtils() {
+    }
+
+    /**
+     * This is to be used when small strings are the usual case. For strings whose modified UTF-8 bytes count is larger
+     * than 65535, then it truncates the string to a one that is less than 65535.
+     */
+    public static void writeTruncatedUTF(DataOutput out, String s) throws IOException {
+        if (s.length() <= SAFE_CHAR_LIMIT) {
+            out.writeUTF(s);
+            return;
+        }
+        truncateToUTFLimit(out, s);
+    }
+
+    private static void truncateToUTFLimit(DataOutput out, String s) throws IOException {
+        int modifiedUtf8Len = 0;
+        int i = 0;
+        while (i < s.length()) {
+            int c = s.charAt(i);
+            int bytes;
+            if (c >= 0x0001 && c <= 0x007F) {
+                bytes = 1;
+            } else if (c <= 0x07FF) {
+                bytes = 2;
+            } else {
+                bytes = 3;
+            }
+            modifiedUtf8Len += bytes;
+            if (modifiedUtf8Len > MAX_UTF_BYTES) {
+                break;
+            }
+            i++;
+        }
+        out.writeUTF(i == s.length() ? s : s.substring(0, i));
     }
 
     public static byte[] serialize(Serializable jobSpec) throws IOException {
@@ -89,10 +129,6 @@ public class JavaSerializationUtils {
         return Class.forName(className);
     }
 
-    public static void setSerializationProvider(IJavaSerializationProvider serProvider) {
-        JavaSerializationUtils.serProvider = serProvider;
-    }
-
     public static IJavaSerializationProvider getSerializationProvider() {
         return serProvider;
     }
@@ -106,7 +142,7 @@ public class JavaSerializationUtils {
     }
 
     private static class ClassLoaderObjectInputStream extends ObjectInputStream {
-        private ClassLoader classLoader;
+        private final ClassLoader classLoader;
 
         protected ClassLoaderObjectInputStream(InputStream in, ClassLoader classLoader)
                 throws IOException, SecurityException {
@@ -120,7 +156,7 @@ public class JavaSerializationUtils {
         }
 
         @Override
-        protected Class<?> resolveProxyClass(String[] interfaces) throws IOException, ClassNotFoundException {
+        protected Class<?> resolveProxyClass(String[] interfaces) throws ClassNotFoundException {
             ClassLoader nonPublicLoader = null;
             boolean hasNonPublicInterface = false;
 
@@ -145,6 +181,34 @@ public class JavaSerializationUtils {
             } catch (IllegalArgumentException e) {
                 throw new ClassNotFoundException(null, e);
             }
+        }
+    }
+
+    public static Map<Class<?>, ThrowingIOFunction<Object, Object>> getReplacements() {
+        return serProvider.getReplacements();
+    }
+
+    public static <T> void registerReplacement(Class<T> clazz, ThrowingIOFunction<? super T, ?> replacementFunction) {
+        serProvider.registerReplacement(clazz, object -> replacementFunction.process(clazz.cast(object)));
+    }
+
+    public static class SerializableExceptionProxy extends Throwable {
+        private static final long serialVersionUID = 1L;
+        private final String type;
+
+        public SerializableExceptionProxy(Throwable t) {
+            super(ExceptionUtils.getMessageOrToString(t));
+            this.type = t.getClass().getName();
+            setStackTrace(t.getStackTrace());
+        }
+
+        public SerializableExceptionProxy(Object o) {
+            this(new RuntimeException(String.valueOf(o)));
+        }
+
+        @Override
+        public String toString() {
+            return type + ": " + getMessage();
         }
     }
 }

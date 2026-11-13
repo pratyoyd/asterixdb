@@ -46,6 +46,7 @@ import org.apache.asterix.lang.common.expression.VariableExpr;
 import org.apache.asterix.lang.common.statement.FunctionDecl;
 import org.apache.asterix.lang.common.statement.Query;
 import org.apache.asterix.lang.common.struct.Identifier;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.HavingClause;
@@ -59,11 +60,12 @@ import org.apache.asterix.lang.sqlpp.clause.SelectRegular;
 import org.apache.asterix.lang.sqlpp.clause.SelectSetOperation;
 import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.CaseExpression;
+import org.apache.asterix.lang.sqlpp.expression.ChangeExpression;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.util.FunctionMapUtil;
 import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppQueryExpressionVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 
 /**
  * This visitor checks if a non-subquery language construct contains SQL-92 aggregates.
@@ -220,6 +222,11 @@ public class CheckSql92AggregateVisitor extends AbstractSqlppQueryExpressionVisi
     }
 
     @Override
+    public Boolean visit(ClusterbyClause cc, ILangExpression arg) throws CompilationException {
+        return false;
+    }
+
+    @Override
     public Boolean visit(LimitClause lc, ILangExpression parentSelectBlock) throws CompilationException {
         return false;
     }
@@ -307,6 +314,21 @@ public class CheckSql92AggregateVisitor extends AbstractSqlppQueryExpressionVisi
     }
 
     @Override
+    public Boolean visit(ChangeExpression changeExpr, ILangExpression arg) throws CompilationException {
+        return (changeExpr.getPriorExpr() != null && changeExpr.getPriorExpr().accept(this, arg))
+                || (changeExpr.getChangeTargetExpr() != null && changeExpr.getChangeTargetExpr().accept(this, arg))
+                || (changeExpr.getChangeSeq() != null && changeExpr.getChangeSeq().accept(this, arg))
+                || (changeExpr.getCondition() != null && changeExpr.getCondition().accept(this, arg))
+                || (changeExpr.getPosExpr() != null && changeExpr.getPosExpr().accept(this, arg))
+                || (changeExpr.getSourceExpr() != null && changeExpr.getSourceExpr().accept(this, arg))
+                || (changeExpr.getDataTransformRecord() != null
+                        && changeExpr.getDataTransformRecord().accept(this, arg))
+                || (changeExpr.getValueExprs() != null && visitExprList(changeExpr.getValueExprs(), arg))
+                || (changeExpr.getPathExprs() != null && visitExprList(changeExpr.getPathExprs(), arg))
+                || (changeExpr.getDataRemovalRecord() != null && changeExpr.getDataRemovalRecord().accept(this, arg));
+    }
+
+    @Override
     public Boolean visit(WindowExpression winExpr, ILangExpression arg) throws CompilationException {
         return (winExpr.hasPartitionList() && visitExprList(winExpr.getPartitionList(), arg))
                 || (winExpr.hasOrderByList() && visitExprList(winExpr.getOrderbyList(), arg))
@@ -330,7 +352,7 @@ public class CheckSql92AggregateVisitor extends AbstractSqlppQueryExpressionVisi
     private boolean visitFieldList(List<Pair<Expression, Identifier>> fieldList, ILangExpression parentSelectBlock)
             throws CompilationException {
         for (Pair<Expression, Identifier> p : fieldList) {
-            if (p.first.accept(this, parentSelectBlock)) {
+            if (p.getLeft().accept(this, parentSelectBlock)) {
                 return true;
             }
         }

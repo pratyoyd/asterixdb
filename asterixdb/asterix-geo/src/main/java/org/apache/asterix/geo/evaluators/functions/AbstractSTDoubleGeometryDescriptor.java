@@ -30,10 +30,11 @@ import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.om.types.EnumDeserializer;
 import org.apache.asterix.runtime.evaluators.base.AbstractScalarFunctionDynamicDescriptor;
+import org.apache.asterix.runtime.evaluators.functions.PointableHelper;
 import org.apache.asterix.runtime.exceptions.TypeMismatchException;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IPointable;
 import org.apache.hyracks.data.std.primitive.VoidPointable;
@@ -45,6 +46,11 @@ public abstract class AbstractSTDoubleGeometryDescriptor extends AbstractScalarF
     private static final long serialVersionUID = -4181892424621765426L;
 
     abstract protected Object evaluateOGCGeometry(Geometry geometry0, Geometry geometry1) throws HyracksDataException;
+
+    protected Object evaluateOGCGeometry(Geometry geometry0, Geometry geometry1, IEvaluatorContext ctx)
+            throws HyracksDataException {
+        return evaluateOGCGeometry(geometry0, geometry1);
+    }
 
     @Override
     public IScalarEvaluatorFactory createEvaluatorFactory(final IScalarEvaluatorFactory[] args) {
@@ -66,6 +72,7 @@ public abstract class AbstractSTDoubleGeometryDescriptor extends AbstractScalarF
         private final IPointable argPtr1;
         private final IScalarEvaluator eval0;
         private final IScalarEvaluator eval1;
+        private final IEvaluatorContext ctx;
 
         public AbstractSTDoubleGeometryEvaluator(IScalarEvaluatorFactory[] args, IEvaluatorContext ctx)
                 throws HyracksDataException {
@@ -75,6 +82,7 @@ public abstract class AbstractSTDoubleGeometryDescriptor extends AbstractScalarF
             argPtr1 = new VoidPointable();
             eval0 = args[0].createScalarEvaluator(ctx);
             eval1 = args[1].createScalarEvaluator(ctx);
+            this.ctx = ctx;
         }
 
         @Override
@@ -83,6 +91,10 @@ public abstract class AbstractSTDoubleGeometryDescriptor extends AbstractScalarF
             resultStorage.reset();
             eval0.evaluate(tuple, argPtr0);
             eval1.evaluate(tuple, argPtr1);
+
+            if (PointableHelper.checkAndSetMissingOrNull(result, argPtr0, argPtr1)) {
+                return;
+            }
 
             try {
                 byte[] bytes0 = argPtr0.getByteArray();
@@ -99,7 +111,7 @@ public abstract class AbstractSTDoubleGeometryDescriptor extends AbstractScalarF
                 }
                 tag = EnumDeserializer.ATYPETAGDESERIALIZER.deserialize(bytes1[offset1]);
                 if (tag != ATypeTag.GEOMETRY) {
-                    throw new TypeMismatchException(sourceLoc, getIdentifier(), 0, bytes1[offset1],
+                    throw new TypeMismatchException(sourceLoc, getIdentifier(), 1, bytes1[offset1],
                             ATypeTag.SERIALIZED_GEOMETRY_TYPE_TAG);
                 }
 
@@ -107,7 +119,7 @@ public abstract class AbstractSTDoubleGeometryDescriptor extends AbstractScalarF
                 Geometry geometry0 = AGeometrySerializerDeserializer.INSTANCE.deserialize(dataIn0).getGeometry();
                 DataInputStream dataIn1 = new DataInputStream(new ByteArrayInputStream(bytes1, offset1 + 1, len1 - 1));
                 Geometry geometry1 = AGeometrySerializerDeserializer.INSTANCE.deserialize(dataIn1).getGeometry();
-                Object finalResult = evaluateOGCGeometry(geometry0, geometry1);
+                Object finalResult = evaluateOGCGeometry(geometry0, geometry1, ctx);
                 if (finalResult instanceof Geometry) {
                     out.writeByte(ATypeTag.SERIALIZED_GEOMETRY_TYPE_TAG);
                     AGeometrySerializerDeserializer.INSTANCE.serialize((Geometry) finalResult, out);

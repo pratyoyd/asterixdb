@@ -30,10 +30,10 @@ import org.apache.asterix.external.parser.factory.ADMDataParserFactory;
 import org.apache.asterix.metadata.api.IDatasourceFunction;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.utils.RecordUtil;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksAbsolutePartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
@@ -124,12 +124,11 @@ public abstract class FunctionDataSource extends DataSource {
     }
 
     protected abstract IDatasourceFunction createFunction(MetadataProvider metadataProvider,
-            AlgebricksAbsolutePartitionConstraint locations);
+            AlgebricksAbsolutePartitionConstraint locations) throws AlgebricksException;
 
     protected AlgebricksAbsolutePartitionConstraint getLocations(IClusterStateManager csm, MetadataProvider md) {
-        String[] sortedLocations = md.getDataPartitioningProvider().getClusterLocations().getLocations();
-        return new AlgebricksAbsolutePartitionConstraint(
-                Arrays.stream(sortedLocations).distinct().toArray(String[]::new));
+        String[] locations = md.getClusterLocations().getLocations();
+        return new AlgebricksAbsolutePartitionConstraint(Arrays.stream(locations).distinct().toArray(String[]::new));
     }
 
     protected IDataParserFactory createDataParserFactory() {

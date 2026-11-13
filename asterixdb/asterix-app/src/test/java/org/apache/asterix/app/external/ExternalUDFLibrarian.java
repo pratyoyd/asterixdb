@@ -21,8 +21,10 @@ package org.apache.asterix.app.external;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.asterix.common.exceptions.AsterixException;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpResponse;
 import org.apache.http.auth.AuthScope;
@@ -31,6 +33,7 @@ import org.apache.http.client.AuthCache;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpDelete;
+import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.protocol.HttpClientContext;
 import org.apache.http.client.utils.URIUtils;
@@ -41,7 +44,7 @@ import org.apache.http.impl.auth.BasicScheme;
 import org.apache.http.impl.client.BasicAuthCache;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.DefaultHttpClient;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.http.util.EntityUtils;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -57,8 +60,8 @@ public class ExternalUDFLibrarian implements IExternalUDFLibrarian {
     }
 
     @Override
-    public void install(URI path, String type, String libPath, Pair<String, String> credentials) throws Exception {
-        HttpClientContext hcCtx = createHttpClientContext(path, credentials);
+    public void install(String path, String type, String libPath, Pair<String, String> credentials) throws Exception {
+        HttpClientContext hcCtx = createHttpClientContext(URI.create(path), credentials);
         HttpPost post = new HttpPost(path);
         File lib = new File(libPath);
         MultipartEntityBuilder entity = MultipartEntityBuilder.create().setMode(HttpMultipartMode.STRICT);
@@ -70,18 +73,29 @@ public class ExternalUDFLibrarian implements IExternalUDFLibrarian {
     }
 
     @Override
-    public void uninstall(URI path, Pair<String, String> credentials) throws IOException, AsterixException {
-        HttpClientContext hcCtx = createHttpClientContext(path, credentials);
+    public void uninstall(String path, Pair<String, String> credentials) throws IOException, AsterixException {
+        HttpClientContext hcCtx = createHttpClientContext(URI.create(path), credentials);
         HttpDelete del = new HttpDelete(path);
         HttpResponse response = hc.execute(del, hcCtx);
         handleResponse(response);
+    }
+
+    @Override
+    public String list(String path, Pair<String, String> credentials) throws IOException, AsterixException {
+        HttpClientContext hcCtx = createHttpClientContext(URI.create(path), credentials);
+        HttpResponse response = hc.execute(new HttpGet(path), hcCtx);
+        if (response.getStatusLine().getStatusCode() != 200) {
+            handleResponse(response);
+        }
+        return EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
     }
 
     private HttpClientContext createHttpClientContext(URI path, Pair<String, String> credentials) {
         HttpClientContext hcCtx = HttpClientContext.create();
         HttpHost h = URIUtils.extractHost(path);
         CredentialsProvider cp = new BasicCredentialsProvider();
-        cp.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(credentials.first, credentials.second));
+        cp.setCredentials(AuthScope.ANY,
+                new UsernamePasswordCredentials(credentials.getLeft(), credentials.getRight()));
         hcCtx.setCredentialsProvider(cp);
         AuthCache ac = new BasicAuthCache();
         ac.put(h, new BasicScheme());
@@ -102,5 +116,10 @@ public class ExternalUDFLibrarian implements IExternalUDFLibrarian {
         if (resp != null) {
             throw new AsterixException(resp);
         }
+    }
+
+    @Override
+    public SocketType getSocketType() {
+        return SocketType.LOOPBACK;
     }
 }

@@ -33,8 +33,11 @@ import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.common.exceptions.RuntimeDataException;
 import org.apache.asterix.external.input.filter.embedder.IExternalFilterValueEmbedder;
 import org.apache.asterix.external.input.record.reader.abstracts.AbstractExternalInputStream;
+import org.apache.asterix.external.input.record.reader.stream.AvailableInputStream;
 import org.apache.asterix.external.util.ExternalDataConstants;
-import org.apache.asterix.external.util.aws.s3.S3AuthUtils;
+import org.apache.asterix.external.util.aws.AwsUtils;
+import org.apache.asterix.external.util.aws.AwsUtils.CloseableAwsClients;
+import org.apache.asterix.external.util.aws.s3.S3Utils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.util.CleanupUtils;
@@ -51,15 +54,18 @@ public class AwsS3InputStream extends AbstractExternalInputStream {
     private static final int MAX_RETRIES = 5; // We will retry 5 times in case of internal error from AWS S3 service
     private final IApplicationContext ncAppCtx;
     private final String bucket;
-    private S3Client s3Client;
+    private final CloseableAwsClients awsClients;
+    private final S3Client s3Client;
     private ResponseInputStream<?> s3InStream;
 
     public AwsS3InputStream(IApplicationContext ncAppCtx, Map<String, String> configuration, List<String> filePaths,
             IExternalFilterValueEmbedder valueEmbedder) throws HyracksDataException {
         super(configuration, filePaths, valueEmbedder);
         this.ncAppCtx = ncAppCtx;
-        this.s3Client = buildAwsS3Client(configuration);
         this.bucket = configuration.get(ExternalDataConstants.CONTAINER_NAME_FIELD_NAME);
+
+        this.awsClients = buildAwsS3Client(configuration);
+        this.s3Client = (S3Client) awsClients.getConsumingClient();
     }
 
     @Override
@@ -74,7 +80,7 @@ public class AwsS3InputStream extends AbstractExternalInputStream {
         }
         // Use gzip stream if needed
         if (StringUtils.endsWithIgnoreCase(fileName, ".gz") || StringUtils.endsWithIgnoreCase(fileName, ".gzip")) {
-            in = new GZIPInputStream(in, ExternalDataConstants.DEFAULT_BUFFER_SIZE);
+            in = new GZIPInputStream(new AvailableInputStream(in), ExternalDataConstants.DEFAULT_BUFFER_SIZE);
         }
         return true;
     }
@@ -95,31 +101,27 @@ public class AwsS3InputStream extends AbstractExternalInputStream {
                 LOGGER.debug(() -> "Key " + userData(request.key()) + " was not found in bucket {}" + request.bucket());
                 return false;
             } catch (S3Exception ex) {
-                if (S3AuthUtils.isArnAssumedRoleExpiredToken(configuration, ex.awsErrorDetails().errorCode())) {
-                    LOGGER.debug(() -> "Expired AWS assume role session, will attempt to refresh the session");
-                    rebuildAwsS3Client(configuration);
-                    LOGGER.debug(() -> "Successfully refreshed AWS assume role session");
-                } else if (shouldRetry(ex.awsErrorDetails().errorCode(), retries++)) {
+                if (shouldRetry(ex.awsErrorDetails().errorCode(), retries++)) {
                     LOGGER.debug(() -> "S3 retryable error: " + userData(ex.getMessage()));
                 } else {
-                    throw new RuntimeDataException(ErrorCode.EXTERNAL_SOURCE_ERROR, ex, getMessageOrToString(ex));
+                    throw RuntimeDataException.create(ErrorCode.EXTERNAL_SOURCE_ERROR, ex, getMessageOrToString(ex));
                 }
 
                 // Backoff for 1 sec for the first 2 retries, and 2 seconds from there onward
                 try {
                     Thread.sleep(TimeUnit.SECONDS.toMillis(retries < 3 ? 1 : 2));
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+                    throw HyracksDataException.create(e);
                 }
             } catch (SdkException ex) {
-                throw new RuntimeDataException(ErrorCode.EXTERNAL_SOURCE_ERROR, ex, getMessageOrToString(ex));
+                throw RuntimeDataException.create(ErrorCode.EXTERNAL_SOURCE_ERROR, ex, getMessageOrToString(ex));
             }
         }
         return true;
     }
 
     private boolean shouldRetry(String errorCode, int currentRetry) {
-        return currentRetry < MAX_RETRIES && S3AuthUtils.isRetryableError(errorCode);
+        return currentRetry < MAX_RETRIES && S3Utils.isRetryableError(errorCode);
     }
 
     @Override
@@ -130,9 +132,7 @@ public class AwsS3InputStream extends AbstractExternalInputStream {
             }
             CleanupUtils.close(in, null);
         }
-        if (s3Client != null) {
-            CleanupUtils.close(s3Client, null);
-        }
+        AwsUtils.closeClients(awsClients);
     }
 
     @Override
@@ -145,15 +145,11 @@ public class AwsS3InputStream extends AbstractExternalInputStream {
         return false;
     }
 
-    private S3Client buildAwsS3Client(Map<String, String> configuration) throws HyracksDataException {
+    private CloseableAwsClients buildAwsS3Client(Map<String, String> configuration) throws HyracksDataException {
         try {
-            return S3AuthUtils.buildAwsS3Client(ncAppCtx, configuration);
+            return S3Utils.buildClient(ncAppCtx, configuration);
         } catch (CompilationException ex) {
             throw HyracksDataException.create(ex);
         }
-    }
-
-    private void rebuildAwsS3Client(Map<String, String> configuration) throws HyracksDataException {
-        s3Client = buildAwsS3Client(configuration);
     }
 }

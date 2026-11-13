@@ -623,6 +623,21 @@ The following example shows how to bulk load the `customers` dataset from an ext
      LOAD DATASET customers USING localfs
         (("path"="127.0.0.1:///Users/bignosqlfan/commercenew/gbu.adm"),("format"="adm"));
 
+### <a id="CRS_statements">Coordinate Reference System (CRS) Statements</a>
+
+CRS statements manage CRS definitions used by geospatial functions such as `st_transform`.
+CRS metadata is stored in `Metadata.\`CoordinateReferenceSystem\`` with the fields `SRID`, `CRSName`, and `CrsWKT`.
+
+Create a CRS definition:
+
+    CREATE COORDINATE REFERENCE SYSTEM 4326 IF NOT EXISTS
+      NAME 'WGS 84'
+      AS 'GEOGCS["WGS 84", ... ]';
+
+Drop a CRS definition:
+
+    DROP COORDINATE REFERENCE SYSTEM 4326 IF EXISTS;
+
 ## <a id="Modification_statements">Modification statements</a>
 
 ### <a id="Inserts">Insert Statement</a>
@@ -762,6 +777,7 @@ of `OVER` and `PARTITION BY` allow exports to match this. For example:
     "format" : "json",
     "compression": "gzip",
     "max-objects-per-file": 1000,
+    "max-file-size": "128MB",
     "container": "myBucket",
     "accessKeyId": "<access-key>",
     "secretAccessKey": "<secret-key>",
@@ -769,5 +785,13 @@ of `OVER` and `PARTITION BY` allow exports to match this. For example:
     };
 
 This query will be exported as partitions into a set of folders, with one folder for each value of `battery_status`. 
-Each partition itself will also be sorted by the `name` field, and compressed with `gzip` and divided into files of 100
+Each partition itself will also be sorted by the `name` field, and compressed with `gzip` and divided into files of 1000
 objects or fewer per file. 
+
+A file is also started afresh once it reaches `max-file-size`, so whichever of the two limits is reached first ends the
+current file. `max-file-size` accepts a storage unit string such as `5MB` or `1GB`, ranges from `5MB` to `5GB`, and is
+unbounded when it is not specified. It is measured on the bytes written to the target after compression and is
+approximate: an object is never split across files, so the object that reaches the limit takes the file past it. For
+`parquet` the size is only observable at row group boundaries, so `max-file-size` should be set comfortably above
+`row-group-size`. The largest file a target itself accepts may be lower still, as it depends on the target's multipart
+upload limits.

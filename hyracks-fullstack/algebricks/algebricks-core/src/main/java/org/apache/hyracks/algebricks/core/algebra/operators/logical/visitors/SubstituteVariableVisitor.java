@@ -20,11 +20,12 @@ package org.apache.hyracks.algebricks.core.algebra.operators.logical.visitors;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.ListIterator;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.common.exceptions.NotImplementedException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -32,6 +33,7 @@ import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
+import org.apache.hyracks.algebricks.core.algebra.expressions.VariableReferenceExpression;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator.IOrder;
 import org.apache.hyracks.algebricks.core.algebra.properties.LocalOrderProperty;
 import org.apache.hyracks.algebricks.core.algebra.properties.OrderColumn;
@@ -55,7 +57,7 @@ public class SubstituteVariableVisitor
     public Void visitAggregateOperator(AggregateOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
         boolean producedVarFound =
-                substAssignVariables(op.getVariables(), op.getExpressions(), pair.first, pair.second);
+                substAssignVariables(op.getVariables(), op.getExpressions(), pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         }
@@ -66,7 +68,7 @@ public class SubstituteVariableVisitor
     public Void visitAssignOperator(AssignOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
         boolean producedVarFound =
-                substAssignVariables(op.getVariables(), op.getExpressions(), pair.first, pair.second);
+                substAssignVariables(op.getVariables(), op.getExpressions(), pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             // Substitute variables stored in ordering property
             if (op.getExplicitOrderingProperty() != null) {
@@ -74,7 +76,7 @@ public class SubstituteVariableVisitor
                 List<OrderColumn> newOrderColumns = new ArrayList<>(orderColumns.size());
                 for (OrderColumn oc : orderColumns) {
                     LogicalVariable columnVar = oc.getColumn();
-                    LogicalVariable newColumnVar = columnVar.equals(pair.first) ? pair.second : columnVar;
+                    LogicalVariable newColumnVar = columnVar.equals(pair.getLeft()) ? pair.getRight() : columnVar;
                     newOrderColumns.add(new OrderColumn(newColumnVar, oc.getOrder()));
                 }
                 op.setExplicitOrderingProperty(new LocalOrderProperty(newOrderColumns));
@@ -88,28 +90,28 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitDataScanOperator(DataSourceScanOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        boolean producedVarFound = substProducedVariables(op.getVariables(), pair.first, pair.second);
+        boolean producedVarFound = substProducedVariables(op.getVariables(), pair.getLeft(), pair.getRight());
         if (!producedVarFound) {
             if (op.isProjectPushed()) {
-                producedVarFound = substProducedVariables(op.getProjectVariables(), pair.first, pair.second);
+                producedVarFound = substProducedVariables(op.getProjectVariables(), pair.getLeft(), pair.getRight());
             }
         }
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         } else {
-            substUsedVariablesInExpr(op.getSelectCondition(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getAdditionalFilteringExpressions(), pair.first, pair.second);
-            substUsedVariables(op.getMinFilterVars(), pair.first, pair.second);
-            substUsedVariables(op.getMaxFilterVars(), pair.first, pair.second);
+            substUsedVariablesInExpr(op.getSelectCondition(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getAdditionalFilteringExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariables(op.getMinFilterVars(), pair.getLeft(), pair.getRight());
+            substUsedVariables(op.getMaxFilterVars(), pair.getLeft(), pair.getRight());
         }
-        op.getProjectionFiltrationInfo().substituteFilterVariable(pair.first, pair.second);
+        op.getProjectionFiltrationInfo().substituteFilterVariable(pair.getLeft(), pair.getRight());
         return null;
     }
 
     @Override
     public Void visitDistinctOperator(DistinctOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariablesInExpr(op.getExpressions(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getExpressions(), pair.getLeft(), pair.getRight());
         return null;
     }
 
@@ -129,12 +131,12 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitGroupByOperator(GroupByOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        boolean producedVarFound = substGbyVariables(op.getGroupByList(), pair.first, pair.second);
+        boolean producedVarFound = substGbyVariables(op.getGroupByList(), pair.getLeft(), pair.getRight());
         if (!producedVarFound) {
-            producedVarFound = substGbyVariables(op.getDecorList(), pair.first, pair.second);
+            producedVarFound = substGbyVariables(op.getDecorList(), pair.getLeft(), pair.getRight());
         }
         if (!producedVarFound) {
-            substInNestedPlans(op, pair.first, pair.second);
+            substInNestedPlans(op, pair.getLeft(), pair.getRight());
         }
         // GROUP BY operator may add its used variables
         // to its own output type environment as produced variables
@@ -147,14 +149,14 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitInnerJoinOperator(InnerJoinOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariablesInExpr(op.getCondition(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getCondition(), pair.getLeft(), pair.getRight());
         return null;
     }
 
     @Override
     public Void visitLeftOuterJoinOperator(LeftOuterJoinOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariablesInExpr(op.getCondition(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getCondition(), pair.getLeft(), pair.getRight());
         // LEFT OUTER JOIN operator adds its right branch variables
         // to its own output type environment as 'correlatedMissableVariables'
         // therefore we need perform variable substitution in its own type environment
@@ -165,8 +167,8 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitLimitOperator(LimitOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariablesInExpr(op.getMaxObjects(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getOffset(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getMaxObjects(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getOffset(), pair.getLeft(), pair.getRight());
         return null;
     }
 
@@ -181,7 +183,7 @@ public class SubstituteVariableVisitor
     public Void visitOrderOperator(OrderOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
         for (Pair<IOrder, Mutable<ILogicalExpression>> oe : op.getOrderExpressions()) {
-            substUsedVariablesInExpr(oe.second, pair.first, pair.second);
+            substUsedVariablesInExpr(oe.getRight(), pair.getLeft(), pair.getRight());
         }
         return null;
     }
@@ -189,7 +191,7 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitProjectOperator(ProjectOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariables(op.getVariables(), pair.first, pair.second);
+        substUsedVariables(op.getVariables(), pair.getLeft(), pair.getRight());
         return null;
     }
 
@@ -197,7 +199,7 @@ public class SubstituteVariableVisitor
     public Void visitRunningAggregateOperator(RunningAggregateOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
         boolean producedVarFound =
-                substAssignVariables(op.getVariables(), op.getExpressions(), pair.first, pair.second);
+                substAssignVariables(op.getVariables(), op.getExpressions(), pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         }
@@ -207,11 +209,11 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitScriptOperator(ScriptOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        boolean producedVarFound = substProducedVariables(op.getOutputVariables(), pair.first, pair.second);
+        boolean producedVarFound = substProducedVariables(op.getOutputVariables(), pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         } else {
-            substUsedVariables(op.getInputVariables(), pair.first, pair.second);
+            substUsedVariables(op.getInputVariables(), pair.getLeft(), pair.getRight());
         }
         return null;
     }
@@ -219,10 +221,10 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitSelectOperator(SelectOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariablesInExpr(op.getCondition(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getCondition(), pair.getLeft(), pair.getRight());
         LogicalVariable missingPlaceholderVar = op.getMissingPlaceholderVariable();
-        if (missingPlaceholderVar != null && missingPlaceholderVar.equals(pair.first)) {
-            op.setMissingPlaceholderVar(pair.second);
+        if (missingPlaceholderVar != null && missingPlaceholderVar.equals(pair.getLeft())) {
+            op.setMissingPlaceholderVar(pair.getRight());
         }
         // SELECT operator may add its used variable
         // to its own output type environment as 'nonMissableVariable' (not(is-missing($used_var))
@@ -234,7 +236,7 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitSubplanOperator(SubplanOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substInNestedPlans(op, pair.first, pair.second);
+        substInNestedPlans(op, pair.getLeft(), pair.getRight());
         // do not call substProducedVarInTypeEnvironment() because the variables are produced by nested plans
         return null;
     }
@@ -242,7 +244,7 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitUnionOperator(UnionAllOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        boolean producedVarFound = substUnionAllVariables(op.getVariableMappings(), pair.first, pair.second);
+        boolean producedVarFound = substUnionAllVariables(op.getVariableMappings(), pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         }
@@ -252,19 +254,21 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitIntersectOperator(IntersectOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        boolean producedVarFound = substProducedVariables(op.getOutputCompareVariables(), pair.first, pair.second);
+        boolean producedVarFound =
+                substProducedVariables(op.getOutputCompareVariables(), pair.getLeft(), pair.getRight());
         if (!producedVarFound) {
             if (op.hasExtraVariables()) {
-                producedVarFound = substProducedVariables(op.getOutputExtraVariables(), pair.first, pair.second);
+                producedVarFound =
+                        substProducedVariables(op.getOutputExtraVariables(), pair.getLeft(), pair.getRight());
             }
         }
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         } else {
             for (int i = 0, n = op.getNumInput(); i < n; i++) {
-                substUsedVariables(op.getInputCompareVariables(i), pair.first, pair.second);
+                substUsedVariables(op.getInputCompareVariables(i), pair.getLeft(), pair.getRight());
                 if (op.hasExtraVariables()) {
-                    substUsedVariables(op.getInputExtraVariables(i), pair.first, pair.second);
+                    substUsedVariables(op.getInputExtraVariables(i), pair.getLeft(), pair.getRight());
                 }
             }
         }
@@ -272,26 +276,85 @@ public class SubstituteVariableVisitor
     }
 
     @Override
+    public Void visitKMeansStageOperator(KMeansStageOperator op, Pair<LogicalVariable, LogicalVariable> pair)
+            throws AlgebricksException {
+        // vectorVariable is null only for RECLUSTER, the one mode without a vector input.
+        if (op.getVectorVariable() != null && op.getVectorVariable().equals(pair.getLeft())) {
+            op.getVectorRef().setValue(new VariableReferenceExpression(pair.getRight()));
+        }
+        if (op.getPoolVariable().equals(pair.getLeft())) {
+            op.getPoolRef().setValue(new VariableReferenceExpression(pair.getRight()));
+        }
+        if (op.getCandidateVariable().equals(pair.getLeft())) {
+            op.setCandidateVariable(pair.getRight());
+        }
+        if (pair.getLeft().equals(op.getVectorStoreVariable())) {
+            op.setVectorStoreVariable(pair.getRight());
+        }
+        if (pair.getLeft().equals(op.getLabelCentroidVariable())) {
+            op.setLabelCentroidVariable(pair.getRight(), op.getLabelCentroidVarType());
+        }
+        List<LogicalVariable> rowVars = op.getRowVariables();
+        for (int i = 0; i < rowVars.size(); i++) {
+            if (rowVars.get(i).equals(pair.getLeft())) {
+                rowVars.set(i, pair.getRight());
+            }
+        }
+        substProducedVarInTypeEnvironment(op, pair);
+        return null;
+    }
+
+    @Override
+    public Void visitClusterByOperator(ClusterByOperator op, Pair<LogicalVariable, LogicalVariable> pair)
+            throws AlgebricksException {
+        if (op.getVectorVariable().equals(pair.getLeft())) {
+            op.getVectorRef().setValue(new VariableReferenceExpression(pair.getRight()));
+        }
+        if (op.getClusterIdVariable().equals(pair.getLeft())) {
+            op.setClusterIdVariable(pair.getRight());
+        }
+        if (op.getCentroidVariable().equals(pair.getLeft())) {
+            op.setCentroidVariable(pair.getRight());
+        }
+        if (op.getMembersVariable().equals(pair.getLeft())) {
+            op.setMembersVariable(pair.getRight());
+        }
+        if (op.getAssignedCentroidVariable() != null && op.getAssignedCentroidVariable().equals(pair.getLeft())) {
+            op.setAssignedCentroidVariable(pair.getRight());
+        }
+        substInNestedPlans(op, pair.getLeft(), pair.getRight());
+        for (ListIterator<Pair<LogicalVariable, Mutable<ILogicalExpression>>> it = op.getDecorList().listIterator(); it
+                .hasNext();) {
+            Pair<LogicalVariable, Mutable<ILogicalExpression>> p = it.next();
+            if (p.getLeft().equals(pair.getLeft())) {
+                it.set(Pair.of(pair.getRight(), p.getRight()));
+            }
+            p.getRight().getValue().substituteVar(pair.getLeft(), pair.getRight());
+        }
+        return null;
+    }
+
+    @Override
     public Void visitUnnestMapOperator(UnnestMapOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        boolean producedVarFound = substituteVarsForAbstractUnnestMapOp(op, pair.first, pair.second);
+        boolean producedVarFound = substituteVarsForAbstractUnnestMapOp(op, pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         } else {
-            substUsedVariablesInExpr(op.getSelectCondition(), pair.first, pair.second);
+            substUsedVariablesInExpr(op.getSelectCondition(), pair.getLeft(), pair.getRight());
         }
-        op.getProjectionFiltrationInfo().substituteFilterVariable(pair.first, pair.second);
+        op.getProjectionFiltrationInfo().substituteFilterVariable(pair.getLeft(), pair.getRight());
         return null;
     }
 
     @Override
     public Void visitLeftOuterUnnestMapOperator(LeftOuterUnnestMapOperator op,
             Pair<LogicalVariable, LogicalVariable> pair) throws AlgebricksException {
-        boolean producedVarFound = substituteVarsForAbstractUnnestMapOp(op, pair.first, pair.second);
+        boolean producedVarFound = substituteVarsForAbstractUnnestMapOp(op, pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         }
-        op.getProjectionFiltrationInfo().substituteFilterVariable(pair.first, pair.second);
+        op.getProjectionFiltrationInfo().substituteFilterVariable(pair.getLeft(), pair.getRight());
         return null;
     }
 
@@ -310,7 +373,7 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitUnnestOperator(UnnestOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        boolean producedVarFound = substituteVarsForAbstractUnnestNonMapOp(op, pair.first, pair.second);
+        boolean producedVarFound = substituteVarsForAbstractUnnestNonMapOp(op, pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         }
@@ -320,7 +383,7 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitLeftOuterUnnestOperator(LeftOuterUnnestOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        boolean producedVarFound = substituteVarsForAbstractUnnestNonMapOp(op, pair.first, pair.second);
+        boolean producedVarFound = substituteVarsForAbstractUnnestNonMapOp(op, pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         }
@@ -345,20 +408,20 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitWriteOperator(WriteOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariablesInExpr(op.getSourceExpression(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getPathExpression(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getPartitionExpressions(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getSourceExpression(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getPathExpression(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getPartitionExpressions(), pair.getLeft(), pair.getRight());
         for (Pair<IOrder, Mutable<ILogicalExpression>> orderExpr : op.getOrderExpressions()) {
-            substUsedVariablesInExpr(orderExpr.second, pair.first, pair.second);
+            substUsedVariablesInExpr(orderExpr.getRight(), pair.getLeft(), pair.getRight());
         }
-        substUsedVariablesInExpr(op.getKeyExpressions(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getKeyExpressions(), pair.getLeft(), pair.getRight());
         return null;
     }
 
     @Override
     public Void visitDistributeResultOperator(DistributeResultOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariablesInExpr(op.getExpressions(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getExpressions(), pair.getLeft(), pair.getRight());
         return null;
     }
 
@@ -372,7 +435,7 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitSplitOperator(SplitOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariablesInExpr(op.getBranchingExpression(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getBranchingExpression(), pair.getLeft(), pair.getRight());
         return null;
     }
 
@@ -395,27 +458,27 @@ public class SubstituteVariableVisitor
             Pair<LogicalVariable, LogicalVariable> pair) throws AlgebricksException {
         boolean producedVarFound = false;
         if (op.getOperation() == InsertDeleteUpsertOperator.Kind.UPSERT) {
-            if (op.getOperationVar() != null && op.getOperationVar().equals(pair.first)) {
-                op.setOperationVar(pair.second);
+            if (op.getOperationVar() != null && op.getOperationVar().equals(pair.getLeft())) {
+                op.setOperationVar(pair.getRight());
                 producedVarFound = true;
-            } else if (op.getBeforeOpRecordVar() != null && op.getBeforeOpRecordVar().equals(pair.first)) {
-                op.setPrevRecordVar(pair.second);
+            } else if (op.getBeforeOpRecordVar() != null && op.getBeforeOpRecordVar().equals(pair.getLeft())) {
+                op.setPrevRecordVar(pair.getRight());
                 producedVarFound = true;
-            } else if (op.getBeforeOpFilterVar() != null && op.getBeforeOpFilterVar().equals(pair.first)) {
-                op.setPrevFilterVar(pair.second);
+            } else if (op.getBeforeOpFilterVar() != null && op.getBeforeOpFilterVar().equals(pair.getLeft())) {
+                op.setPrevFilterVar(pair.getRight());
                 producedVarFound = true;
             } else {
-                producedVarFound =
-                        substProducedVariables(op.getBeforeOpAdditionalNonFilteringVars(), pair.first, pair.second);
+                producedVarFound = substProducedVariables(op.getBeforeOpAdditionalNonFilteringVars(), pair.getLeft(),
+                        pair.getRight());
             }
         }
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         } else {
-            substUsedVariablesInExpr(op.getPayloadExpression(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getPrimaryKeyExpressions(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getAdditionalFilteringExpressions(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getAdditionalNonFilteringExpressions(), pair.first, pair.second);
+            substUsedVariablesInExpr(op.getPayloadExpression(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getPrimaryKeyExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getAdditionalFilteringExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getAdditionalNonFilteringExpressions(), pair.getLeft(), pair.getRight());
         }
         return null;
     }
@@ -423,16 +486,16 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitIndexInsertDeleteUpsertOperator(IndexInsertDeleteUpsertOperator op,
             Pair<LogicalVariable, LogicalVariable> pair) throws AlgebricksException {
-        substUsedVariablesInExpr(op.getPrimaryKeyExpressions(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getSecondaryKeyExpressions(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getFilterExpression(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getBeforeOpFilterExpression(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getAdditionalFilteringExpressions(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getOperationExpr(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getPrevSecondaryKeyExprs(), pair.first, pair.second);
-        substUsedVariablesInExpr(op.getPrevAdditionalFilteringExpression(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getPrimaryKeyExpressions(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getSecondaryKeyExpressions(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getFilterExpression(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getBeforeOpFilterExpression(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getAdditionalFilteringExpressions(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getOperationExpr(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getPrevSecondaryKeyExprs(), pair.getLeft(), pair.getRight());
+        substUsedVariablesInExpr(op.getPrevAdditionalFilteringExpression(), pair.getLeft(), pair.getRight());
         if (!op.getNestedPlans().isEmpty()) {
-            substInNestedPlans(op, pair.first, pair.second);
+            substInNestedPlans(op, pair.getLeft(), pair.getRight());
         }
         return null;
     }
@@ -440,14 +503,14 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitTokenizeOperator(TokenizeOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        boolean producedVarFound = substProducedVariables(op.getTokenizeVars(), pair.first, pair.second);
+        boolean producedVarFound = substProducedVariables(op.getTokenizeVars(), pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         } else {
-            substUsedVariablesInExpr(op.getPrimaryKeyExpressions(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getSecondaryKeyExpressions(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getFilterExpression(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getAdditionalFilteringExpressions(), pair.first, pair.second);
+            substUsedVariablesInExpr(op.getPrimaryKeyExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getSecondaryKeyExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getFilterExpression(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getAdditionalFilteringExpressions(), pair.getLeft(), pair.getRight());
         }
         return null;
     }
@@ -455,7 +518,7 @@ public class SubstituteVariableVisitor
     @Override
     public Void visitForwardOperator(ForwardOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
-        substUsedVariablesInExpr(op.getSideDataExpression(), pair.first, pair.second);
+        substUsedVariablesInExpr(op.getSideDataExpression(), pair.getLeft(), pair.getRight());
         return null;
     }
 
@@ -477,25 +540,25 @@ public class SubstituteVariableVisitor
     public Void visitWindowOperator(WindowOperator op, Pair<LogicalVariable, LogicalVariable> pair)
             throws AlgebricksException {
         boolean producedVarFound =
-                substAssignVariables(op.getVariables(), op.getExpressions(), pair.first, pair.second);
+                substAssignVariables(op.getVariables(), op.getExpressions(), pair.getLeft(), pair.getRight());
         if (producedVarFound) {
             substProducedVarInTypeEnvironment(op, pair);
         } else {
-            substUsedVariablesInExpr(op.getPartitionExpressions(), pair.first, pair.second);
+            substUsedVariablesInExpr(op.getPartitionExpressions(), pair.getLeft(), pair.getRight());
             for (Pair<IOrder, Mutable<ILogicalExpression>> p : op.getOrderExpressions()) {
-                substUsedVariablesInExpr(p.second, pair.first, pair.second);
+                substUsedVariablesInExpr(p.getRight(), pair.getLeft(), pair.getRight());
             }
             for (Pair<IOrder, Mutable<ILogicalExpression>> p : op.getFrameValueExpressions()) {
-                substUsedVariablesInExpr(p.second, pair.first, pair.second);
+                substUsedVariablesInExpr(p.getRight(), pair.getLeft(), pair.getRight());
             }
-            substUsedVariablesInExpr(op.getFrameStartExpressions(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getFrameStartValidationExpressions(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getFrameEndExpressions(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getFrameEndValidationExpressions(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getFrameExcludeExpressions(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getFrameExcludeUnaryExpression(), pair.first, pair.second);
-            substUsedVariablesInExpr(op.getFrameOffsetExpression(), pair.first, pair.second);
-            substInNestedPlans(op, pair.first, pair.second);
+            substUsedVariablesInExpr(op.getFrameStartExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getFrameStartValidationExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getFrameEndExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getFrameEndValidationExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getFrameExcludeExpressions(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getFrameExcludeUnaryExpression(), pair.getLeft(), pair.getRight());
+            substUsedVariablesInExpr(op.getFrameOffsetExpression(), pair.getLeft(), pair.getRight());
+            substInNestedPlans(op, pair.getLeft(), pair.getRight());
         }
         return null;
     }
@@ -587,12 +650,14 @@ public class SubstituteVariableVisitor
 
     private boolean substGbyVariables(List<Pair<LogicalVariable, Mutable<ILogicalExpression>>> gbyPairList,
             LogicalVariable v1, LogicalVariable v2) {
-        for (Pair<LogicalVariable, Mutable<ILogicalExpression>> ve : gbyPairList) {
-            if (ve.first != null && ve.first.equals(v1)) {
-                ve.first = v2;
+        for (ListIterator<Pair<LogicalVariable, Mutable<ILogicalExpression>>> it = gbyPairList.listIterator(); it
+                .hasNext();) {
+            Pair<LogicalVariable, Mutable<ILogicalExpression>> ve = it.next();
+            if (ve.getLeft() != null && ve.getLeft().equals(v1)) {
+                it.set(Pair.of(v2, ve.getRight()));
                 return true; // found produced var
             }
-            ve.second.getValue().substituteVar(v1, v2);
+            ve.getRight().getValue().substituteVar(v1, v2);
         }
         return false;
     }
@@ -630,7 +695,7 @@ public class SubstituteVariableVisitor
         }
         IVariableTypeEnvironment env = ctx.getOutputTypeEnvironment(op);
         if (env != null) {
-            env.substituteProducedVariable(pair.first, pair.second);
+            env.substituteProducedVariable(pair.getLeft(), pair.getRight());
         }
     }
 }

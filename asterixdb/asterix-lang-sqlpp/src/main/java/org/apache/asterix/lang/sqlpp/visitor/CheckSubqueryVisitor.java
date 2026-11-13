@@ -50,6 +50,7 @@ import org.apache.asterix.lang.common.statement.Query;
 import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.struct.QuantifiedPair;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateClause;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.HavingClause;
@@ -63,11 +64,12 @@ import org.apache.asterix.lang.sqlpp.clause.SelectRegular;
 import org.apache.asterix.lang.sqlpp.clause.SelectSetOperation;
 import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.CaseExpression;
+import org.apache.asterix.lang.sqlpp.expression.ChangeExpression;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationRight;
 import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppQueryExpressionVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 
 /**
  * This visitor recursively checks if there is a subquery in the argument language construct.
@@ -171,6 +173,15 @@ public class CheckSubqueryVisitor extends AbstractSqlppQueryExpressionVisitor<Bo
     public Boolean visit(CaseExpression caseExpression, ILangExpression arg) throws CompilationException {
         return visit(caseExpression.getConditionExpr(), arg) || visitExprList(caseExpression.getWhenExprs(), arg)
                 || visitExprList(caseExpression.getThenExprs(), arg) || visit(caseExpression.getElseExpr(), arg);
+    }
+
+    @Override
+    public Boolean visit(ChangeExpression changeExpr, ILangExpression arg) throws CompilationException {
+        return visit(changeExpr.getPriorExpr(), arg) || visit(changeExpr.getChangeTargetExpr(), arg)
+                || visit(changeExpr.getChangeSeq(), arg) || visit(changeExpr.getCondition(), arg)
+                || visit(changeExpr.getPosExpr(), arg) || visit(changeExpr.getSourceExpr(), arg)
+                || visit(changeExpr.getDataTransformRecord(), arg) || visit(changeExpr.getDataRemovalRecord(), arg)
+                || visitExprList(changeExpr.getPathExprs(), arg) || visitExprList(changeExpr.getValueExprs(), arg);
     }
 
     @Override
@@ -293,6 +304,11 @@ public class CheckSubqueryVisitor extends AbstractSqlppQueryExpressionVisitor<Bo
     }
 
     @Override
+    public Boolean visit(ClusterbyClause cc, ILangExpression arg) throws CompilationException {
+        return visit(cc.getClusteringExpression(), arg);
+    }
+
+    @Override
     public Boolean visit(LimitClause lc, ILangExpression arg) throws CompilationException {
         return visit(lc.getLimitExpr(), arg) || visit(lc.getOffset(), arg);
     }
@@ -346,7 +362,7 @@ public class CheckSubqueryVisitor extends AbstractSqlppQueryExpressionVisitor<Bo
     private <T extends ILangExpression> boolean visitFieldList(Collection<Pair<T, Identifier>> fieldList,
             ILangExpression arg) throws CompilationException {
         for (Pair<T, Identifier> p : fieldList) {
-            if (visit(p.first, arg)) {
+            if (visit(p.getLeft(), arg)) {
                 return true;
             }
         }

@@ -36,14 +36,14 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
 import org.apache.asterix.common.cluster.ClusterPartition;
 import org.apache.asterix.common.exceptions.AsterixException;
 import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.utils.Partitions;
 import org.apache.asterix.common.utils.PrintUtil;
 import org.apache.commons.lang3.mutable.MutableInt;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.api.config.IApplicationConfig;
 import org.apache.hyracks.api.config.IOption;
 import org.apache.hyracks.api.config.IOptionType;
@@ -96,7 +96,7 @@ public class PropertiesAccessor implements IApplicationConfig {
         List<Pair<String, String>> kvs = new ArrayList<>();
         for (String key : keys) {
             String value = cfg.getString(section, key);
-            kvs.add(new Pair<>(key, value));
+            kvs.add(Pair.of(key, value));
         }
         extensions.add(new AsterixExtension(className, kvs));
     }
@@ -196,9 +196,10 @@ public class PropertiesAccessor implements IApplicationConfig {
         return clusterPartitions;
     }
 
-    public Set<Integer> getNodePartitions(String nodeId) {
+    public Partitions getNodePartitions(String nodeId) {
         ClusterPartition[] nodeClusterPartitions = nodePartitionsMap.get(nodeId);
-        return Arrays.stream(nodeClusterPartitions).map(ClusterPartition::getPartitionId).collect(Collectors.toSet());
+        return Arrays.stream(nodeClusterPartitions).map(ClusterPartition::getPartitionId)
+                .collect(Partitions.collector());
     }
 
     public List<AsterixExtension> getExtensions() {

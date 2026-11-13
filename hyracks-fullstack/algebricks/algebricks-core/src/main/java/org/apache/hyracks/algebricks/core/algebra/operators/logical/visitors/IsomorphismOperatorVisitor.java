@@ -27,9 +27,9 @@ import java.util.Map.Entry;
 import java.util.Objects;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.common.exceptions.NotImplementedException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -42,6 +42,7 @@ import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperato
 import org.apache.hyracks.algebricks.core.algebra.properties.IPartitioningProperty;
 import org.apache.hyracks.algebricks.core.algebra.properties.IPhysicalPropertiesVector;
 import org.apache.hyracks.algebricks.core.algebra.properties.UnorderedPartitionedProperty;
+import org.apache.hyracks.algebricks.core.algebra.util.FunctionUtil;
 import org.apache.hyracks.algebricks.core.algebra.util.OperatorManipulationUtil;
 import org.apache.hyracks.algebricks.core.algebra.visitors.ILogicalOperatorVisitor;
 
@@ -120,10 +121,10 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
                 new ArrayList<Pair<LogicalVariable, ILogicalExpression>>();
 
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> pair : keyLists) {
-            listLeft.add(new Pair<LogicalVariable, ILogicalExpression>(pair.first, pair.second.getValue()));
+            listLeft.add(Pair.of(pair.getLeft(), pair.getRight().getValue()));
         }
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> pair : keyListsArg) {
-            listRight.add(new Pair<LogicalVariable, ILogicalExpression>(pair.first, pair.second.getValue()));
+            listRight.add(Pair.of(pair.getLeft(), pair.getRight().getValue()));
         }
 
         boolean isomorphic = VariableUtilities.varListEqualUnordered(listLeft, listRight);
@@ -140,21 +141,7 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
         GroupByOperator argOp = (GroupByOperator) arg;
         List<ILogicalPlan> plans = op.getNestedPlans();
         List<ILogicalPlan> plansArg = argOp.getNestedPlans();
-        for (int i = 0; i < plans.size(); i++) {
-            List<Mutable<ILogicalOperator>> roots = plans.get(i).getRoots();
-            List<Mutable<ILogicalOperator>> rootsArg = plansArg.get(i).getRoots();
-            if (roots.size() != rootsArg.size()) {
-                return Boolean.FALSE;
-            }
-            for (int j = 0; j < roots.size(); j++) {
-                ILogicalOperator topOp1 = roots.get(j).getValue();
-                ILogicalOperator topOp2 = rootsArg.get(j).getValue();
-                isomorphic = IsomorphismUtilities.isOperatorIsomorphicPlanSegment(topOp1, topOp2);
-                if (!isomorphic) {
-                    return Boolean.FALSE;
-                }
-            }
-        }
+        isomorphic = compareSubplans(plans, plansArg);
         return isomorphic;
     }
 
@@ -241,8 +228,8 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
             return Boolean.FALSE;
         }
         SelectOperator selectOpArg = (SelectOperator) copyAndSubstituteVar(op, arg);
-        boolean isomorphic = op.getCondition().getValue().equals(selectOpArg.getCondition().getValue());
-        return isomorphic;
+
+        return FunctionUtil.commutativeEquals(op.getCondition().get(), selectOpArg.getCondition().get());
     }
 
     @Override
@@ -308,25 +295,9 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
         if (aop.getOperatorTag() != LogicalOperatorTag.SUBPLAN) {
             return Boolean.FALSE;
         }
-        SubplanOperator subplanOpArg = (SubplanOperator) copyAndSubstituteVar(op, arg);
         List<ILogicalPlan> plans = op.getNestedPlans();
-        List<ILogicalPlan> plansArg = subplanOpArg.getNestedPlans();
-        for (int i = 0; i < plans.size(); i++) {
-            List<Mutable<ILogicalOperator>> roots = plans.get(i).getRoots();
-            List<Mutable<ILogicalOperator>> rootsArg = plansArg.get(i).getRoots();
-            if (roots.size() == rootsArg.size()) {
-                return Boolean.FALSE;
-            }
-            for (int j = 0; j < roots.size(); j++) {
-                ILogicalOperator topOp1 = roots.get(j).getValue();
-                ILogicalOperator topOp2 = rootsArg.get(j).getValue();
-                boolean isomorphic = IsomorphismUtilities.isOperatorIsomorphicPlanSegment(topOp1, topOp2);
-                if (!isomorphic) {
-                    return Boolean.FALSE;
-                }
-            }
-        }
-        return Boolean.TRUE;
+        List<ILogicalPlan> plansArg = ((SubplanOperator) arg).getNestedPlans();
+        return compareSubplans(plans, plansArg);
     }
 
     @Override
@@ -389,6 +360,49 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
     }
 
     @Override
+    public Boolean visitKMeansStageOperator(KMeansStageOperator op, ILogicalOperator arg) throws AlgebricksException {
+        AbstractLogicalOperator aop = (AbstractLogicalOperator) copyAndSubstituteVar(op, arg);
+        if (aop.getOperatorTag() != LogicalOperatorTag.KMEANS_STAGE) {
+            return Boolean.FALSE;
+        }
+        KMeansStageOperator other = (KMeansStageOperator) aop;
+        // vectorVariable is null for the single-input merge modes (RECLUSTER/LLOYD).
+        // The seed, round count, vector width and metric are part of the stage's properties, so equality
+        // compares them too.
+        return op.getTopCount() == other.getTopCount() && op.getMode() == other.getMode()
+                && op.getSeed() == other.getSeed() && op.getLoopRounds() == other.getLoopRounds()
+                && op.getDimension() == other.getDimension()
+                && java.util.Objects.equals(op.getMetric(), other.getMetric())
+                && java.util.Objects.equals(op.getVectorVariable(), other.getVectorVariable())
+                && op.getPoolVariable().equals(other.getPoolVariable())
+                && op.getCandidateVariable().equals(other.getCandidateVariable())
+                && op.getRowVariables().equals(other.getRowVariables())
+                && Objects.equals(op.getLabelCentroidVariable(), other.getLabelCentroidVariable());
+    }
+
+    @Override
+    public Boolean visitClusterByOperator(ClusterByOperator op, ILogicalOperator arg) throws AlgebricksException {
+        AbstractLogicalOperator aop = (AbstractLogicalOperator) copyAndSubstituteVar(op, arg);
+        if (aop.getOperatorTag() != LogicalOperatorTag.CLUSTER_BY) {
+            return Boolean.FALSE;
+        }
+        ClusterByOperator other = (ClusterByOperator) aop;
+        // Everything the query said. Two clusterings differing in any of it are different computations;
+        // the options holder's equality covers every option, present and future, in one comparison.
+        boolean isomorphic = java.util.Objects.equals(op.getOptions(), other.getOptions())
+                && op.getVectorVariable().equals(other.getVectorVariable())
+                && op.getClusterIdVariable().equals(other.getClusterIdVariable())
+                && op.getCentroidVariable().equals(other.getCentroidVariable())
+                && op.getMembersVariable().equals(other.getMembersVariable())
+                && VariableUtilities.varListEqualUnordered(op.getDecorVariables(), other.getDecorVariables());
+        if (!isomorphic || op.getNestedPlans().size() != ((ClusterByOperator) arg).getNestedPlans().size()) {
+            return Boolean.FALSE;
+        }
+        // The members aggregation rides in the nested plans, as GROUP BY's do; compare them the same way.
+        return compareSubplans(op.getNestedPlans(), ((ClusterByOperator) arg).getNestedPlans());
+    }
+
+    @Override
     public Boolean visitUnnestOperator(UnnestOperator op, ILogicalOperator arg) throws AlgebricksException {
         AbstractLogicalOperator aop = (AbstractLogicalOperator) arg;
         if (aop.getOperatorTag() != LogicalOperatorTag.UNNEST) {
@@ -397,6 +411,10 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
         UnnestOperator unnestOpArg = (UnnestOperator) copyAndSubstituteVar(op, arg);
         boolean isomorphic = VariableUtilities.varListEqualUnordered(op.getVariables(), unnestOpArg.getVariables())
                 && variableEqual(op.getPositionalVariable(), unnestOpArg.getPositionalVariable());
+        if (!isomorphic) {
+            return Boolean.FALSE;
+        }
+        isomorphic = Objects.equals(op.getTimeTravel(), unnestOpArg.getTimeTravel());
         if (!isomorphic) {
             return Boolean.FALSE;
         }
@@ -610,7 +628,7 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
         }
 
         // Check our nested plans as well.
-        return compareSubplans(op.getNestedPlans(), insertOpArg.getNestedPlans());
+        return compareSubplans(op.getNestedPlans(), ((IndexInsertDeleteUpsertOperator) arg).getNestedPlans());
     }
 
     @Override
@@ -666,7 +684,7 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
             return false;
         }
         List<ILogicalPlan> plans = op.getNestedPlans();
-        List<ILogicalPlan> plansArg = windowOpArg.getNestedPlans();
+        List<ILogicalPlan> plansArg = ((WindowOperator) arg).getNestedPlans();
         boolean isomorphic = compareSubplans(plans, plansArg);
         return isomorphic;
     }
@@ -746,11 +764,11 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
             return false;
         }
         for (int i = 0; i < opOrderExprs.size(); i++) {
-            boolean isomorphic = opOrderExprs.get(i).first.equals(argOrderExprs.get(i).first);
+            boolean isomorphic = opOrderExprs.get(i).getLeft().equals(argOrderExprs.get(i).getLeft());
             if (!isomorphic) {
                 return false;
             }
-            isomorphic = opOrderExprs.get(i).second.getValue().equals(argOrderExprs.get(i).second.getValue());
+            isomorphic = opOrderExprs.get(i).getRight().getValue().equals(argOrderExprs.get(i).getRight().getValue());
             if (!isomorphic) {
                 return false;
             }
@@ -808,7 +826,7 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
             throw new AlgebricksException("variable list size does not equal to expression list size ");
         }
         for (int i = 0; i < vars.size(); i++) {
-            list.add(new Pair<LogicalVariable, ILogicalExpression>(vars.get(i), exprs.get(i).getValue()));
+            list.add(Pair.of(vars.get(i), exprs.get(i).getValue()));
         }
         return list;
     }
@@ -831,6 +849,10 @@ public class IsomorphismOperatorVisitor implements ILogicalOperatorVisitor<Boole
             return Boolean.FALSE;
         }
         isomorphic = op.getMissingValue().equals(unnestOpArg.getMissingValue());
+        if (!isomorphic) {
+            return Boolean.FALSE;
+        }
+        isomorphic = Objects.equals(op.getTimeTravel(), unnestOpArg.getTimeTravel());
         if (!isomorphic) {
             return Boolean.FALSE;
         }

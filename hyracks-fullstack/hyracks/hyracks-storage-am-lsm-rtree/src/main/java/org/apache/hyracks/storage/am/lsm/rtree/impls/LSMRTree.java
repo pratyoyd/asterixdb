@@ -29,6 +29,7 @@ import org.apache.hyracks.api.dataflow.value.ILinearizeComparatorFactory;
 import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.IIOManager;
+import org.apache.hyracks.control.common.controllers.NCConfig;
 import org.apache.hyracks.data.std.primitive.IntegerPointable;
 import org.apache.hyracks.dataflow.common.data.accessors.ITupleReference;
 import org.apache.hyracks.storage.am.btree.impls.BTree.BTreeAccessor;
@@ -72,7 +73,7 @@ import org.apache.hyracks.storage.common.buffercache.IBufferCache;
 public class LSMRTree extends AbstractLSMRTree {
     protected final int[] buddyBTreeFields;
 
-    public LSMRTree(IIOManager ioManager, List<IVirtualBufferCache> virtualBufferCaches,
+    public LSMRTree(NCConfig storageConfig, IIOManager ioManager, List<IVirtualBufferCache> virtualBufferCaches,
             RTreeFrameFactory rtreeInteriorFrameFactory, RTreeFrameFactory rtreeLeafFrameFactory,
             ITreeIndexFrameFactory btreeInteriorFrameFactory, ITreeIndexFrameFactory btreeLeafFrameFactory,
             IBufferCache diskBufferCache, ILSMIndexFileManager fileNameManager,
@@ -85,7 +86,7 @@ public class LSMRTree extends AbstractLSMRTree {
             ILSMIOOperationCallbackFactory ioOpCallbackFactory, ILSMPageWriteCallbackFactory pageWriteCallbackFactory,
             int[] rtreeFields, int[] buddyBTreeFields, int[] filterFields, boolean durable, boolean isPointMBR)
             throws HyracksDataException {
-        super(ioManager, virtualBufferCaches, rtreeInteriorFrameFactory, rtreeLeafFrameFactory,
+        super(storageConfig, ioManager, virtualBufferCaches, rtreeInteriorFrameFactory, rtreeLeafFrameFactory,
                 btreeInteriorFrameFactory, btreeLeafFrameFactory, diskBufferCache, fileNameManager, componentFactory,
                 componentFactory, fieldCount, rtreeCmpFactories, btreeCmpFactories, linearizer, comparatorFields,
                 linearizerArray, bloomFilterFalsePositiveRate, mergePolicy, opTracker, ioScheduler, ioOpCallbackFactory,
@@ -110,7 +111,6 @@ public class LSMRTree extends AbstractLSMRTree {
         RangePredicate btreeNullPredicate = new RangePredicate(null, null, true, true, null, null);
         BTreeAccessor memBTreeAccessor =
                 flushingComponent.getBuddyIndex().createAccessor(NoOpIndexAccessParameters.INSTANCE);
-        boolean abort = true;
         try {
             try {
                 rTreeTupleSorter = getRTreeTupleSorter(flushingComponent, memBTreeAccessor, btreeNullPredicate,
@@ -118,8 +118,9 @@ public class LSMRTree extends AbstractLSMRTree {
                 rTreeTupleSorter.sort();
                 component = createDiskComponent(componentFactory, flushOp.getTarget(), flushOp.getBTreeTarget(),
                         flushOp.getBloomFilterTarget(), true);
-                componentBulkLoader = component.createBulkLoader(operation, 1.0f, false, numBTreeTuples.longValue(),
-                        false, false, false, pageWriteCallbackFactory.createPageWriteCallback());
+                componentBulkLoader =
+                        component.createBulkLoader(storageConfig, operation, 1.0f, false, numBTreeTuples.longValue(),
+                                false, false, false, pageWriteCallbackFactory.createPageWriteCallback());
                 flushLoadRTree(isEmpty, rTreeTupleSorter, componentBulkLoader);
                 // scan the memory BTree and bulk load delete tuples
                 flushLoadBtree(memBTreeAccessor, componentBulkLoader, btreeNullPredicate);
@@ -142,12 +143,16 @@ public class LSMRTree extends AbstractLSMRTree {
             }
             // Note. If we change the filter to write to metadata object, we don't need the if block above
             flushingComponent.getMetadata().copy(component.getMetadata());
-            abort = false;
             componentBulkLoader.end();
-        } finally {
-            if (abort && componentBulkLoader != null) {
-                componentBulkLoader.abort();
+        } catch (Throwable e) {
+            try {
+                if (componentBulkLoader != null) {
+                    componentBulkLoader.abort();
+                }
+            } catch (Throwable th) {
+                e.addSuppressed(th);
             }
+            throw e;
         }
         return component;
     }
@@ -264,32 +269,35 @@ public class LSMRTree extends AbstractLSMRTree {
         IIndexCursor cursor = mergeOp.getCursor();
         ILSMDiskComponentBulkLoader componentBulkLoader = null;
         ILSMDiskComponent mergedComponent = null;
-        boolean abort = true;
         try {
-            mergedComponent = createDiskComponent(componentFactory, mergeOp.getTarget(), mergeOp.getBTreeTarget(),
-                    mergeOp.getBloomFilterTarget(), true);
-            componentBulkLoader = loadMergeBulkLoader(mergeOp, cursor, mergedComponent);
-            if (mergedComponent.getLSMComponentFilter() != null) {
-                List<ITupleReference> filterTuples = new ArrayList<>();
-                for (int i = 0; i < mergeOp.getMergingComponents().size(); ++i) {
-                    filterTuples.add(mergeOp.getMergingComponents().get(i).getLSMComponentFilter().getMinTuple());
-                    filterTuples.add(mergeOp.getMergingComponents().get(i).getLSMComponentFilter().getMaxTuple());
-                }
-                getFilterManager().updateFilter(mergedComponent.getLSMComponentFilter(), filterTuples,
-                        NoOpOperationCallback.INSTANCE);
-                getFilterManager().writeFilter(mergedComponent.getLSMComponentFilter(),
-                        mergedComponent.getMetadataHolder());
-            }
-            abort = false;
-            componentBulkLoader.end();
-        } finally {
             try {
-                cursor.destroy();
+                mergedComponent = createDiskComponent(componentFactory, mergeOp.getTarget(), mergeOp.getBTreeTarget(),
+                        mergeOp.getBloomFilterTarget(), true);
+                componentBulkLoader = loadMergeBulkLoader(mergeOp, cursor, mergedComponent);
+                if (mergedComponent.getLSMComponentFilter() != null) {
+                    List<ITupleReference> filterTuples = new ArrayList<>();
+                    for (int i = 0; i < mergeOp.getMergingComponents().size(); ++i) {
+                        filterTuples.add(mergeOp.getMergingComponents().get(i).getLSMComponentFilter().getMinTuple());
+                        filterTuples.add(mergeOp.getMergingComponents().get(i).getLSMComponentFilter().getMaxTuple());
+                    }
+                    getFilterManager().updateFilter(mergedComponent.getLSMComponentFilter(), filterTuples,
+                            NoOpOperationCallback.INSTANCE);
+                    getFilterManager().writeFilter(mergedComponent.getLSMComponentFilter(),
+                            mergedComponent.getMetadataHolder());
+                }
+                componentBulkLoader.end();
             } finally {
-                if (abort && componentBulkLoader != null) {
+                cursor.destroy();
+            }
+        } catch (Throwable e) {
+            try {
+                if (componentBulkLoader != null) {
                     componentBulkLoader.abort();
                 }
+            } catch (Throwable th) {
+                e.addSuppressed(th);
             }
+            throw e;
         }
         return mergedComponent;
     }
@@ -297,46 +305,38 @@ public class LSMRTree extends AbstractLSMRTree {
     private ILSMDiskComponentBulkLoader loadMergeBulkLoader(LSMRTreeMergeOperation mergeOp, IIndexCursor cursor,
             ILSMDiskComponent mergedComponent) throws HyracksDataException {
         ILSMDiskComponentBulkLoader componentBulkLoader = null;
-        boolean abort = true;
         ISearchPredicate rtreeSearchPred = new SearchPredicate(null, null);
         ILSMIndexOperationContext opCtx = ((LSMRTreeSortedCursor) cursor).getOpCtx();
         search(opCtx, cursor, rtreeSearchPred);
         try {
-            try {
-                // In case we must keep the deleted-keys BTrees, then they must be merged
-                // *before* merging the r-trees so that
-                // lsmHarness.endSearch() is called once when the r-trees have been merged.
-                if (mergeOp.getMergingComponents().get(mergeOp.getMergingComponents().size() - 1) != diskComponents
-                        .get(diskComponents.size() - 1)) {
-                    // Keep the deleted tuples since the oldest disk component
-                    // is not included in the merge operation
-                    long numElements = 0L;
-                    for (int i = 0; i < mergeOp.getMergingComponents().size(); ++i) {
-                        numElements += ((LSMRTreeDiskComponent) mergeOp.getMergingComponents().get(i)).getBloomFilter()
-                                .getNumElements();
-                    }
-                    componentBulkLoader = mergedComponent.createBulkLoader(mergeOp, 1.0f, false, numElements, false,
-                            false, false, pageWriteCallbackFactory.createPageWriteCallback());
-                    mergeLoadBTree(mergeOp, opCtx, rtreeSearchPred, componentBulkLoader);
-                } else {
-                    //no buddy-btree needed
-                    componentBulkLoader = mergedComponent.createBulkLoader(mergeOp, 1.0f, false, 0L, false, false,
-                            false, pageWriteCallbackFactory.createPageWriteCallback());
+            // In case we must keep the deleted-keys BTrees, then they must be merged
+            // *before* merging the r-trees so that
+            // lsmHarness.endSearch() is called once when the r-trees have been merged.
+            if (mergeOp.getMergingComponents().get(mergeOp.getMergingComponents().size() - 1) != diskComponents
+                    .get(diskComponents.size() - 1)) {
+                // Keep the deleted tuples since the oldest disk component
+                // is not included in the merge operation
+                long numElements = 0L;
+                for (int i = 0; i < mergeOp.getMergingComponents().size(); ++i) {
+                    numElements += ((LSMRTreeDiskComponent) mergeOp.getMergingComponents().get(i)).getBloomFilter()
+                            .getNumElements();
                 }
-                //search old rtree components
-                while (cursor.hasNext()) {
-                    cursor.next();
-                    ITupleReference frameTuple = cursor.getTuple();
-                    componentBulkLoader.add(frameTuple);
-                }
-            } finally {
-                cursor.close();
+                componentBulkLoader = mergedComponent.createBulkLoader(storageConfig, mergeOp, 1.0f, false, numElements,
+                        false, false, false, pageWriteCallbackFactory.createPageWriteCallback());
+                mergeLoadBTree(mergeOp, opCtx, rtreeSearchPred, componentBulkLoader);
+            } else {
+                //no buddy-btree needed
+                componentBulkLoader = mergedComponent.createBulkLoader(storageConfig, mergeOp, 1.0f, false, 0L, false,
+                        false, false, pageWriteCallbackFactory.createPageWriteCallback());
             }
-            abort = false;
+            //search old rtree components
+            while (cursor.hasNext()) {
+                cursor.next();
+                ITupleReference frameTuple = cursor.getTuple();
+                componentBulkLoader.add(frameTuple);
+            }
         } finally {
-            if (abort && componentBulkLoader != null) {
-                componentBulkLoader.abort();
-            }
+            cursor.close();
         }
         return componentBulkLoader;
     }

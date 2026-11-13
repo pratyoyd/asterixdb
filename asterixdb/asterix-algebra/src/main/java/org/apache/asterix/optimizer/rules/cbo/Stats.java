@@ -22,14 +22,13 @@ package org.apache.asterix.optimizer.rules.cbo;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 import org.apache.asterix.compiler.provider.IRuleSetFactory;
 import org.apache.asterix.lang.common.expression.LiteralExpr;
 import org.apache.asterix.lang.common.literal.StringLiteral;
 import org.apache.asterix.lang.common.util.FunctionUtil;
 import org.apache.asterix.metadata.declared.DataSource;
-import org.apache.asterix.metadata.declared.DataSourceId;
-import org.apache.asterix.metadata.declared.MetadataProvider;
 import org.apache.asterix.metadata.declared.SampleDataSource;
 import org.apache.asterix.metadata.entities.Index;
 import org.apache.asterix.om.base.ADouble;
@@ -37,14 +36,15 @@ import org.apache.asterix.om.base.AInt64;
 import org.apache.asterix.om.base.ARecord;
 import org.apache.asterix.om.base.IAObject;
 import org.apache.asterix.om.constants.AsterixConstantValue;
+import org.apache.asterix.om.exceptions.ExceptionUtil;
 import org.apache.asterix.om.functions.BuiltinFunctionInfo;
 import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.optimizer.base.AnalysisUtil;
 import org.apache.asterix.optimizer.rules.am.array.AbstractOperatorFromSubplanRewrite;
 import org.apache.asterix.translator.ConstantHelper;
-import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -61,11 +61,15 @@ import org.apache.hyracks.algebricks.core.algebra.expressions.PredicateCardinali
 import org.apache.hyracks.algebricks.core.algebra.expressions.ScalarFunctionCallExpression;
 import org.apache.hyracks.algebricks.core.algebra.expressions.VariableReferenceExpression;
 import org.apache.hyracks.algebricks.core.algebra.functions.AlgebricksBuiltinFunctions;
+import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractBinaryJoinOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AggregateOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AssignOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.DataSourceScanOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.DistinctOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.LimitOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.ProjectOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.SelectOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.SubplanOperator;
@@ -102,34 +106,18 @@ public class Stats {
         joinEnum = joinE;
     }
 
-    protected Index findSampleIndex(DataSourceScanOperator scanOp, IOptimizationContext context)
-            throws AlgebricksException {
-        DataSource ds = (DataSource) scanOp.getDataSource();
-        if (ds.getDatasourceType() != DataSource.Type.INTERNAL_DATASET)
-            return null;
-        DataSourceId dsid = ds.getId();
-        MetadataProvider mdp = (MetadataProvider) context.getMetadataProvider();
-        return mdp.findSampleIndex(dsid.getDatabaseName(), dsid.getDataverseName(), dsid.getDatasourceName());
-    }
-
-    private double findJoinSelectivity(JoinProductivityAnnotation anno, AbstractFunctionCallExpression joinExpr)
-            throws AlgebricksException {
+    private double findJoinSelectivity(JoinCondition jc, JoinProductivityAnnotation anno,
+            AbstractFunctionCallExpression joinExpr, JoinOperator jOp) throws AlgebricksException {
         List<LogicalVariable> exprUsedVars = new ArrayList<>();
         joinExpr.getUsedVariables(exprUsedVars);
-        if (exprUsedVars.size() != 2) {
-            // Since there is a left and right dataset here, expecting only two variables.
+
+        if ((jc.numLeafInputs != 2) || (exprUsedVars.size() <= 1)) {
+            // we can only deal with binary joins. More checks should be in place as well such as R.a op S.a
             return 1.0;
         }
 
-        int idx1, idx2;
-        if (joinEnum.varLeafInputIds.containsKey(exprUsedVars.get(0))) {
-            idx1 = joinEnum.varLeafInputIds.get(exprUsedVars.get(0));
-        } else
-            return 1.0;
-        if (joinEnum.varLeafInputIds.containsKey(exprUsedVars.get(1))) {
-            idx2 = joinEnum.varLeafInputIds.get(exprUsedVars.get(1));
-        } else
-            return 1.0;
+        AbstractLeafInput leaf1 = jc.getLeftSide(), leaf2 = jc.getRightSide();
+        int idx1 = joinEnum.leafInputToJoinIndexMap.get(leaf1), idx2 = joinEnum.leafInputToJoinIndexMap.get(leaf2);
 
         if (joinEnum.jnArray[idx1].getFake()) {
             return 1.0;
@@ -157,83 +145,319 @@ public class Stats {
                 return 1.0;
             }
             double productivity = anno.getJoinProductivity();
-            if (productivity <= 0) {
-                IWarningCollector warningCollector = joinEnum.optCtx.getWarningCollector();
-                if (warningCollector.shouldWarn()) {
-                    warningCollector.warn(Warning.of(joinExpr.getSourceLocation(), ErrorCode.INAPPLICABLE_HINT,
-                            "productivity",
-                            "Productivity specified: " + productivity + ", has to be a decimal value greater than 0"));
-                }
-                return 1.0;
-            }
+
             if (leftIndex == idx1) {
                 return productivity / card2;
             } else {
                 return productivity / card1;
             }
         } else {
-            ILogicalOperator leafInput;
-            LogicalVariable var;
-            if (!(joinExpr.getFunctionIdentifier().equals(AlgebricksBuiltinFunctions.EQ))) {
-                return 0.5; // we will assume half; rest of the code assumes EQ joins
+            Index index1 = findIndex((RealLeafInput) leaf1);
+            if (index1 == null) {
+                return 0.5;
             }
+            Index index2 = findIndex((RealLeafInput) leaf2);
+            if (index2 == null) {
+                return 0.5;
+            }
+
+            boolean unnestOp1 = joinEnum.findUnnestOp(leaf1.getOp());
+            boolean unnestOp2 = joinEnum.findUnnestOp(leaf2.getOp());
+            boolean unnestOp = unnestOp1 || unnestOp2;
+
+            LogicalVariable var1 = exprUsedVars.get(0);
+            LogicalVariable var2 = exprUsedVars.get(1);
+            // find if this join part of a composite join R.a = S.a and R.b = S.b and ...
+            List<Integer> compositeJoins = new ArrayList<>();
+            for (int i = 0; i < joinEnum.joinConditions.size(); i++) {
+                if (Objects.equals(joinEnum.joinConditions.get(i).getDatasetSubset(), jc.getDatasetSubset())) {
+                    compositeJoins.add(i);
+                }
+            }
+            int size = compositeJoins.size();
+            if (size > 1) { // for composite joins, we will always resort to joining with samples
+                joinExpr = combineJoinExprs(compositeJoins);
+                double sels = findJoinSelFromSamples((RealLeafInput) leaf1, (RealLeafInput) leaf2, index1, index2,
+                        joinExpr, jOp);
+                if (sels == 0.0) {
+                    sels = 1.0 / Math.max(card1, card2);
+                }
+                for (int i = 0; i < compositeJoins.size(); i++) {
+                    joinEnum.joinConditions.get(compositeJoins.get(i)).selectivity = sels;
+                    // Later on we will make the selectivity of just one of these to be sels and the others
+                    // will have a selectivity of 1.0.
+                }
+                return sels;
+            }
+
+            boolean okOp = acceptableOp(joinExpr.getFunctionIdentifier());
+            // If there are more than 2 variables, it is not a simple join like r.a op s.a
+            Index.SampleIndexDetails idxDetails1 = (Index.SampleIndexDetails) index1.getIndexDetails();
+            Index.SampleIndexDetails idxDetails2 = (Index.SampleIndexDetails) index2.getIndexDetails();
+            if (((idxDetails1.getSourceCardinality() < idxDetails1.getSampleCardinalityTarget())
+                    || (idxDetails2.getSourceCardinality() < idxDetails2.getSampleCardinalityTarget())
+                    || exprUsedVars.size() > 2) && !unnestOp && okOp) {
+                double sels = findJoinSelFromSamples((RealLeafInput) joinEnum.leafInputs.get(idx1 - 1),
+                        (RealLeafInput) joinEnum.leafInputs.get(idx2 - 1), index1, index2, joinExpr, jOp);
+                if (sels == 0.0) {
+                    sels = 1.0 / Math.max(card1, card2);
+                }
+                return sels;
+            }
+            //At this point, a single join will be treated as an EQ join even if it is not. Not ideal but no other choice
+            // for example interval-overlap falls into this case. For some reason, joining samples with interval-overlap fails,
+            // so defaulting to this case.
+            double seln = naiveJoinSelectivity(joinExpr, card1, card2, idx1, idx2, unnestOp1, unnestOp2);
+            return seln;
+        }
+
+    }
+
+    private AbstractFunctionCallExpression combineJoinExprs(List<Integer> compositeJoins) {
+        ScalarFunctionCallExpression andExpr = new ScalarFunctionCallExpression(
+                BuiltinFunctions.getBuiltinFunctionInfo(AlgebricksBuiltinFunctions.AND));
+        for (int i = 0; i < compositeJoins.size(); i++) {
+            JoinCondition jc = joinEnum.joinConditions.get(compositeJoins.get(i));
+            andExpr.getArguments().add(new MutableObject<>(jc.joinCondition));
+        }
+        return andExpr;
+    }
+
+    private boolean isJoinSelFromSamplesApplicable(AbstractLeafInput leafInput1, AbstractLeafInput leafInput2,
+            Index index1, Index index2, LogicalVariable var1, LogicalVariable var2) throws AlgebricksException {
+        Index.SampleIndexDetails details1 = (Index.SampleIndexDetails) index1.getIndexDetails();
+        Index.SampleIndexDetails details2 = (Index.SampleIndexDetails) index2.getIndexDetails();
+        if (details1.getSourceCardinality() >= details1.getSampleCardinalityTarget()
+                && details2.getSourceCardinality() >= details2.getSampleCardinalityTarget()) {
+            return false;
+        }
+        double numDistinct1 = computeNumDistinct(leafInput1.getOp(), var1, index1);
+        if (numDistinct1 < 0) {
+            return false;
+        }
+        double avgNumRowsPerValue1 = details1.getSourceCardinality() / numDistinct1;
+        double numDistinct2 = computeNumDistinct(leafInput2.getOp(), var2, index2);
+        if (numDistinct2 < 0) {
+            return false;
+        }
+        double avgNumRowsPerValue2 = details2.getSourceCardinality() / numDistinct2;
+        return avgNumRowsPerValue1 * avgNumRowsPerValue2 * Math.min(numDistinct1, numDistinct2) <= Math
+                .max(Math.max(details1.getSourceCardinality(), details2.getSourceCardinality()), 750000);
+    }
+
+    private double computeNumDistinct(ILogicalOperator leafInput, LogicalVariable var, Index index)
+            throws AlgebricksException {
+        List<List<IAObject>> result = runSamplingQueryDistinct(this.optCtx, leafInput, var, index);
+        if (result == null) {
+            return -1; // Negative value indicates failure
+        }
+        double numDistincts = findPredicateCardinality(result, true);
+        Index.SampleIndexDetails details = (Index.SampleIndexDetails) index.getIndexDetails();
+        if (numDistincts == 0) {
+            numDistincts = details.getSourceCardinality(); // All values are nulls
+        }
+        if (numDistincts == 0) {
+            numDistincts = 1; // Sample is empty
+        }
+        return numDistincts;
+    }
+
+    //Goal is to keep expanding the list of ops here.
+    private boolean acceptableOp(FunctionIdentifier functionIdentifier) {
+        if (functionIdentifier.equals(AlgebricksBuiltinFunctions.NEQ)) {
+            return true;
+        }
+        if (functionIdentifier.equals(AlgebricksBuiltinFunctions.EQ)) {
+            return true;
+        }
+        if (functionIdentifier.equals(AlgebricksBuiltinFunctions.LT)) {
+            return true;
+        }
+        if (functionIdentifier.equals(AlgebricksBuiltinFunctions.GT)) {
+            return true;
+        }
+        if (functionIdentifier.equals(AlgebricksBuiltinFunctions.GE)) {
+            return true;
+        }
+        if (functionIdentifier.equals(AlgebricksBuiltinFunctions.LE)) {
+            return true;
+        }
+        if (functionIdentifier.equals(BuiltinFunctions.IF_MISSING_OR_NULL)) { // added this for q16 in CH2
+            return true;
+        }
+        return false;
+    }
+
+    private double naiveJoinSelectivity(AbstractFunctionCallExpression joinExpr, double card1, double card2, int idx1,
+            int idx2, boolean unnestOp1, boolean unnestOp2) throws AlgebricksException {
+        AbstractLeafInput leafInput;
+
+        if (unnestOp1) {// we cannot choose teh side with an array as we need the unnesting scaling factor also.
+            // have to see if there are other alternatives later
+            leafInput = joinEnum.leafInputs.get(idx2 - 1);
+        } else if (unnestOp2) {
+            leafInput = joinEnum.leafInputs.get(idx1 - 1);
+        } else {
             // choose the smaller side sample; better results this way for sure!
             if (card1 < card2) {
                 leafInput = joinEnum.leafInputs.get(idx1 - 1);
-                var = exprUsedVars.get(0);
             } else {
                 leafInput = joinEnum.leafInputs.get(idx2 - 1);
-                var = exprUsedVars.get(1);
             }
-            Index index = findIndex(leafInput);
-            if (index == null) {
-                return 1.0;
-            }
-            List<List<IAObject>> result = runSamplingQueryDistinct(this.optCtx, leafInput, var, index);
-            if (result == null) {
-                return 1.0;
-            }
-
-            double estDistinctCardinalityFromSample = findPredicateCardinality(result, true);
-            if (estDistinctCardinalityFromSample == 0) {
-                estDistinctCardinalityFromSample = 1; // just in case
-            }
-            Index.SampleIndexDetails details = (Index.SampleIndexDetails) index.getIndexDetails();
-            double numDistincts;
-            // if the table is smaller than the sample size, there is no need to use the estimator
-            //                                            getSampleCardinalityTarget() equals 1063 or 4252 or 17008
-            if (details.getSourceCardinality() <= details.getSampleCardinalityTarget()) {
-                numDistincts = estDistinctCardinalityFromSample;
-            } else { // when the number of distincts is smaller than approx 25% of the sample size, then we do not
-                         // then we do not need to call the estimator. This is a good heuristic. This was obtained by looking at the graph
-                     // of d = D ( 1 - e^(-getSampleCardinalityTarget/D) ; d = estDistinctCardinalityFromSample; D = actual number of distincts
-                if (estDistinctCardinalityFromSample <= 0.25 * details.getSampleCardinalityTarget()) {
-                    numDistincts = estDistinctCardinalityFromSample;
-                } else {
-                    numDistincts = secondDistinctEstimator(estDistinctCardinalityFromSample, index);
-                }
-            }
-            if (numDistincts > details.getSourceCardinality()) {
-                numDistincts = details.getSourceCardinality(); // cannot exceed table cardinality
-            }
-            return 1.0 / numDistincts; // this is the expected selectivity for joins for Fk-PK and Fk-Fk joins
         }
+        Index index = findIndex((RealLeafInput) leafInput);
+        if (index == null) {
+            return 1.0;
+        }
+        // the join key of the chosen side is an expression, not necessarily a column; count its distinct values
+        ILogicalExpression joinKeyExpr = findSampledSideJoinKeyExpr(leafInput.getOp(), joinExpr);
+        if (joinKeyExpr == null) {
+            return 1.0;
+        }
+        List<List<IAObject>> result = runSamplingQueryDistinct(this.optCtx, leafInput.getOp(), joinKeyExpr, index);
+        if (result == null) {
+            return 1.0;
+        }
+
+        double estDistinctCardinalityFromSample = findPredicateCardinality(result, true);
+        if (estDistinctCardinalityFromSample == 0) {
+            estDistinctCardinalityFromSample = 1; // just in case
+        }
+        Index.SampleIndexDetails details = (Index.SampleIndexDetails) index.getIndexDetails();
+        double numDistincts;
+        // if the table is smaller than the sample size, there is no need to use the estimator
+        //                                            getSampleCardinalityTarget() equals 1063 or 4252 or 17008
+        if (details.getSourceCardinality() <= details.getSampleCardinalityTarget()) {
+            numDistincts = estDistinctCardinalityFromSample;
+        } else { // when the number of distincts is smaller than approx 25% of the sample size, then we do not
+            // then we do not need to call the estimator. This is a good heuristic. This was obtained by looking at the graph
+            // of d = D ( 1 - e^(-getSampleCardinalityTarget/D) ; d = estDistinctCardinalityFromSample; D = actual number of distincts
+            if (estDistinctCardinalityFromSample <= 0.25 * details.getSampleCardinalityTarget()) {
+                numDistincts = estDistinctCardinalityFromSample;
+            } else {
+                numDistincts = secondDistinctEstimator(estDistinctCardinalityFromSample, index);
+            }
+        }
+        if (numDistincts > details.getSourceCardinality()) {
+            numDistincts = details.getSourceCardinality(); // cannot exceed table cardinality
+        }
+        LOGGER.info("***naive join selectivity: distinct({}) = {} from sample; selectivity = {}***", joinKeyExpr,
+                numDistincts, 1.0 / numDistincts);
+        return 1.0 / numDistincts; // this is the expected selectivity for joins for Fk-PK and Fk-Fk joins
+    }
+
+    /**
+     * Returns the join-key expression of the side of {@code joinExpr} that {@code leafInputOp} produces,
+     * or {@code null} when that side cannot be identified.
+     * <p>
+     * {@link #naiveJoinSelectivity} estimates the join selectivity as {@code 1/distinct(join key)} of one
+     * side, computed from that side's sample. The join key of a side is in general an <em>expression</em>,
+     * not a column: in {@code R.a * R.b mod 100 = S.c} the key of R is {@code R.a * R.b mod 100}. It used
+     * to be assumed that the predicate's used variables pair up positionally with the two leaf inputs of
+     * the join -- the first used variable with the first leaf input, the second with the second one --
+     * which only holds for the shape {@code R.a op S.b}. When one side is computed, that side contributes
+     * more than one used variable (the defining ASSIGN is inlined into the predicate by
+     * {@code JoinEnum.findJoinConditionsAndDoTC}), and the positional pairing then hands back a variable
+     * that the chosen leaf input does not even produce.
+     * <p>
+     * The argument of the binary predicate whose used variables are all live in {@code leafInputOp}
+     * <em>is</em> that side's join key, so it is identified from liveness rather than from position, and
+     * the two arguments are required to partition cleanly across the two sides. {@code null} is returned
+     * when the predicate is not binary, when neither argument's variables are all live in the chosen leaf
+     * input, or when one argument mixes variables of both sides -- in all of those cases the sample of this
+     * leaf input cannot yield the distinct count of a join key, and the caller falls back to its default
+     * selectivity.
+     */
+    private static ILogicalExpression findSampledSideJoinKeyExpr(ILogicalOperator leafInputOp,
+            AbstractFunctionCallExpression joinExpr) throws AlgebricksException {
+        List<Mutable<ILogicalExpression>> args = joinExpr.getArguments();
+        if (args.size() != 2) {
+            // not a binary comparison; there is no "the other side" to attribute the remaining variables to
+            return null;
+        }
+        List<LogicalVariable> liveVars = liveVariablesOf(leafInputOp);
+        ILogicalExpression arg0 = args.get(0).getValue(), arg1 = args.get(1).getValue();
+        List<LogicalVariable> argVars0 = usedVariablesOf(arg0), argVars1 = usedVariablesOf(arg1);
+        // an argument belongs to this side only if it has variables and every one of them is live here; it
+        // belongs to the other side only if none of its variables is live here. A constant argument belongs
+        // to neither, and an argument mixing variables of both sides belongs to neither.
+        if (isFromThisSide(argVars0, liveVars) && isFromOtherSide(argVars1, liveVars)) {
+            return arg0;
+        }
+        if (isFromThisSide(argVars1, liveVars) && isFromOtherSide(argVars0, liveVars)) {
+            return arg1;
+        }
+        return null;
+    }
+
+    private static boolean isFromThisSide(List<LogicalVariable> argVars, List<LogicalVariable> liveVars) {
+        return !argVars.isEmpty() && liveVars.containsAll(argVars);
+    }
+
+    private static boolean isFromOtherSide(List<LogicalVariable> argVars, List<LogicalVariable> liveVars) {
+        return !argVars.isEmpty() && argVars.stream().noneMatch(liveVars::contains);
+    }
+
+    private double findJoinSelFromSamples(RealLeafInput left, RealLeafInput right, Index index1, Index index2,
+            AbstractFunctionCallExpression joinExpr, JoinOperator join) throws AlgebricksException {
+        AbstractBinaryJoinOperator abjoin = join.getAbstractJoinOp();
+        Pair<ILogicalOperator, Double> leftOutput = replaceDataSourceWithSample(left.getOp(), index1, joinExpr);
+        ILogicalOperator originalLeft = abjoin.getInputs().get(0).getValue();
+        ILogicalOperator originalRight = abjoin.getInputs().get(1).getValue();
+        abjoin.getInputs().get(0).setValue(leftOutput.getLeft());
+        Pair<ILogicalOperator, Double> rightOutput = replaceDataSourceWithSample(right.getOp(), index2, joinExpr);
+        abjoin.getInputs().get(1).setValue(rightOutput.getLeft());
+        abjoin.getCondition().setValue(joinExpr);
+        List<List<IAObject>> result = runSamplingQuery(optCtx, abjoin);
+        double estCardSample = findPredicateCardinality(result, false);
+        double sel = estCardSample / leftOutput.getRight() / rightOutput.getRight();
+
+        abjoin.getInputs().get(0).setValue(originalLeft);
+        abjoin.getInputs().get(1).setValue(originalRight);
+        return sel;
+    }
+
+    private Pair<ILogicalOperator, Double> replaceDataSourceWithSample(ILogicalOperator op, Index index,
+            AbstractFunctionCallExpression joinExpr) throws AlgebricksException {
+        ILogicalOperator selOp = OperatorManipulationUtil.bottomUpCopyOperators(op);
+        if (!(joinExpr.getFunctionIdentifier().equals(AlgebricksBuiltinFunctions.EQ))) {
+            // add a limit operator to restrict the number of tuples on each side of the join to 1000
+            AsterixConstantValue cnstVal = new AsterixConstantValue(new AInt64(1000));
+            ConstantExpression constantExpression = new ConstantExpression(cnstVal);
+            LimitOperator lo = new LimitOperator(constantExpression, false);
+            lo.getInputs().add(new MutableObject<>(selOp));
+            selOp = lo;
+        }
+        // must set all the Sel operators to be true, otherwise we will be multiplying the single table sels also here.
+        storeSelectConditionsAndMakeThemTrue(selOp, null);
+        ILogicalOperator parent = OperatorUtils.findDataSourceScanOperatorParent(selOp);
+        DataSourceScanOperator scanOp = (DataSourceScanOperator) parent.getInputs().get(0).getValue();
+        Index.SampleIndexDetails idxDetails = (Index.SampleIndexDetails) index.getIndexDetails();
+        double origDatasetCard = idxDetails.getSourceCardinality();
+        double sampleCard = Math.min(idxDetails.getSampleCardinalityTarget(), origDatasetCard);
+
+        // replace the dataScanSourceOperator with the sampling source
+        SampleDataSource sampledatasource = OperatorUtils.getSampleDataSource(scanOp, optCtx);
+        scanOp.setDataSource(sampledatasource);
+        parent.getInputs().get(0).setValue(scanOp);
+        Pair<ILogicalOperator, Double> retVal = Pair.of(selOp, sampleCard);
+
+        return retVal;
     }
 
     // The expression we get may not be a base condition. It could be comprised of ors and ands and nots. So have to
     //recursively find the overall selectivity.
-    private double getSelectivityFromAnnotation(AbstractFunctionCallExpression afcExpr, boolean join,
-            boolean singleDatasetPreds) throws AlgebricksException {
+    private double getSelectivityFromAnnotation(JoinCondition jc, AbstractFunctionCallExpression afcExpr, boolean join,
+            boolean singleDatasetPreds, JoinOperator jOp) throws AlgebricksException {
         double sel = 1.0;
-
         if (afcExpr.getFunctionIdentifier().equals(AlgebricksBuiltinFunctions.OR)) {
             double orSel = 0.0;
             for (int i = 0; i < afcExpr.getArguments().size(); i++) {
                 ILogicalExpression lexpr = afcExpr.getArguments().get(i).getValue();
                 if (lexpr.getExpressionTag().equals(LogicalExpressionTag.FUNCTION_CALL)) {
-                    sel = getSelectivityFromAnnotation(
+                    sel = getSelectivityFromAnnotation(jc,
                             (AbstractFunctionCallExpression) afcExpr.getArguments().get(i).getValue(), join,
-                            singleDatasetPreds);
+                            singleDatasetPreds, jOp);
                     orSel = orSel + sel - orSel * sel;
                 }
             }
@@ -243,9 +467,9 @@ public class Stats {
             for (int i = 0; i < afcExpr.getArguments().size(); i++) {
                 ILogicalExpression lexpr = afcExpr.getArguments().get(i).getValue();
                 if (lexpr.getExpressionTag().equals(LogicalExpressionTag.FUNCTION_CALL)) {
-                    sel = getSelectivityFromAnnotation(
+                    sel = getSelectivityFromAnnotation(jc,
                             (AbstractFunctionCallExpression) afcExpr.getArguments().get(i).getValue(), join,
-                            singleDatasetPreds);
+                            singleDatasetPreds, jOp);
                     andSel *= sel;
                 }
             }
@@ -253,9 +477,9 @@ public class Stats {
         } else if (afcExpr.getFunctionIdentifier().equals(AlgebricksBuiltinFunctions.NOT)) {
             ILogicalExpression lexpr = afcExpr.getArguments().get(0).getValue();
             if (lexpr.getExpressionTag().equals(LogicalExpressionTag.FUNCTION_CALL)) {
-                sel = getSelectivityFromAnnotation(
+                sel = getSelectivityFromAnnotation(jc,
                         (AbstractFunctionCallExpression) afcExpr.getArguments().get(0).getValue(), join,
-                        singleDatasetPreds);
+                        singleDatasetPreds, jOp);
                 // We want to return 1.0 and not 0.0 if there was no annotation
                 return (sel == 1.0) ? 1.0 : 1.0 - sel;
             }
@@ -284,8 +508,10 @@ public class Stats {
             }
         } else {
             JoinProductivityAnnotation jpa = afcExpr.getAnnotation(JoinProductivityAnnotation.class);
-            s = findJoinSelectivity(jpa, afcExpr);
-            sel *= s;
+            if (jc.selectivity == -1.0) {
+                s = findJoinSelectivity(jc, jpa, afcExpr, jOp);
+                sel *= s;
+            }
         }
 
         List<LogicalVariable> usedVars = new ArrayList<>();
@@ -298,13 +524,20 @@ public class Stats {
         return sel;
     }
 
-    protected double getSelectivityFromAnnotationMain(ILogicalExpression leExpr, boolean join,
-            boolean singleDatasetPreds) throws AlgebricksException {
+    protected double getSelectivityFromAnnotationMain(JoinCondition jc, ILogicalExpression expr, boolean join,
+            boolean singleDatasetPreds, JoinOperator jOp) throws AlgebricksException {
         double sel = 1.0;
+
+        ILogicalExpression leExpr;
+
+        if (jc != null)
+            leExpr = jc.joinCondition;
+        else
+            leExpr = expr;
 
         if (leExpr.getExpressionTag().equals(LogicalExpressionTag.FUNCTION_CALL)) {
             AbstractFunctionCallExpression afcExpr = (AbstractFunctionCallExpression) leExpr;
-            sel = getSelectivityFromAnnotation(afcExpr, join, singleDatasetPreds);
+            sel = getSelectivityFromAnnotation(jc, afcExpr, join, singleDatasetPreds, jOp);
         }
 
         return sel;
@@ -322,7 +555,7 @@ public class Stats {
         while (op.getOperatorTag() != LogicalOperatorTag.EMPTYTUPLESOURCE) {
             if (op.getOperatorTag() == LogicalOperatorTag.SELECT) {
                 SelectOperator selOper = (SelectOperator) op;
-                sel *= getSelectivityFromAnnotationMain(selOper.getCondition().getValue(), join, false);
+                sel *= getSelectivityFromAnnotationMain(null, selOper.getCondition().getValue(), join, false, null);
             }
             if (op.getOperatorTag() == LogicalOperatorTag.SUBPLAN) {
                 sel *= getSelectivity((SubplanOperator) op);
@@ -339,7 +572,7 @@ public class Stats {
         while (true) {
             if (op.getOperatorTag() == LogicalOperatorTag.SELECT) {
                 SelectOperator selOper = (SelectOperator) op;
-                sel *= getSelectivityFromAnnotationMain(selOper.getCondition().getValue(), false, false);
+                sel *= getSelectivityFromAnnotationMain(null, selOper.getCondition().getValue(), false, false, null);
             }
             if (op.getInputs().size() > 0) {
                 op = op.getInputs().get(0).getValue();
@@ -444,30 +677,19 @@ public class Stats {
         }
     }
 
-    protected void issueWarning(double sampleCard, DataSourceScanOperator scanOp) {
-        if (sampleCard == 0) {
-            sampleCard = 1;
-            IWarningCollector warningCollector = optCtx.getWarningCollector();
-            if (warningCollector.shouldWarn()) {
-                warningCollector.warn(Warning.of(scanOp.getSourceLocation(),
-                        org.apache.asterix.common.exceptions.ErrorCode.SAMPLE_HAS_ZERO_ROWS));
-            }
-        }
-    }
-
     protected double findSelectivityForThisPredicate(SelectOperator selOp, AbstractFunctionCallExpression exp,
             boolean arrayIndex) throws AlgebricksException {
         // replace the SelOp.condition with the new exp and replace it at the end
         // The Selop here is the start of the leafInput.
 
-        ILogicalOperator parent = joinEnum.findDataSourceScanOperatorParent(selOp);
+        ILogicalOperator parent = OperatorUtils.findDataSourceScanOperatorParent(selOp);
         DataSourceScanOperator scanOp = (DataSourceScanOperator) parent.getInputs().get(0).getValue();
 
         if (scanOp == null) {
             return 1.0; // what happens to the cards and sizes then? this may happen in case of in lists
         }
 
-        Index index = findSampleIndex(scanOp, optCtx);
+        Index index = OperatorUtils.findSampleIndex(scanOp, optCtx);
         if (index == null) {
             return 1.0;
         }
@@ -475,10 +697,10 @@ public class Stats {
         Index.SampleIndexDetails idxDetails = (Index.SampleIndexDetails) index.getIndexDetails();
         double origDatasetCard = idxDetails.getSourceCardinality();
         double sampleCard = Math.min(idxDetails.getSampleCardinalityTarget(), origDatasetCard);
-        issueWarning(sampleCard, scanOp);
+        ExceptionUtil.warnEmptySamples(sampleCard, scanOp.getSourceLocation(), optCtx);
 
         // replace the dataScanSourceOperator with the sampling source
-        SampleDataSource sampledatasource = joinEnum.getSampleDataSource(scanOp);
+        SampleDataSource sampledatasource = OperatorUtils.getSampleDataSource(scanOp, optCtx);
         DataSourceScanOperator deepCopyofScan =
                 (DataSourceScanOperator) OperatorManipulationUtil.bottomUpCopyOperators(scanOp);
         deepCopyofScan.setDataSource(sampledatasource);
@@ -658,8 +880,8 @@ public class Stats {
         return AnalysisUtil.runQuery(newAggOpRef, Arrays.asList(aggVar), newCtx, IRuleSetFactory.RuleSetKind.SAMPLING);
     }
 
-    protected Index findIndex(ILogicalOperator logOp) throws AlgebricksException {
-        ILogicalOperator parent = joinEnum.findDataSourceScanOperatorParent(logOp);
+    protected Index findIndex(RealLeafInput realLeafInput) throws AlgebricksException {
+        ILogicalOperator parent = OperatorUtils.findDataSourceScanOperatorParent(realLeafInput.getOp());
         if (parent == null) {
             return null;
         }
@@ -673,10 +895,14 @@ public class Stats {
         if (scanOp == null) {
             return null;
         }
-        Index index = findSampleIndex(scanOp, optCtx);
+        Index index = OperatorUtils.findSampleIndex(scanOp, optCtx);
         if (index == null) {
             return null;
         }
+        Index.SampleIndexDetails idxDetails = (Index.SampleIndexDetails) index.getIndexDetails();
+        double origDatasetCard = idxDetails.getSourceCardinality();
+        double sampleCard = Math.min(idxDetails.getSampleCardinalityTarget(), origDatasetCard);
+        ExceptionUtil.warnEmptySamples(sampleCard, scanOp.getSourceLocation(), optCtx);
         return index;
     }
 
@@ -723,19 +949,41 @@ public class Stats {
     //              data-scan []<-[$$37, $$ar, $$38] <- `travel-sample`.inventory.airport
     //                empty-tuple-source
 
-    protected List<List<IAObject>> runSamplingQueryDistinct(IOptimizationContext ctx, ILogicalOperator logOp,
+    protected List<List<IAObject>> runSamplingQueryDistinct(IOptimizationContext ctx, ILogicalOperator op,
             LogicalVariable var, Index index) throws AlgebricksException {
+        return runSamplingQueryDistinct(ctx, op, new VariableReferenceExpression(var), index);
+    }
+
+    /**
+     * Counts the distinct values of {@code keyExpr} in the sample of the dataset scanned by {@code op}.
+     * {@code keyExpr} is evaluated by an ASSIGN inserted on top of the copied subtree, so it may be any
+     * expression over the variables that subtree produces and not just a bare variable reference. When it
+     * <em>is</em> a bare variable reference no ASSIGN is added, so the plan is exactly the one that was
+     * built before expressions were supported.
+     */
+    protected List<List<IAObject>> runSamplingQueryDistinct(IOptimizationContext ctx, ILogicalOperator op,
+            ILogicalExpression keyExpr, Index index) throws AlgebricksException {
         LOGGER.info("***running sample query***");
+
+        List<LogicalVariable> keyExprVars = usedVariablesOf(keyExpr);
+        if (keyExprVars.isEmpty() || !liveVariablesOf(op).containsAll(keyExprVars)) {
+            // The plan built below counts the distinct values of keyExpr, so every variable it references must
+            // be produced by op. If one is not, keyExpr has no type in the subtree below it and typing the
+            // sampling plan would fail. Callers treat null as "no estimate available from the sample".
+            LOGGER.info("***cannot sample {}: the subtree being sampled does not produce all of {}***", keyExpr,
+                    keyExprVars);
+            return null;
+        }
 
         IOptimizationContext newCtx = ctx.getOptimizationContextFactory().cloneOptimizationContext(ctx);
 
-        ILogicalOperator newLogOp = OperatorManipulationUtil.bottomUpCopyOperators(logOp);
+        ILogicalOperator newLogOp = OperatorManipulationUtil.bottomUpCopyOperators(op);
 
         // by passing in null, all select expression will become true.
         // no need to restore them either as this is dne on a copy of the logOp.
         storeSelectConditionsAndMakeThemTrue(newLogOp, null);
 
-        ILogicalOperator parent = joinEnum.findDataSourceScanOperatorParent(newLogOp);
+        ILogicalOperator parent = OperatorUtils.findDataSourceScanOperatorParent(newLogOp);
         DataSourceScanOperator scanOp;
         if (parent instanceof DataSourceScanOperator) {
             scanOp = (DataSourceScanOperator) parent;
@@ -743,12 +991,9 @@ public class Stats {
             scanOp = (DataSourceScanOperator) parent.getInputs().get(0).getValue();
         }
         Index.SampleIndexDetails idxDetails = (Index.SampleIndexDetails) index.getIndexDetails();
-        double origDatasetCard = idxDetails.getSourceCardinality();
-        double sampleCard = Math.min(idxDetails.getSampleCardinalityTarget(), origDatasetCard);
-        issueWarning(sampleCard, scanOp);
 
         // replace the dataScanSourceOperator with the sampling source
-        SampleDataSource sampledatasource = joinEnum.getSampleDataSource(scanOp);
+        SampleDataSource sampledatasource = OperatorUtils.getSampleDataSource(scanOp, optCtx);
         DataSourceScanOperator deepCopyofScan =
                 (DataSourceScanOperator) OperatorManipulationUtil.bottomUpCopyOperators(scanOp);
 
@@ -759,11 +1004,28 @@ public class Stats {
             scanOp.setDataSource(sampledatasource);
         }
 
+        // the join key may be a computed expression; evaluate it with an assign so that the distinct count
+        // below is the distinct count of the key itself and not of one of the columns it is computed from.
+        LogicalVariable var;
+        ILogicalOperator distinctInput;
+        if (keyExpr.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
+            var = ((VariableReferenceExpression) keyExpr).getVariableReference();
+            distinctInput = newLogOp;
+        } else {
+            var = newCtx.newVar();
+            // clone: the expression is still installed in the real join condition, which must not be touched
+            AssignOperator keyAssignOp = new AssignOperator(var, new MutableObject<>(keyExpr.cloneExpression()));
+            keyAssignOp.getInputs().add(new MutableObject<>(newLogOp));
+            keyAssignOp.setExecutionMode(newLogOp.getExecutionMode());
+            keyAssignOp.setSourceLocation(newLogOp.getSourceLocation());
+            distinctInput = keyAssignOp;
+        }
+
         AbstractLogicalExpression inputVarRef = new VariableReferenceExpression(var, newLogOp.getSourceLocation());
-        // add a project operator on top of newLogOp
+        // add a project operator on top of the assign (or of newLogOp when the key is already a variable)
         ProjectOperator projOp = new ProjectOperator(var);
         projOp.getInputs().add(new MutableObject<>(null)); //add an input
-        projOp.getInputs().get(0).setValue(newLogOp);
+        projOp.getInputs().get(0).setValue(distinctInput);
         // add a distinct operator on top of the proj.
         List<Mutable<ILogicalExpression>> arguments = new ArrayList<>();
         VariableReferenceExpression e1 = new VariableReferenceExpression(var);
@@ -796,7 +1058,7 @@ public class Stats {
 
     // This one gets the cardinality and also projection sizes
     protected List<List<IAObject>> runSamplingQueryProjection(IOptimizationContext ctx, ILogicalOperator logOp,
-            int dataset, LogicalVariable primaryKey) throws AlgebricksException {
+            int dataset, LogicalVariable primaryKey, ILogicalOperator diskBoundaryOp) throws AlgebricksException {
         LOGGER.info("***running projection sample query***");
 
         IOptimizationContext newCtx = ctx.getOptimizationContextFactory().cloneOptimizationContext(ctx);
@@ -809,16 +1071,22 @@ public class Stats {
         // assign [$$68, $$69, $$70, $$71, $$72] <- [serialized-size($$60), serialized-size($$str), serialized-size($$61), serialized-size($$65), serialized-size($$67)]
 
         // add the assign [$$56, ..., ] <- [encoded-size($$67), ..., ] on top of newAggOp
+        List<LogicalVariable> liveVars = new ArrayList<>();
+        VariableUtilities.getLiveVariables(logOp, liveVars); // all the variables in the leafInput
+
+        // The variables coming from the disk are the live variables at diskBoundaryOp. Variables produced
+        // by ASSIGNs on top of it are computed later, they do not come from the disk.
         List<LogicalVariable> vars1 = new ArrayList<>();
-        VariableUtilities.getLiveVariables(logOp, vars1); // all the variables in the leafInput
-        // Depending on the order here. Assuming the first three variables are from the data scan operator.
-        if (!joinEnum.resultAndJoinVars.contains(primaryKey)) { // if the entire row is not being projected, we must remove $$p
+        VariableUtilities.getLiveVariables(diskBoundaryOp, vars1);
+
+        if (!joinEnum.resultAndJoinVars.contains(primaryKey)) {
             vars1.remove(primaryKey);
         }
 
-        List<LogicalVariable> vars3 = // these variables can be thrown away as they are not present joins and in the final project
-                new ArrayList<>(CollectionUtils.subtract(vars1, joinEnum.resultAndJoinVars /* vars2 */));
-        List<LogicalVariable> vars4 = new ArrayList<>(CollectionUtils.subtract(vars1, vars3)); // variables that will flow up the tree
+        // The variables that will flow up the tree as they appear in join expressions or in the final
+        // result, including those produced by ASSIGNs on top of diskBoundaryOp.
+        List<LogicalVariable> vars4 = new ArrayList<>(liveVars);
+        vars4.retainAll(joinEnum.resultAndJoinVars);
 
         List<LogicalVariable> vars = new ArrayList<>();
         vars.addAll(vars1);
@@ -883,6 +1151,18 @@ public class Stats {
         return helperFunction(newCtx, newAggOp);
     }
 
+    private static List<LogicalVariable> liveVariablesOf(ILogicalOperator op) throws AlgebricksException {
+        List<LogicalVariable> liveVars = new ArrayList<>();
+        VariableUtilities.getLiveVariables(op, liveVars);
+        return liveVars;
+    }
+
+    private static List<LogicalVariable> usedVariablesOf(ILogicalExpression expr) {
+        List<LogicalVariable> usedVars = new ArrayList<>();
+        expr.getUsedVariables(usedVars);
+        return usedVars;
+    }
+
     private List<MutableObject> createMutableObjectArray(List<LogicalVariable> vars) {
         List<MutableObject> arr = new ArrayList<>();
         for (int i = 0; i < vars.size(); i++) {
@@ -903,13 +1183,18 @@ public class Stats {
 
         // distinct cardinality supported only for GroupByOp and DistinctOp
         if (tag == LogicalOperatorTag.DISTINCT || tag == LogicalOperatorTag.GROUP) {
-            ILogicalOperator parent = joinEnum.findDataSourceScanOperatorParent(grpByDistinctOp);
+            if (hasClusterByBelow(grpByDistinctOp)) {
+                // Not estimated: the sample query would run the whole clustering once per key over the sample,
+                // and a clustering of a sample is not the clustering of the dataset.
+                return distinctCard;
+            }
+            ILogicalOperator parent = OperatorUtils.findDataSourceScanOperatorParent(grpByDistinctOp);
             DataSourceScanOperator scanOp = (DataSourceScanOperator) parent.getInputs().get(0).getValue();
             if (scanOp == null) {
                 return distinctCard; // this may happen in case of in lists
             }
 
-            Index index = findSampleIndex(scanOp, optCtx);
+            Index index = OperatorUtils.findSampleIndex(scanOp, optCtx);
             if (index == null) {
                 return distinctCard;
             }
@@ -921,7 +1206,7 @@ public class Stats {
             if (!(dsType == DataSource.Type.INTERNAL_DATASET || dsType == DataSource.Type.EXTERNAL_DATASET)) {
                 return distinctCard; // Datasource must be of a dataset, not supported for other datasource types
             }
-            SampleDataSource sampleDataSource = joinEnum.getSampleDataSource(scanOp);
+            SampleDataSource sampleDataSource = OperatorUtils.getSampleDataSource(scanOp, optCtx);
 
             ILogicalOperator parentOfSelectOp = findParentOfSelectOp(grpByDistinctOp);
             SelectOperator selOp = (parentOfSelectOp == null) ? null
@@ -934,9 +1219,20 @@ public class Stats {
                 setTotalCardFromSample(sampleWithPredicates);
             }
             // get the estimated distinct cardinality for the dataset (i.e., D_est or D_est_f)
-            distinctCard = findEstDistinctWithPredicates(grpByDistinctOp, origDatasetCard, sampleDataSource);
+            distinctCard = findEstDistinctWithPredicates(grpByDistinctOp, origDatasetCard, sampleDataSource, index);
         }
         return distinctCard;
+    }
+
+    /** Whether a CLUSTER BY sits on the path from {@code op} down to its data source. */
+    private static boolean hasClusterByBelow(ILogicalOperator op) {
+        while (op != null && !op.getInputs().isEmpty()) {
+            if (op.getOperatorTag() == LogicalOperatorTag.CLUSTER_BY) {
+                return true;
+            }
+            op = op.getInputs().get(0).getValue();
+        }
+        return false;
     }
 
     private long findSampleSizeWithPredicates(SelectOperator selOp, SampleDataSource sampleDataSource)
@@ -951,24 +1247,87 @@ public class Stats {
     }
 
     private long findEstDistinctWithPredicates(ILogicalOperator grpByDistinctOp, double origDatasetCardinality,
-            SampleDataSource sampleDataSource) throws AlgebricksException {
+            SampleDataSource sampleDataSource, Index index) throws AlgebricksException {
         double estDistCardinalityFromSample = -1.0;
         double estDistCardinality = -1.0;
 
         LogicalOperatorTag tag = grpByDistinctOp.getOperatorTag();
-        if (tag == LogicalOperatorTag.GROUP || tag == LogicalOperatorTag.DISTINCT) {
+        if (tag == LogicalOperatorTag.DISTINCT) {
             ILogicalOperator copyOfGrpByDistinctOp = OperatorManipulationUtil.bottomUpCopyOperators(grpByDistinctOp);
             if (setSampleDataSource(copyOfGrpByDistinctOp, sampleDataSource)) {
                 // get distinct cardinality from the sampling source
                 List<List<IAObject>> result = runSamplingQuery(optCtx, copyOfGrpByDistinctOp);
                 estDistCardinalityFromSample = findPredicateCardinality(result, false);
             }
+        } else if (tag == LogicalOperatorTag.GROUP) {
+            ILogicalOperator copyOfGrpByDistinctOp = OperatorManipulationUtil.bottomUpCopyOperators(grpByDistinctOp);
+            if (setSampleDataSource(copyOfGrpByDistinctOp, sampleDataSource)) {
+                // get distinct cardinality from the sampling source
+                GroupByOperator gb = (GroupByOperator) copyOfGrpByDistinctOp;
+                int numFields = gb.getGroupByList().size();
+                if (numFields == 1) { // This is the very simple case. So kept it.
+                    List<List<IAObject>> result = runSamplingQuery(optCtx, copyOfGrpByDistinctOp);
+                    estDistCardinalityFromSample = findPredicateCardinality(result, false);
+                    if (estDistCardinalityFromSample != -1.0) { // estimate distinct cardinality for the dataset from the sampled cardinality
+                        estDistCardinality = secondDistinctEstimator(estDistCardinalityFromSample, index);
+                    }
+                } else { // now create one sample query with multiple count distincts
+                    // Bypass the group by operator
+                    // now add aggregate [$$49, $$50] <- [agg-sql-count-distinct($$39), agg-sql-count-distinct($$44)]
+                    //List<Mutable<ILogicalExpression>> fields = new ArrayList<>(1);
+                    List<Pair<LogicalVariable, Mutable<ILogicalExpression>>> groupByList = gb.getGroupByList();
+                    List<AggregateFunctionCallExpression> aggExprList = new ArrayList<>();
+                    List<BuiltinFunctionInfo> countFn = new ArrayList<>();
+                    // create a new var List [$$49, $$50]
+                    List<LogicalVariable> varList = new ArrayList<>();
+
+                    // create Mutable expressions
+                    List<Mutable<ILogicalExpression>> aggExprMutableList = new ArrayList<>(1);
+
+                    for (int i = 0; i < numFields; i++) {
+                        ILogicalExpression var = groupByList.get(i).getRight().getValue();
+                        Mutable<ILogicalExpression> mvar = new MutableObject<>(var);
+                        List<Mutable<ILogicalExpression>> fields = new ArrayList<>();
+                        fields.add(mvar);
+                        countFn.add(BuiltinFunctions.getBuiltinFunctionInfo(BuiltinFunctions.SQL_COUNTN_DISTINCT));
+                        aggExprList.add(new AggregateFunctionCallExpression(countFn.get(i), false, fields));
+                        //aggexprList is [agg-sql-count-distinct($$39), agg-sql-count-distinct($$44)]
+                        varList.add(optCtx.newVar());
+                        aggExprMutableList.add(new MutableObject<>(aggExprList.get(i)));
+                    }
+                    AggregateOperator newAggOp = new AggregateOperator(varList, aggExprMutableList);
+                    //connect newAggOp to the leafInput below bypassing the groupby
+                    newAggOp.getInputs().add(new MutableObject<>(gb.getInputs().get(0).getValue()));
+
+                    List<List<IAObject>> result = helperFunction(joinEnum.optCtx, newAggOp);
+                    List<Double> sampleEstimates = extractSampleEstimates(result, numFields);
+                    estDistCardinality = 1; //change
+                    for (int i = 0; i < numFields; i++) {
+                        estDistCardinality *= secondDistinctEstimator(sampleEstimates.get(i), index); // any checks? zero?
+                    }
+                    if (estDistCardinality > origDatasetCardinality) {
+                        estDistCardinality = origDatasetCardinality; // obviously cannot be higher than the dataset cardinality
+                    }
+                }
+            }
         }
+
         if (estDistCardinalityFromSample != -1.0) { // estimate distinct cardinality for the dataset from the sampled cardinality
-            estDistCardinality = distinctEstimator(estDistCardinalityFromSample, origDatasetCardinality);
+            estDistCardinality = secondDistinctEstimator(estDistCardinalityFromSample, index);
         }
         estDistCardinality = Math.max(0.0, estDistCardinality);
         return Math.round(estDistCardinality);
+    }
+
+    private List<Double> extractSampleEstimates(List<List<IAObject>> result, int numFields) {
+        List<Double> sampleEstimates = new ArrayList<>();
+        ARecord record = (ARecord) (result.get(0)).get(0);
+        for (int i = 0; i < numFields; i++) {
+            IAObject obj = record.getValueByPos(i);
+            double x = (double) ((AInt64) obj).getLongValue();
+            sampleEstimates.add(x);
+        }
+        return sampleEstimates;
     }
 
     // Formula is d = D (1 - e^(-sampleCard/D))
@@ -1012,62 +1371,8 @@ public class Stats {
         return D;
     }
 
-    // Use the Newton-Raphson method for distinct cardinality estimation.
-    private double distinctEstimator(double estDistinctCardinalityFromSample, double origDatasetCardinality) {
-        // initialize the estimate to be the number of distinct values from the sample.
-        double estDistinctCardinality = initNR(estDistinctCardinalityFromSample);
-        setDistinctCardFromSample(estDistinctCardinality);
-
-        int itr_counter = 0, max_counter = 1000; // allow a maximum number of iterations
-        double denominator = derivativeFunctionForMMO(estDistinctCardinality);
-        if (denominator == 0.0) { // Newton-Raphson method requires it to be non-zero
-            return estDistinctCardinality;
-        }
-        double fraction = functionForMMO(estDistinctCardinality) / denominator;
-        while (Math.abs(fraction) >= 0.001 && itr_counter < max_counter) {
-            denominator = derivativeFunctionForMMO(estDistinctCardinality);
-            if (denominator == 0.0) {
-                break;
-            }
-            fraction = functionForMMO(estDistinctCardinality) / denominator;
-            estDistinctCardinality = estDistinctCardinality - fraction;
-            itr_counter++;
-            if (estDistinctCardinality > origDatasetCardinality) {
-                estDistinctCardinality = origDatasetCardinality; // for preventing infinite growth beyond N
-                break;
-            }
-        }
-
-        // estimated cardinality cannot be less the initial one from samples
-        estDistinctCardinality = Math.max(estDistinctCardinality, estDistinctCardinalityFromSample);
-
-        return estDistinctCardinality;
-    }
-
-    double initNR(double estDistinctCardinalityFromSample) {
-        double estDistinctCardinality = estDistinctCardinalityFromSample;
-
-        // Boundary condition checks for Newton-Raphson method.
-        if (totalCardFromSample <= MIN_TOTAL_SAMPLES) {
-            setTotalCardFromSample(totalCardFromSample + 2);
-            estDistinctCardinality = totalCardFromSample - 1;
-        } else if (estDistinctCardinality == totalCardFromSample) {
-            estDistinctCardinality--;
-        }
-        return estDistinctCardinality;
-    }
-
-    private double functionForMMO(double x) {
-        return (x * (1.0 - Math.exp(-1.0 * (double) totalCardFromSample / x)) - distinctCardFromSample);
-    }
-
-    private double derivativeFunctionForMMO(double x) {
-        double arg = ((double) totalCardFromSample / x);
-        return (1.0 - (arg + 1.0) * Math.exp(-1.0 * arg));
-    }
-
     private boolean setSampleDataSource(ILogicalOperator op, SampleDataSource sampleDataSource) {
-        ILogicalOperator parent = joinEnum.findDataSourceScanOperatorParent(op);
+        ILogicalOperator parent = OperatorUtils.findDataSourceScanOperatorParent(op);
         DataSourceScanOperator scanOp = (DataSourceScanOperator) parent.getInputs().get(0).getValue();
         if (scanOp == null) {
             return false;

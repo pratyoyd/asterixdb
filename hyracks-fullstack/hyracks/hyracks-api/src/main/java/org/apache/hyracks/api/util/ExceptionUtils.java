@@ -18,10 +18,12 @@
  */
 package org.apache.hyracks.api.util;
 
+import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -29,6 +31,8 @@ import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.IFormattedException;
 import org.apache.hyracks.util.ThrowingFunction;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import com.google.common.util.concurrent.UncheckedExecutionException;
 
@@ -36,6 +40,7 @@ import com.google.common.util.concurrent.UncheckedExecutionException;
  * @author yingyib
  */
 public class ExceptionUtils {
+    private static final Logger LOGGER = LogManager.getLogger();
 
     private ExceptionUtils() {
     }
@@ -82,7 +87,7 @@ public class ExceptionUtils {
     private static boolean possibleRootCause(Throwable exception) {
         Throwable cause = exception;
         while ((cause = cause.getCause()) != null) {
-            if (cause instanceof java.lang.InterruptedException
+            if (cause instanceof java.lang.InterruptedException || cause instanceof InterruptedIOException
                     || cause instanceof java.nio.channels.ClosedChannelException) {
                 return false;
             }
@@ -101,7 +106,7 @@ public class ExceptionUtils {
      * @return the root exception, or null if both parameters are null
      */
     public static <T extends Throwable> T suppress(T first, T second) {
-        if (second instanceof InterruptedException) {
+        if (second instanceof InterruptedException || second instanceof InterruptedIOException) {
             Thread.currentThread().interrupt();
         }
         if (first == null) {
@@ -128,17 +133,42 @@ public class ExceptionUtils {
     }
 
     public static Throwable getRootCause(Throwable e) {
+        if (e == null) {
+            return null;
+        }
+        // slow trails cause at half speed so that a cyclic chain terminates instead of spinning
+        Throwable slow = e;
         Throwable current = e;
         Throwable cause = e.getCause();
-        while (cause != null && cause != current) {
+        boolean advanceSlow = false;
+        while (cause != null) {
             current = cause;
-            cause = current.getCause();
+            cause = cause.getCause();
+            if (advanceSlow) {
+                slow = slow.getCause();
+            }
+            advanceSlow = !advanceSlow;
+            if (cause != null && cause == slow) {
+                break;
+            }
         }
         return current;
     }
 
     public static boolean causedByInterrupt(Throwable th) {
-        return getRootCause(th) instanceof InterruptedException;
+        return causedByInterrupt(th, false);
+    }
+
+    public static boolean causedByInterrupt(Throwable th, boolean skipInterruptedCheck) {
+        if (th instanceof InterruptedException || th instanceof InterruptedIOException) {
+            return true;
+        }
+        boolean isCausedByInterrupt =
+                getRootCause(th) instanceof InterruptedException || getRootCause(th) instanceof InterruptedIOException;
+        if (!skipInterruptedCheck && isCausedByInterrupt && !Thread.currentThread().isInterrupted()) {
+            LOGGER.warn("InterruptedException suppressed and !Thread.currentThread().isInterrupted()", th);
+        }
+        return isCausedByInterrupt;
     }
 
     /**
@@ -168,18 +198,30 @@ public class ExceptionUtils {
     }
 
     /**
-     * Determines whether supplied exception contains a matching cause in its hierarchy, or is itself a match
+     * Determines whether supplied exception contains a matching cause in its hierarchy, or is itself a match.
+     * <p>
+     * The causes are tested nearest-first, then {@code e} itself. The same throwable can be tested twice, as
+     * {@code e} is tested at the end even when the walk already reached it by coming round a cyclic hierarchy,
+     * so the test should be a pure predicate rather than one that records what it matched.
      */
     public static boolean matchingCause(Throwable e, Predicate<Throwable> test) {
-        Throwable current = e;
+        // walk the causes nearest-first, then test e itself last; slow trails cause at half speed so that a
+        // cyclic chain terminates instead of spinning
+        Throwable slow = e;
         Throwable cause = e.getCause();
-        while (cause != null && cause != current) {
+        boolean advanceSlow = false;
+        while (cause != null) {
             if (test.test(cause)) {
                 return true;
             }
-            Throwable nextCause = current.getCause();
-            current = cause;
-            cause = nextCause;
+            cause = cause.getCause();
+            if (advanceSlow) {
+                slow = slow.getCause();
+            }
+            advanceSlow = !advanceSlow;
+            if (cause != null && cause == slow) {
+                break;
+            }
         }
         return test.test(e);
     }
@@ -189,11 +231,21 @@ public class ExceptionUtils {
      * exception
      */
     public static Throwable unwrap(Throwable e) {
+        // slow trails cause at half speed so that a cyclic chain terminates instead of spinning
+        Throwable slow = e;
         Throwable current = e;
         Throwable cause = e.getCause();
-        while (cause != current && cause instanceof IFormattedException) {
+        boolean advanceSlow = false;
+        while (cause instanceof IFormattedException) {
             current = cause;
-            cause = current.getCause();
+            cause = cause.getCause();
+            if (advanceSlow) {
+                slow = slow.getCause();
+            }
+            advanceSlow = !advanceSlow;
+            if (cause != null && cause == slow) {
+                break;
+            }
         }
         return current;
     }
@@ -218,5 +270,48 @@ public class ExceptionUtils {
      */
     public static boolean isErrorCode(HyracksDataException throwable, ErrorCode code) {
         return throwable.getError().isPresent() && throwable.getError().get() == code;
+    }
+
+    public static Throwable truncateStackOverflowStack(Throwable ex, int limit) {
+        if (ex instanceof StackOverflowError) {
+            StackTraceElement[] fullTrace = ex.getStackTrace();
+            if (fullTrace.length > limit * 2) {
+                StackOverflowError copy = new StackOverflowError(ex.getMessage());
+                // keep the cause if there was one
+                copy.initCause(ex.getCause());
+                StackTraceElement[] trimmedTrace = new StackTraceElement[limit + 1];
+                System.arraycopy(fullTrace, 0, trimmedTrace, 0, limit);
+                trimmedTrace[limit] = new StackTraceElement("...<truncated " + (fullTrace.length - limit) + " lines>",
+                        "..", null, -1);
+                copy.setStackTrace(trimmedTrace);
+                return copy;
+            }
+        }
+        return ex;
+    }
+
+    /**
+     * Checks if the specific type T exception is in the causes of the current throwable, and if so returns it,
+     * otherwise returns null
+     *
+     * @param throwable throwable
+     * @param targetType exception being targeted
+     * @return targetType exception if found, null otherwise
+     * @param <T> type of exception being targeted
+     */
+    public static <T extends Throwable> Optional<T> getCauseOfType(Throwable throwable, Class<T> targetType) {
+        if (throwable == null || targetType == null) {
+            return Optional.empty();
+        }
+
+        Throwable cause = throwable;
+        while (cause != null) {
+            if (targetType.isInstance(cause)) {
+                return Optional.of(targetType.cast(cause));
+            }
+            cause = cause.getCause();
+        }
+
+        return Optional.empty();
     }
 }

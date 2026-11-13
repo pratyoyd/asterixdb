@@ -48,15 +48,18 @@ public class Function implements IMetadataEntity<Function> {
     private final List<String> externalIdentifier;
     private final Boolean deterministic; // null for SQL++ and AQL functions
     private final Boolean nullCall; // null for SQL++ and AQL functions
+    private final Boolean batched; // null for SQL++ and AQL functions
     private final Map<String, String> resources;
     private final List<List<DependencyFullyQualifiedName>> dependencies;
     private final Creator creator;
+    private final boolean transform;
 
     public Function(FunctionSignature signature, List<String> paramNames, List<TypeSignature> paramTypes,
             TypeSignature returnType, String functionBody, String functionKind, String language,
             String libraryDatabaseName, DataverseName libraryDataverseName, String libraryName,
-            List<String> externalIdentifier, Boolean nullCall, Boolean deterministic, Map<String, String> resources,
-            List<List<DependencyFullyQualifiedName>> dependencies, Creator creator) {
+            List<String> externalIdentifier, Boolean nullCall, Boolean deterministic, Boolean batched,
+            Map<String, String> resources, List<List<DependencyFullyQualifiedName>> dependencies, Creator creator,
+            boolean transform) {
         this.signature = signature;
         this.paramNames = paramNames;
         this.paramTypes = paramTypes;
@@ -69,12 +72,14 @@ public class Function implements IMetadataEntity<Function> {
         this.libraryName = libraryName;
         this.externalIdentifier = externalIdentifier;
         this.nullCall = nullCall;
+        this.batched = batched;
         this.deterministic = deterministic;
         this.resources = resources == null ? Collections.emptyMap() : resources;
         this.dependencies = dependencies == null
                 ? Arrays.asList(Collections.emptyList(), Collections.emptyList(), Collections.emptyList())
                 : dependencies;
         this.creator = creator;
+        this.transform = transform;
     }
 
     public FunctionSignature getSignature() {
@@ -152,6 +157,10 @@ public class Function implements IMetadataEntity<Function> {
         return nullCall;
     }
 
+    public Boolean getBatched() {
+        return batched;
+    }
+
     public Boolean getDeterministic() {
         return deterministic;
     }
@@ -166,6 +175,10 @@ public class Function implements IMetadataEntity<Function> {
 
     public Creator getCreator() {
         return creator;
+    }
+
+    public boolean isTransform() {
+        return transform;
     }
 
     @Override

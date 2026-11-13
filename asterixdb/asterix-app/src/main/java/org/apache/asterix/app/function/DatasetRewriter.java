@@ -22,6 +22,8 @@ import static org.apache.asterix.common.api.IIdentifierMapper.Modifier.PLURAL;
 import static org.apache.asterix.common.api.IIdentifierMapper.Modifier.SINGULAR;
 import static org.apache.asterix.common.utils.IdentifierUtil.dataset;
 import static org.apache.asterix.external.util.ExternalDataConstants.SUBPATH;
+import static org.apache.asterix.external.util.iceberg.IcebergConstants.ICEBERG_SNAPSHOT_ID_PROPERTY_KEY;
+import static org.apache.asterix.external.util.iceberg.IcebergConstants.ICEBERG_SNAPSHOT_TIMESTAMP_PROPERTY_KEY;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -44,8 +46,10 @@ import org.apache.asterix.om.functions.IFunctionToDataSourceRewriter;
 import org.apache.asterix.om.typecomputer.base.IResultTypeComputer;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.IAType;
+import org.apache.asterix.om.utils.ConstantExpressionUtil;
 import org.apache.asterix.optimizer.rules.UnnestToDataScanRule;
 import org.apache.asterix.optimizer.rules.util.EquivalenceClassUtils;
+import org.apache.asterix.optimizer.rules.util.TimeTravelUtil;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
@@ -56,6 +60,7 @@ import org.apache.hyracks.algebricks.core.algebra.expressions.AbstractFunctionCa
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
 import org.apache.hyracks.algebricks.core.algebra.metadata.IMetadataProvider;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.DataSourceScanOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.TimeTravel;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.UnnestOperator;
 import org.apache.hyracks.algebricks.core.algebra.properties.FunctionalDependency;
 
@@ -81,6 +86,13 @@ public class DatasetRewriter implements IFunctionToDataSourceRewriter, IResultTy
 
         MetadataProvider metadataProvider = (MetadataProvider) context.getMetadataProvider();
         Dataset dataset = fetchDataset(metadataProvider, f);
+        // Arg layout: [..., arg4 = isSample (Boolean), arg5 = sample index name (String) when isSample is true].
+        Boolean isSample = f.getArguments().size() > 4
+                ? ConstantExpressionUtil.getBooleanConstant(f.getArguments().get(4).get()) : null;
+        String sampleIndexName = null;
+        if (isSample != null && isSample && f.getArguments().size() > 5) {
+            sampleIndexName = FunctionUtil.getStringConstant(f.getArguments().get(5));
+        }
         List<LogicalVariable> variables = new ArrayList<>();
         switch (dataset.getDatasetType()) {
             case INTERNAL:
@@ -101,7 +113,20 @@ public class DatasetRewriter implements IFunctionToDataSourceRewriter, IResultTy
 
         DataSourceId dsid =
                 new DataSourceId(dataset.getDatabaseName(), dataset.getDataverseName(), dataset.getDatasetName());
-        DataSource dataSource = metadataProvider.findDataSource(dsid);
+        DataSource dataSource;
+        if (sampleIndexName != null) {
+            dataSource = metadataProvider.findSampleDataSource(dsid, sampleIndexName);
+        } else {
+            dataSource = metadataProvider.findDataSource(dsid);
+        }
+        // The time travel value must have folded to a constant by now: ConstantFoldingRule sits earlier in the
+        // same normalization rule collection as UnnestToDataScanRule, which is what got us here. This reads it
+        // unconditionally, including for dataset kinds that have no snapshots, so that a value which did not
+        // fold -- or folded to something unusable -- is reported rather than silently dropped.
+        TimeTravel timeTravel = unnest.getTimeTravel();
+        String timeTravelValue =
+                timeTravel == null ? null : TimeTravelUtil.resolve(timeTravel, unnest.getSourceLocation());
+
         boolean hasMeta = dataSource.hasMeta();
         if (hasMeta) {
             variables.add(context.newVar());
@@ -115,6 +140,15 @@ public class DatasetRewriter implements IFunctionToDataSourceRewriter, IResultTy
             Object externalSubpath = unnestAnnotations.get(SUBPATH);
             if (externalSubpath instanceof String) {
                 dataSourceProperties.put(SUBPATH, (String) externalSubpath);
+            }
+            if (timeTravel != null) {
+                if (timeTravel.getType() == TimeTravel.Type.SNAPSHOT_ID) {
+                    dataSourceProperties.put(ICEBERG_SNAPSHOT_ID_PROPERTY_KEY, timeTravelValue);
+                } else if (timeTravel.getType() == TimeTravel.Type.SNAPSHOT_TIMESTAMP) {
+                    dataSourceProperties.put(ICEBERG_SNAPSHOT_TIMESTAMP_PROPERTY_KEY, timeTravelValue);
+                } else {
+                    throw new IllegalStateException("Unknown snapshot type");
+                }
             }
         }
         List<Mutable<ILogicalOperator>> scanInpList = scan.getInputs();
@@ -150,6 +184,7 @@ public class DatasetRewriter implements IFunctionToDataSourceRewriter, IResultTy
         Dataset dataset = fetchDataset(metadata, datasetFnCall);
         IAType type = metadata.findType(dataset.getItemTypeDatabaseName(), dataset.getItemTypeDataverseName(),
                 dataset.getItemTypeName());
+        type = ((MetadataProvider) mp).findTypeForDatasetWithoutType(type, dataset);
         if (type == null) {
             throw new CompilationException(ErrorCode.COMPILATION_ERROR, datasetFnCall.getSourceLocation(),
                     "No type for " + dataset() + " " + dataset.getDatasetName());

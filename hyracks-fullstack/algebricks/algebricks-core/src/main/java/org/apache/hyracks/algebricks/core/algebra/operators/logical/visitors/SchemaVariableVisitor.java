@@ -23,8 +23,8 @@ import java.util.Collection;
 import java.util.List;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
@@ -98,15 +98,15 @@ public class SchemaVariableVisitor implements ILogicalOperatorVisitor<Void, Void
             }
         }
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : op.getGroupByList()) {
-            if (p.first != null) {
-                schemaVariables.add(p.first);
+            if (p.getLeft() != null) {
+                schemaVariables.add(p.getLeft());
             }
         }
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : op.getDecorList()) {
-            if (p.first != null) {
-                schemaVariables.add(p.first);
+            if (p.getLeft() != null) {
+                schemaVariables.add(p.getLeft());
             } else {
-                ILogicalExpression e = p.second.getValue();
+                ILogicalExpression e = p.getRight().getValue();
                 if (e.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                     schemaVariables.add(((VariableReferenceExpression) e).getVariableReference());
                 }
@@ -191,6 +191,22 @@ public class SchemaVariableVisitor implements ILogicalOperatorVisitor<Void, Void
 
     @Override
     public Void visitIntersectOperator(IntersectOperator op, Void arg) throws AlgebricksException {
+        VariableUtilities.getProducedVariables(op, schemaVariables);
+        return null;
+    }
+
+    @Override
+    public Void visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+        // What the operator emits, as recomputeSchema and the propagation policy say; standardLayout would
+        // also report the inputs' live variables, which are gone by then.
+        op.getOutputVariables(schemaVariables);
+        return null;
+    }
+
+    @Override
+    public Void visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
+        // Produced variables only: the operator consumes its input tuples and emits one new column, which is
+        // what recomputeSchema and the propagation policy both say. Same shape as visitAggregateOperator.
         VariableUtilities.getProducedVariables(op, schemaVariables);
         return null;
     }

@@ -315,4 +315,25 @@ public class MetadataLockManager implements IMetadataLockManager {
         locks.downgrade(IMetadataLock.Mode.EXCLUSIVE_MODIFY, lock);
     }
 
+    @Override
+    public void acquireCatalogReadLock(LockList locks, String catalogName) throws AlgebricksException {
+        MetadataLockKey key = MetadataLockKey.createCatalogLockKey(catalogName);
+        IMetadataLock lock = mdlocks.computeIfAbsent(key, LOCK_FUNCTION);
+        locks.add(IMetadataLock.Mode.READ, lock);
+    }
+
+    @Override
+    public void acquireCatalogWriteLock(LockList locks, String catalogName) throws AlgebricksException {
+        MetadataLockKey key = MetadataLockKey.createCatalogLockKey(catalogName);
+        IMetadataLock lock = mdlocks.computeIfAbsent(key, LOCK_FUNCTION);
+        locks.add(IMetadataLock.Mode.WRITE, lock);
+    }
+
+    @Override
+    public void acquireCRSWriteLock(LockList locks, String database, DataverseName dataverseName, int srid)
+            throws AlgebricksException {
+        MetadataLockKey key = MetadataLockKey.createCRSLockKey(database, dataverseName, srid);
+        IMetadataLock lock = mdlocks.computeIfAbsent(key, LOCK_FUNCTION);
+        locks.add(IMetadataLock.Mode.WRITE, lock);
+    }
 }

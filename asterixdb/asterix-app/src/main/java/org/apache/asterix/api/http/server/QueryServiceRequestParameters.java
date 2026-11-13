@@ -19,8 +19,6 @@
 
 package org.apache.asterix.api.http.server;
 
-import static org.apache.asterix.utils.RedactionUtil.REDACTED_SENSITIVE_ENTRY_VALUE;
-
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -36,6 +34,7 @@ import org.apache.asterix.common.exceptions.RuntimeDataException;
 import org.apache.asterix.translator.IStatementExecutor.ResultDelivery;
 import org.apache.asterix.translator.IStatementExecutor.Stats.ProfileType;
 import org.apache.asterix.translator.SessionConfig.ClientType;
+import org.apache.asterix.translator.SessionConfig.HyracksJobFormat;
 import org.apache.asterix.translator.SessionConfig.OutputFormat;
 import org.apache.asterix.translator.SessionConfig.PlanFormat;
 import org.apache.commons.lang3.StringUtils;
@@ -67,9 +66,11 @@ public class QueryServiceRequestParameters {
         CLIENT_TYPE("client-type"),
         DATAVERSE("dataverse"),
         PRETTY("pretty"),
+        SKIP_PLAN_CACHE("skip-plan-cache"),
         MODE("mode"),
         TIMEOUT("timeout"),
         PLAN_FORMAT("plan-format"),
+        HYRACKS_JOB_FORMAT("hyracks-job-format"),
         MAX_RESULT_READS("max-result-reads"),
         EXPRESSION_TREE("expression-tree"),
         REWRITTEN_EXPRESSION_TREE("rewritten-expression-tree"),
@@ -84,7 +85,9 @@ public class QueryServiceRequestParameters {
         MULTI_STATEMENT("multi-statement"),
         MAX_WARNINGS("max-warnings"),
         SQL_COMPAT("sql-compat"),
-        SOURCE("source");
+        SOURCE("source"),
+        INCLUDE_HOST("include-host"),
+        RESULT_TTL("result-ttl");
 
         private final String str;
 
@@ -114,7 +117,9 @@ public class QueryServiceRequestParameters {
     }
 
     private static final Map<String, PlanFormat> planFormats = ImmutableMap.of(HttpUtil.ContentType.JSON,
-            PlanFormat.JSON, "clean_json", PlanFormat.JSON, "string", PlanFormat.STRING);
+            PlanFormat.JSON, "clean_json", PlanFormat.JSON, "string", PlanFormat.STRING, "dot", PlanFormat.DOT);
+    private static final Map<String, HyracksJobFormat> hyracksJobFormats =
+            ImmutableMap.of(HttpUtil.ContentType.JSON, HyracksJobFormat.JSON, "dot", HyracksJobFormat.DOT);
     private static final Map<String, ClientType> clientTypes =
             ImmutableMap.of("asterix", ClientType.ASTERIX, "jdbc", ClientType.JDBC);
     private static final Map<String, Boolean> booleanValues =
@@ -134,10 +139,12 @@ public class QueryServiceRequestParameters {
     private OutputFormat format = OutputFormat.CLEAN_JSON;
     private ResultDelivery mode = ResultDelivery.IMMEDIATE;
     private PlanFormat planFormat = PlanFormat.JSON;
+    private HyracksJobFormat hyracksJobFormat = HyracksJobFormat.JSON;
     private ProfileType profileType = ProfileType.COUNTS;
     private Map<String, String> optionalParams = null;
     private Map<String, JsonNode> statementParams = null;
     private boolean pretty = false;
+    private boolean skipQueryPlanCache = false;
     private boolean expressionTree = false;
     private boolean parseOnly = false; // don't execute; simply check for syntax correctness and named parameters.
     private boolean compileOnly = false; // don't execute; compile only.
@@ -153,6 +160,8 @@ public class QueryServiceRequestParameters {
     private long timeout = TimeUnit.MILLISECONDS.toMillis(Long.MAX_VALUE);
     private long maxResultReads = 1L;
     private long maxWarnings = 0L;
+    private long resultTtlInMillis = -1L; // -1 means use system default
+    private boolean includeHost = false;
 
     public String getHost() {
         return host;
@@ -207,12 +216,28 @@ public class QueryServiceRequestParameters {
         this.timeout = timeout;
     }
 
+    public boolean isIncludeHost() {
+        return includeHost;
+    }
+
+    public void setIncludeHost(boolean includeHost) {
+        this.includeHost = includeHost;
+    }
+
     public boolean isPretty() {
         return pretty;
     }
 
     public void setPretty(boolean pretty) {
         this.pretty = pretty;
+    }
+
+    public boolean isSkipQueryPlanCache() {
+        return skipQueryPlanCache;
+    }
+
+    public void setSkipQueryPlanCache(boolean skipQueryPlanCache) {
+        this.skipQueryPlanCache = skipQueryPlanCache;
     }
 
     public String getClientContextID() {
@@ -263,6 +288,15 @@ public class QueryServiceRequestParameters {
     public void setPlanFormat(PlanFormat planFormat) {
         Objects.requireNonNull(planFormat);
         this.planFormat = planFormat;
+    }
+
+    public HyracksJobFormat getHyracksJobFormat() {
+        return hyracksJobFormat;
+    }
+
+    public void setHyracksJobFormat(HyracksJobFormat hyracksJobFormat) {
+        Objects.requireNonNull(hyracksJobFormat);
+        this.hyracksJobFormat = hyracksJobFormat;
     }
 
     public Map<String, String> getOptionalParams() {
@@ -390,6 +424,14 @@ public class QueryServiceRequestParameters {
         return maxWarnings;
     }
 
+    public long getResultTtlInMillis() {
+        return resultTtlInMillis;
+    }
+
+    public void setResultTtlInMillis(long resultTtlInMillis) {
+        this.resultTtlInMillis = resultTtlInMillis;
+    }
+
     public void setRequestId(String requestId) {
         this.requestId = requestId;
     }
@@ -405,6 +447,7 @@ public class QueryServiceRequestParameters {
         object.put("statement", statement != null
                 ? LogRedactionUtil.statement(JSONUtil.escape(new StringBuilder(), statement).toString()) : null);
         object.put("pretty", pretty);
+        object.put("skipPlanCache", skipQueryPlanCache);
         object.put("mode", mode.getName());
         object.put("clientContextID", clientContextID);
         object.put("clientType", clientType.toString());
@@ -424,11 +467,17 @@ public class QueryServiceRequestParameters {
         object.put("parseOnly", parseOnly);
         object.put("readOnly", readOnly);
         object.put("maxWarnings", maxWarnings);
+        object.put("resultTtl", resultTtlInMillis);
         object.put("sqlCompat", sqlCompatMode);
         object.put("source", source);
         if (statementParams != null) {
             for (Map.Entry<String, JsonNode> statementParam : statementParams.entrySet()) {
-                object.set('$' + statementParam.getKey(), REDACTED_SENSITIVE_ENTRY_VALUE);
+                try {
+                    String s = OBJECT_MAPPER.writeValueAsString(statementParam.getValue());
+                    object.put('$' + statementParam.getKey(), LogRedactionUtil.userData(s));
+                } catch (JsonProcessingException e) {
+                    // ignore
+                }
             }
         }
         return object;
@@ -449,6 +498,7 @@ public class QueryServiceRequestParameters {
         setHost(servlet.host(request));
         setPath(servlet.servletPath(request));
         setOptionalParams(optionalParams);
+        setIncludeHost(servlet.isOldApi(request));
         try {
             if (useRequestParameters(request)) {
                 setFromRequestParameters(request);
@@ -489,13 +539,18 @@ public class QueryServiceRequestParameters {
         setFormatIfExists(req, acceptHeader, Parameter.FORMAT.str(), valGetter);
         setMode(parseIfExists(req, Parameter.MODE.str(), valGetter, getMode(), ResultDelivery::fromName));
         setPlanFormat(parseIfExists(req, Parameter.PLAN_FORMAT.str(), valGetter, getPlanFormat(), planFormats::get));
+        setHyracksJobFormat(parseIfExists(req, Parameter.HYRACKS_JOB_FORMAT.str(), valGetter, getHyracksJobFormat(),
+                hyracksJobFormats::get));
+
         setProfileType(parseIfExists(req, Parameter.PROFILE.str(), valGetter, getProfileType(), ProfileType::fromName));
 
         setTimeout(parseTime(req, Parameter.TIMEOUT.str(), valGetter, getTimeout()));
         setMaxResultReads(parseLong(req, Parameter.MAX_RESULT_READS.str(), valGetter, getMaxResultReads()));
         setMaxWarnings(parseLong(req, Parameter.MAX_WARNINGS.str(), valGetter, getMaxWarnings()));
+        setResultTtlInMillis(parseTime(req, Parameter.RESULT_TTL.str(), valGetter, getResultTtlInMillis()));
 
         setPretty(parseBoolean(req, Parameter.PRETTY.str(), valGetter, isPretty()));
+        setSkipQueryPlanCache(parseBoolean(req, Parameter.SKIP_PLAN_CACHE.str(), valGetter, isSkipQueryPlanCache()));
         setExpressionTree(parseBoolean(req, Parameter.EXPRESSION_TREE.str(), valGetter, isExpressionTree()));
         setRewrittenExpressionTree(
                 parseBoolean(req, Parameter.REWRITTEN_EXPRESSION_TREE.str(), valGetter, isRewrittenExpressionTree()));
@@ -511,6 +566,7 @@ public class QueryServiceRequestParameters {
         setClientType(parseIfExists(req, Parameter.CLIENT_TYPE.str(), valGetter, getClientType(), clientTypes::get));
         setSQLCompatMode(parseBoolean(req, Parameter.SQL_COMPAT.str(), valGetter, isSQLCompatMode()));
         setSource(valGetter.apply(req, Parameter.SOURCE.str()));
+        setIncludeHost(parseBoolean(req, Parameter.INCLUDE_HOST.str(), valGetter, isIncludeHost()));
     }
 
     protected void setExtraParams(JsonNode jsonRequest) throws HyracksDataException {

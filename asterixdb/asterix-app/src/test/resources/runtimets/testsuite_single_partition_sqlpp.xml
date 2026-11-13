@@ -85,6 +85,36 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
+      <compilation-unit name="assembly/ASTERIXDB-3652-1">
+        <output-dir compare="Text">assembly/ASTERIXDB-3652-1</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="assembly/ASTERIXDB-3652-2">
+        <output-dir compare="Text">assembly/ASTERIXDB-3652-2</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="assembly/ASTERIXDB-3652-3">
+        <output-dir compare="Text">assembly/ASTERIXDB-3652-3</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="assembly/ASTERIXDB-3652-4">
+        <output-dir compare="Text">assembly/ASTERIXDB-3652-4</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="assembly/ASTERIXDB-3652-5">
+        <output-dir compare="Text">assembly/ASTERIXDB-3652-5</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="assembly/missing-inner-array">
+        <output-dir compare="Text">assembly/missing-inner-array</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
       <compilation-unit name="filter/ASTERIXDB-3499">
         <output-dir compare="Text">filter/ASTERIXDB-3499</output-dir>
       </compilation-unit>
@@ -92,6 +122,46 @@
     <test-case FilePath="column">
       <compilation-unit name="filter/ASTERIXDB-3502">
         <output-dir compare="Text">filter/ASTERIXDB-3502</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/double">
+        <output-dir compare="Text">filter/double</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/double-precision">
+        <output-dir compare="Text">filter/double-precision</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/double-nan">
+        <output-dir compare="Text">filter/double-nan</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/constant-left">
+        <output-dir compare="Text">filter/constant-left</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/return-array">
+        <output-dir compare="Text">filter/return-array</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="io/flush/ASTERIXDB-3597">
+        <output-dir compare="Text">io/flush/ASTERIXDB-3597</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="io/merge/ASTERIXDB-3597">
+        <output-dir compare="Text">io/merge/ASTERIXDB-3597</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="io/merge/ASTERIXDB-3601">
+        <output-dir compare="Text">io/merge/ASTERIXDB-3601</output-dir>
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
@@ -185,6 +255,11 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
+      <compilation-unit name="missing-null-values/009">
+        <output-dir compare="Text">missing-null-values/009</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
       <compilation-unit name="empty-array/001">
         <output-dir compare="Text">empty-array/001</output-dir>
       </compilation-unit>
@@ -212,6 +287,12 @@
     <test-case FilePath="column">
       <compilation-unit name="pushdown/ASTERIXDB-3540">
         <output-dir compare="Text">pushdown/ASTERIXDB-3540</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column" check-warnings="true">
+      <compilation-unit name="pushdown/ASTERIXDB-3680">
+        <output-dir compare="Text">pushdown/ASTERIXDB-3680</output-dir>
+        <expected-warn>ASX0002: Type mismatch: function field-access-by-name expects its 1st input parameter to be of type object, but the actual input type is bigint (in line 24, at column 11)</expected-warn>
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
@@ -340,6 +421,16 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
+      <compilation-unit name="secondary-index/projection-filter">
+        <output-dir compare="Text">secondary-index/projection-filter</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="secondary-index/range-filter-intersect">
+        <output-dir compare="Text">secondary-index/range-filter-intersect</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
       <compilation-unit name="secondary-index/array-index/use-case-1">
         <output-dir compare="Text">secondary-index/array-index/use-case-1</output-dir>
       </compilation-unit>
@@ -400,12 +491,40 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
+      <compilation-unit name="temporal/001">
+        <output-dir compare="Text">temporal/001</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/date">
+        <output-dir compare="Text">temporal/002/date</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/time">
+        <output-dir compare="Text">temporal/002/time</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/datetime">
+        <output-dir compare="Text">temporal/002/datetime</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/daytimeduration">
+        <output-dir compare="Text">temporal/002/daytimeduration</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/yearmonthduration">
+        <output-dir compare="Text">temporal/002/yearmonthduration</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
       <compilation-unit name="supported-types">
         <output-dir compare="Text">supported-types</output-dir>
-        <expected-error>ASX0067: Type(s) '[datetime]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, uuid]</expected-error>
-        <expected-error>ASX0067: Type(s) '[datetime, date, time, duration]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, uuid]</expected-error>
-        <expected-error>ASX0067: Type(s) '[datetime]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, uuid]</expected-error>
-        <expected-error>ASX0067: Type(s) '[datetime]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, uuid]</expected-error>
+        <expected-error>ASX0067: Type(s) '[point]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, datetime, date, time, duration, interval, yearmonthduration, daytimeduration, uuid]</expected-error>
+        <expected-error>ASX0067: Type(s) '[point]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, datetime, date, time, duration, interval, yearmonthduration, daytimeduration, uuid]</expected-error>
         <source-location>false</source-location>
       </compilation-unit>
     </test-case>

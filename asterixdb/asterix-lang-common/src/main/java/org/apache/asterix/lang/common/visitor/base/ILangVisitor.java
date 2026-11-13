@@ -24,7 +24,6 @@ import org.apache.asterix.lang.common.clause.GroupbyClause;
 import org.apache.asterix.lang.common.clause.LetClause;
 import org.apache.asterix.lang.common.clause.LimitClause;
 import org.apache.asterix.lang.common.clause.OrderbyClause;
-import org.apache.asterix.lang.common.clause.UpdateClause;
 import org.apache.asterix.lang.common.clause.WhereClause;
 import org.apache.asterix.lang.common.expression.CallExpr;
 import org.apache.asterix.lang.common.expression.FieldAccessor;
@@ -85,11 +84,14 @@ import org.apache.asterix.lang.common.statement.SetStatement;
 import org.apache.asterix.lang.common.statement.StartFeedStatement;
 import org.apache.asterix.lang.common.statement.StopFeedStatement;
 import org.apache.asterix.lang.common.statement.SynonymDropStatement;
+import org.apache.asterix.lang.common.statement.TruncateDatasetStatement;
 import org.apache.asterix.lang.common.statement.TypeDecl;
 import org.apache.asterix.lang.common.statement.TypeDropStatement;
 import org.apache.asterix.lang.common.statement.UpdateStatement;
 import org.apache.asterix.lang.common.statement.ViewDecl;
 import org.apache.asterix.lang.common.statement.ViewDropStatement;
+import org.apache.asterix.lang.common.statement.catalog.CatalogCreateStatement;
+import org.apache.asterix.lang.common.statement.catalog.CatalogDropStatement;
 
 public interface ILangVisitor<R, T> {
 
@@ -111,13 +113,13 @@ public interface ILangVisitor<R, T> {
 
     R visit(DropDatasetStatement del, T arg) throws CompilationException;
 
+    R visit(TruncateDatasetStatement del, T arg) throws CompilationException;
+
     R visit(InsertStatement insert, T arg) throws CompilationException;
 
     R visit(DeleteStatement del, T arg) throws CompilationException;
 
     R visit(UpdateStatement update, T arg) throws CompilationException;
-
-    R visit(UpdateClause del, T arg) throws CompilationException;
 
     R visit(TypeReferenceExpression tre, T arg) throws CompilationException;
 
@@ -234,4 +236,8 @@ public interface ILangVisitor<R, T> {
     R visit(ViewDecl vd, T arg) throws CompilationException;
 
     R visit(IVisitorExtension ve, T arg) throws CompilationException;
+
+    R visit(CatalogCreateStatement ccs, T arg) throws CompilationException;
+
+    R visit(CatalogDropStatement cds, T arg) throws CompilationException;
 }

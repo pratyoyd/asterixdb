@@ -28,8 +28,8 @@ import java.util.Set;
 import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
@@ -44,6 +44,8 @@ import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractOperatorWithNestedPlans;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AggregateOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.ClusterByOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.ProjectOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.SubplanOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.UnnestOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.visitors.VariableUtilities;
@@ -57,13 +59,16 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
     @Override
     public boolean rewritePre(Mutable<ILogicalOperator> opRef, IOptimizationContext context)
             throws AlgebricksException {
+        if (context.checkIfInDontApplySet(this, opRef.get())) {
+            return false;
+        }
         Map<LogicalVariable, Integer> nspAggVars = new HashMap<>();
         Map<LogicalVariable, Integer> nspAggVarToPlanIndex = new HashMap<>();
         Map<LogicalVariable, AbstractOperatorWithNestedPlans> nspWithAgg = new HashMap<>();
         Map<ILogicalExpression, ILogicalExpression> aggExprToVarExpr = new HashMap<>();
         // first collect vars. referring to listified sequences
-        boolean changed =
-                collectVarsBottomUp(opRef, context, nspAggVars, nspWithAgg, nspAggVarToPlanIndex, aggExprToVarExpr);
+        boolean changed = collectVarsBottomUp(opRef, context, nspAggVars, nspWithAgg, nspAggVarToPlanIndex,
+                aggExprToVarExpr, true);
         if (changed) {
             removeRedundantListifies(nspAggVars, nspWithAgg, nspAggVarToPlanIndex);
         }
@@ -88,7 +93,7 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
                     List<LogicalVariable> producedVarsAtAgg = new ArrayList<>();
                     VariableUtilities.getProducedVariablesInDescendantsAndSelf(aggOp, producedVarsAtAgg);
                     if (producedVarsAtAgg.isEmpty()) {
-                        removeList.add(new Pair<>(nspOp, nspAggVarToPlanIndex.get(aggVar)));
+                        removeList.add(Pair.of(nspOp, nspAggVarToPlanIndex.get(aggVar)));
                     }
                 }
             }
@@ -97,8 +102,8 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
         // Collects subplans that is to be removed.
         Map<AbstractOperatorWithNestedPlans, List<ILogicalPlan>> nspToSubplanListMap = new HashMap<>();
         for (Pair<AbstractOperatorWithNestedPlans, Integer> remove : removeList) {
-            AbstractOperatorWithNestedPlans groupByOperator = remove.first;
-            ILogicalPlan subplan = remove.first.getNestedPlans().get(remove.second);
+            AbstractOperatorWithNestedPlans groupByOperator = remove.getLeft();
+            ILogicalPlan subplan = remove.getLeft().getNestedPlans().get(remove.getRight());
             if (nspToSubplanListMap.containsKey(groupByOperator)) {
                 List<ILogicalPlan> subplans = nspToSubplanListMap.get(groupByOperator);
                 subplans.add(subplan);
@@ -116,13 +121,16 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
             Map<LogicalVariable, Integer> nspListifyVarsCount,
             Map<LogicalVariable, AbstractOperatorWithNestedPlans> nspWithAgg,
             Map<LogicalVariable, Integer> nspAggVarToPlanIndex,
-            Map<ILogicalExpression, ILogicalExpression> aggregateExprToVarExpr) throws AlgebricksException {
+            Map<ILogicalExpression, ILogicalExpression> aggregateExprToVarExpr, boolean first)
+            throws AlgebricksException {
         AbstractLogicalOperator op1 = (AbstractLogicalOperator) opRef.getValue();
-        context.addToDontApplySet(this, op1);
+        if (!first) {
+            context.addToDontApplySet(this, op1);
+        }
         boolean change = false;
         for (Mutable<ILogicalOperator> child : op1.getInputs()) {
             if (collectVarsBottomUp(child, context, nspListifyVarsCount, nspWithAgg, nspAggVarToPlanIndex,
-                    aggregateExprToVarExpr)) {
+                    aggregateExprToVarExpr, false)) {
                 change = true;
             }
         }
@@ -147,8 +155,8 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
                 ILogicalExpressionReferenceTransform exprTransform = exprRef -> {
                     Pair<Boolean, ILogicalExpression> p =
                             extractAggFunctionsFromExpression(exprRef, nspWithAgg, aggregateExprToVarExpr, context);
-                    if (p.first) {
-                        exprRef.setValue(p.second);
+                    if (p.getLeft()) {
+                        exprRef.setValue(p.getRight());
                         return true;
                     } else {
                         return false;
@@ -160,12 +168,7 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
                 used.clear();
                 VariableUtilities.getUsedVariables(op1, used);
                 // increment the count for the ones which are still used
-                for (LogicalVariable v : used) {
-                    Integer m = nspListifyVarsCount.get(v);
-                    if (m != null) {
-                        nspListifyVarsCount.put(v, m + 1);
-                    }
-                }
+                countListifyUses(nspListifyVarsCount, used);
                 break;
             case SUBPLAN:
                 // Try to push the subplan into a group-by operator if possible.
@@ -192,16 +195,31 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
                 // of the group by operator (if possible).
                 collectAggregateVars(nspListifyVarsCount, nspWithAgg, nspAggVarToPlanIndex,
                         (AbstractOperatorWithNestedPlans) op1);
+                // A decoration can read a listify produced below (an outer variable carried through the
+                // group-by); without counting it the listify is removed as unused.
+                countListifyUses(nspListifyVarsCount, used);
+                break;
+            case CLUSTER_BY:
+                // CLUSTER BY carries its members listify as a nested plan, exactly as GROUP BY does;
+                // enrolling it here lets an aggregate consuming the members list be pushed into that
+                // plan before the operator is expanded, so the list itself is never materialized.
+                collectAggregateVars(nspListifyVarsCount, nspWithAgg, nspAggVarToPlanIndex,
+                        (AbstractOperatorWithNestedPlans) op1);
+                countListifyUses(nspListifyVarsCount, used);
                 break;
             default:
-                for (LogicalVariable v : used) {
-                    Integer m = nspListifyVarsCount.get(v);
-                    if (m != null) {
-                        nspListifyVarsCount.put(v, m + 1);
-                    }
-                }
+                countListifyUses(nspListifyVarsCount, used);
         }
         return change;
+    }
+
+    private static void countListifyUses(Map<LogicalVariable, Integer> nspListifyVarsCount, Set<LogicalVariable> used) {
+        for (LogicalVariable v : used) {
+            Integer m = nspListifyVarsCount.get(v);
+            if (m != null) {
+                nspListifyVarsCount.put(v, m + 1);
+            }
+        }
     }
 
     private void collectAggregateVars(Map<LogicalVariable, Integer> nspListifyVarsCount,
@@ -265,9 +283,9 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
                                 VariableReferenceExpression newVarExpr = new VariableReferenceExpression(newVar);
                                 newVarExpr.setSourceLocation(expr.getSourceLocation());
                                 aggregateExprToVarExpr.put(expr, newVarExpr);
-                                return new Pair<>(Boolean.TRUE, newVarExpr);
+                                return Pair.of(Boolean.TRUE, newVarExpr);
                             } else {
-                                return new Pair<>(Boolean.TRUE, varExpr.cloneExpression());
+                                return Pair.of(Boolean.TRUE, varExpr.cloneExpression());
                             }
                         }
                     }
@@ -277,15 +295,15 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
                 for (Mutable<ILogicalExpression> a : fce.getArguments()) {
                     Pair<Boolean, ILogicalExpression> aggArg =
                             extractAggFunctionsFromExpression(a, nspWithAgg, aggregateExprToVarExpr, context);
-                    if (aggArg.first) {
-                        a.setValue(aggArg.second);
+                    if (aggArg.getLeft()) {
+                        a.setValue(aggArg.getRight());
                         change = true;
                     }
                 }
-                return new Pair<>(change, fce);
+                return Pair.of(change, fce);
             case VARIABLE:
             case CONSTANT:
-                return new Pair<>(Boolean.FALSE, expr);
+                return Pair.of(Boolean.FALSE, expr);
             default:
                 throw new IllegalArgumentException();
         }
@@ -330,11 +348,23 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
             Map<LogicalVariable, Integer> nspAggVarToPlanIndex, IOptimizationContext context)
             throws AlgebricksException {
         SubplanOperator subplan = (SubplanOperator) subplanOpRef.getValue();
-        // only free var can be varFromNestedAgg
+        // only free var can be varFromNestedAgg -- except CLUSTER BY's centroid, which the operator can
+        // decorrelate: the assignment centroid is a pre-group per-row value carrying the same vector, so a
+        // centroid reference inside a members subquery is substituted with it and the push proceeds.
+        LogicalVariable decorrelatableCentroid = null;
+        LogicalVariable assignedCentroid = null;
+        if (nspOp.getOperatorTag() == LogicalOperatorTag.CLUSTER_BY) {
+            ClusterByOperator cbOp = (ClusterByOperator) nspOp;
+            decorrelatableCentroid = cbOp.getCentroidVariable();
+            assignedCentroid = cbOp.getAssignedCentroidVariable();
+        }
+        boolean usesCentroid = false;
         HashSet<LogicalVariable> freeVars = new HashSet<>();
         OperatorPropertiesUtil.getFreeVariablesInSubplans(subplan, freeVars);
         for (LogicalVariable vFree : freeVars) {
-            if (!vFree.equals(varFromNestedAgg)) {
+            if (vFree.equals(decorrelatableCentroid) && assignedCentroid != null) {
+                usesCentroid = true;
+            } else if (!vFree.equals(varFromNestedAgg)) {
                 return false;
             }
         }
@@ -408,6 +438,31 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
                 OperatorManipulationUtil.substituteVarRec(aggInSubplanOp, unnestVar, listifyVar, true, context,
                         visited);
                 visited.clear();
+                if (usesCentroid) {
+                    // Scoped by hand: a recursive utility substitution would follow the nested-tuple-source
+                    // back into the CLUSTER BY operator and rewrite its own centroid variable. Walk only the
+                    // pushed pipeline, swap references inside expressions, and add the assignment centroid to
+                    // any interior projection so the variable actually flows to its new uses.
+                    ILogicalOperator walk = aggInSubplanOp;
+                    while (walk != null && walk.getOperatorTag() != LogicalOperatorTag.NESTEDTUPLESOURCE) {
+                        for (Mutable<ILogicalExpression> exprRef : collectExpressions(walk)) {
+                            if (exprRef.getValue().getExpressionTag() == LogicalExpressionTag.VARIABLE
+                                    && ((VariableReferenceExpression) exprRef.getValue()).getVariableReference()
+                                            .equals(decorrelatableCentroid)) {
+                                VariableReferenceExpression sub = new VariableReferenceExpression(assignedCentroid);
+                                sub.setSourceLocation(exprRef.getValue().getSourceLocation());
+                                exprRef.setValue(sub);
+                            } else {
+                                exprRef.getValue().substituteVar(decorrelatableCentroid, assignedCentroid);
+                            }
+                        }
+                        if (walk.getOperatorTag() == LogicalOperatorTag.PROJECT
+                                && !((ProjectOperator) walk).getVariables().contains(assignedCentroid)) {
+                            ((ProjectOperator) walk).getVariables().add(assignedCentroid);
+                        }
+                        walk = walk.getInputs().isEmpty() ? null : walk.getInputs().get(0).getValue();
+                    }
+                }
                 nspAgg.getVariables().addAll(aggInSubplanOp.getVariables());
                 nspAgg.getExpressions().addAll(aggInSubplanOp.getExpressions());
                 for (LogicalVariable v : aggInSubplanOp.getVariables()) {
@@ -447,6 +502,17 @@ public class PushAggregateIntoNestedSubplanRule implements IAlgebraicRewriteRule
             }
         }
         return false;
+
+    }
+
+    private static List<Mutable<ILogicalExpression>> collectExpressions(ILogicalOperator op)
+            throws AlgebricksException {
+        List<Mutable<ILogicalExpression>> refs = new ArrayList<>();
+        ((AbstractLogicalOperator) op).acceptExpressionTransform(ref -> {
+            refs.add(ref);
+            return false;
+        });
+        return refs;
     }
 
     private LogicalVariable findListifiedVariable(AggregateOperator nspAgg, LogicalVariable varFromNestedAgg) {

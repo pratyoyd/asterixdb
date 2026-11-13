@@ -27,9 +27,9 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.common.utils.ListSet;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -103,16 +103,11 @@ public class RemoveUnusedAssignAndAggregateRule implements IAlgebraicRewriteRule
      * variables if they are used afterwards.
      */
     private Set<LogicalVariable> removeAssignVarFromConsideration(Mutable<ILogicalOperator> opRef) {
+        ILogicalOperator op = opRef.getValue();
         Set<LogicalVariable> assignVarsSetForThisOp = null;
-        Set<LogicalVariable> usedVarsSetForThisOp = null;
+        Set<LogicalVariable> usedVarsSetForThisOp = accumulatedUsedVarFromRootMap.get(opRef);
 
-        if (accumulatedUsedVarFromRootMap.containsKey(opRef)) {
-            usedVarsSetForThisOp = accumulatedUsedVarFromRootMap.get(opRef);
-        }
-
-        if (assignedVarMap.containsKey(opRef)) {
-            assignVarsSetForThisOp = assignedVarMap.get(opRef);
-        }
+        assignVarsSetForThisOp = assignedVarMap.get(opRef);
 
         if (assignVarsSetForThisOp != null && !assignVarsSetForThisOp.isEmpty()) {
             Iterator<LogicalVariable> varIter = assignVarsSetForThisOp.iterator();
@@ -128,9 +123,9 @@ public class RemoveUnusedAssignAndAggregateRule implements IAlgebraicRewriteRule
         // The source variables of the UNIONALL operator should be survived
         // since we are sure that the output of UNIONALL operator is used
         // afterwards.
-        if (opRef.getValue().getOperatorTag() == LogicalOperatorTag.UNIONALL) {
+        if (op.getOperatorTag() == LogicalOperatorTag.UNIONALL) {
             Iterator<Triple<LogicalVariable, LogicalVariable, LogicalVariable>> iter =
-                    ((UnionAllOperator) opRef.getValue()).getVariableMappings().iterator();
+                    ((UnionAllOperator) op).getVariableMappings().iterator();
             while (iter.hasNext()) {
                 Triple<LogicalVariable, LogicalVariable, LogicalVariable> varMapping = iter.next();
                 survivedUnionSourceVarSet.add(varMapping.first);
@@ -309,10 +304,10 @@ public class RemoveUnusedAssignAndAggregateRule implements IAlgebraicRewriteRule
         boolean modified = false;
         while (iter.hasNext()) {
             Pair<LogicalVariable, Mutable<ILogicalExpression>> varMapping = iter.next();
-            LogicalVariable decorVar = varMapping.first;
+            LogicalVariable decorVar = varMapping.getLeft();
             // A decor var mapping can have a variable reference expression without a new variable definition,
             // which is for rebinding the referred variable.
-            VariableReferenceExpression varExpr = (VariableReferenceExpression) varMapping.second.getValue();
+            VariableReferenceExpression varExpr = (VariableReferenceExpression) varMapping.getRight().getValue();
             LogicalVariable decorReferredVar = varExpr.getVariableReference();
             boolean removeReBoundDecorVar = toRemove.contains(decorReferredVar);
             if ((decorVar != null && toRemove.contains(decorVar)) || removeReBoundDecorVar) {
@@ -399,7 +394,7 @@ public class RemoveUnusedAssignAndAggregateRule implements IAlgebraicRewriteRule
             case GROUP:
                 GroupByOperator groupByOp = (GroupByOperator) op;
                 for (Pair<LogicalVariable, Mutable<ILogicalExpression>> decorMapping : groupByOp.getDecorList()) {
-                    LogicalVariable decorVar = decorMapping.first;
+                    LogicalVariable decorVar = decorMapping.getLeft();
                     if (decorVar != null) {
                         assignVarsSetInThisOp.add(decorVar);
                         targetOpFound = true;
@@ -407,9 +402,8 @@ public class RemoveUnusedAssignAndAggregateRule implements IAlgebraicRewriteRule
                         // A decor var mapping can have a variable reference expression without a new variable
                         // definition, which is for rebinding the referred variable.
                         VariableReferenceExpression varExpr =
-                                (VariableReferenceExpression) decorMapping.second.getValue();
-                        LogicalVariable reboundDecorVar = varExpr.getVariableReference();
-                        assignVarsSetInThisOp.add(reboundDecorVar);
+                                (VariableReferenceExpression) decorMapping.getRight().getValue();
+                        assignVarsSetInThisOp.add(varExpr.getVariableReference());
                     }
                 }
                 break;
@@ -417,6 +411,8 @@ public class RemoveUnusedAssignAndAggregateRule implements IAlgebraicRewriteRule
                 WindowOperator winOp = (WindowOperator) op;
                 assignVarsSetInThisOp.addAll(winOp.getVariables());
                 targetOpFound = true;
+                break;
+            default:
                 break;
         }
 
@@ -433,10 +429,10 @@ public class RemoveUnusedAssignAndAggregateRule implements IAlgebraicRewriteRule
             if (accumulatedUsedVarFromRootMap.containsKey(opRef)) {
                 accumulatedUsedVarFromRootMap.get(opRef).addAll(accumulatedUsedVarFromRootSet);
             } else {
-                accumulatedUsedVarFromRootMap.put(opRef, new HashSet<LogicalVariable>(accumulatedUsedVarFromRootSet));
+                accumulatedUsedVarFromRootMap.put(opRef, accumulatedUsedVarFromRootSet);
             }
         } else {
-            accumulatedUsedVarFromRootMap.put(opRef, new HashSet<LogicalVariable>(accumulatedUsedVarFromRootSet));
+            accumulatedUsedVarFromRootMap.put(opRef, accumulatedUsedVarFromRootSet);
         }
 
         for (Mutable<ILogicalOperator> c : op.getInputs()) {

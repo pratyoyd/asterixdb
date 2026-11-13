@@ -63,6 +63,7 @@ import org.apache.hyracks.storage.common.IIndexBulkLoader;
 import org.apache.hyracks.storage.common.IIndexCursor;
 import org.apache.hyracks.storage.common.IIndexCursorStats;
 import org.apache.hyracks.storage.common.ISearchPredicate;
+import org.apache.hyracks.storage.common.ISketchSampler;
 import org.apache.hyracks.storage.common.MultiComparator;
 import org.apache.hyracks.storage.common.NoOpIndexCursorStats;
 import org.apache.hyracks.storage.common.buffercache.IBufferCache;
@@ -278,13 +279,16 @@ public class OnDiskInvertedIndex implements IInPlaceInvertedIndex {
         protected final MultiComparator invListCmp;
 
         protected final boolean verifyInput;
+        protected final ISketchSampler sampler;
         protected final MultiComparator allCmp;
 
         protected final IFIFOPageWriter queue;
 
         public AbstractOnDiskInvertedIndexBulkLoader(float btreeFillFactor, boolean verifyInput, long numElementsHint,
-                boolean checkIfEmptyIndex, int startPageId, IPageWriteCallback callback) throws HyracksDataException {
+                boolean checkIfEmptyIndex, int startPageId, ISketchSampler sampler, IPageWriteCallback callback)
+                throws HyracksDataException {
             this.verifyInput = verifyInput;
+            this.sampler = sampler;
             this.invListCmp = MultiComparator.create(invListCmpFactories);
             if (verifyInput) {
                 allCmp = MultiComparator.create(btree.getComparatorFactories(), invListCmpFactories);
@@ -296,7 +300,7 @@ public class OnDiskInvertedIndex implements IInPlaceInvertedIndex {
             this.lastTupleBuilder = new ArrayTupleBuilder(numTokenFields + numInvListKeys);
             this.lastTuple = new ArrayTupleReference();
             this.btreeBulkloader = btree.createBulkLoader(btreeFillFactor, verifyInput, numElementsHint,
-                    checkIfEmptyIndex, NoOpPageWriteCallback.INSTANCE);
+                    checkIfEmptyIndex, sampler, NoOpPageWriteCallback.INSTANCE);
             currentPageId = startPageId;
             currentPage = bufferCache.confiscatePage(BufferedFileHandle.getDiskPageId(fileId, currentPageId));
             invListBuilder.setTargetBuffer(currentPage.getBuffer().array(), 0);
@@ -397,6 +401,9 @@ public class OnDiskInvertedIndex implements IInPlaceInvertedIndex {
             if (btreeBulkloader != null) {
                 btreeBulkloader.abort();
             }
+            if (currentPage != null) {
+                bufferCache.returnPage(currentPage, false);
+            }
         }
 
         @Override
@@ -410,13 +417,15 @@ public class OnDiskInvertedIndex implements IInPlaceInvertedIndex {
     public class OnDiskInvertedIndexMergeBulkLoader extends AbstractOnDiskInvertedIndexBulkLoader {
 
         public OnDiskInvertedIndexMergeBulkLoader(float btreeFillFactor, boolean verifyInput, long numElementsHint,
-                boolean checkIfEmptyIndex, int startPageId, IPageWriteCallback callback) throws HyracksDataException {
-            super(btreeFillFactor, verifyInput, numElementsHint, checkIfEmptyIndex, startPageId, callback);
+                boolean checkIfEmptyIndex, int startPageId, ISketchSampler sampler, IPageWriteCallback callback)
+                throws HyracksDataException {
+            super(btreeFillFactor, verifyInput, numElementsHint, checkIfEmptyIndex, startPageId, sampler, callback);
         }
 
         @Override
         public void add(ITupleReference tuple) throws HyracksDataException {
             TokenKeyPairTuple pairTuple = (TokenKeyPairTuple) tuple;
+            sampler.addTuple(pairTuple);
             ITupleReference tokenTuple = pairTuple.getTokenTuple();
             ITupleReference keyTuple = pairTuple.getKeyTuple();
             boolean startNewList = pairTuple.isNewToken();
@@ -438,13 +447,15 @@ public class OnDiskInvertedIndex implements IInPlaceInvertedIndex {
     public class OnDiskInvertedIndexBulkLoader extends AbstractOnDiskInvertedIndexBulkLoader {
 
         public OnDiskInvertedIndexBulkLoader(float btreeFillFactor, boolean verifyInput, long numElementsHint,
-                boolean checkIfEmptyIndex, int startPageId, IPageWriteCallback callback) throws HyracksDataException {
-            super(btreeFillFactor, verifyInput, numElementsHint, checkIfEmptyIndex, startPageId, callback);
+                boolean checkIfEmptyIndex, int startPageId, ISketchSampler sampler, IPageWriteCallback callback)
+                throws HyracksDataException {
+            super(btreeFillFactor, verifyInput, numElementsHint, checkIfEmptyIndex, startPageId, sampler, callback);
         }
 
         @Override
         public void add(ITupleReference tuple) throws HyracksDataException {
             boolean firstElement = btreeTupleBuilder.getSize() == 0;
+            sampler.addTuple(tuple);
             boolean startNewList = firstElement;
             if (!firstElement) {
                 // If the current and the last token don't match, we start a new list.
@@ -602,15 +613,17 @@ public class OnDiskInvertedIndex implements IInPlaceInvertedIndex {
 
     @Override
     public IIndexBulkLoader createBulkLoader(float fillFactor, boolean verifyInput, long numElementsHint,
-            boolean checkIfEmptyIndex, IPageWriteCallback callback) throws HyracksDataException {
+            boolean checkIfEmptyIndex, ISketchSampler sampler, IPageWriteCallback callback)
+            throws HyracksDataException {
         return new OnDiskInvertedIndexBulkLoader(fillFactor, verifyInput, numElementsHint, checkIfEmptyIndex,
-                rootPageId, callback);
+                rootPageId, sampler, callback);
     }
 
     public IIndexBulkLoader createMergeBulkLoader(float fillFactor, boolean verifyInput, long numElementsHint,
-            boolean checkIfEmptyIndex, IPageWriteCallback callback) throws HyracksDataException {
+            boolean checkIfEmptyIndex, ISketchSampler sampler, IPageWriteCallback callback)
+            throws HyracksDataException {
         return new OnDiskInvertedIndexMergeBulkLoader(fillFactor, verifyInput, numElementsHint, checkIfEmptyIndex,
-                rootPageId, callback);
+                rootPageId, sampler, callback);
     }
 
     @Override

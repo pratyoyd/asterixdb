@@ -18,27 +18,40 @@
  */
 package org.apache.asterix.api.http.server;
 
-import static org.apache.asterix.api.http.server.AbstractQueryApiServlet.ResultStatus.FAILED;
-
 import java.io.PrintWriter;
-import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-import org.apache.asterix.app.result.ExecutionError;
+import org.apache.asterix.app.result.ResponseMetrics;
 import org.apache.asterix.app.result.ResponsePrinter;
 import org.apache.asterix.app.result.ResultHandle;
 import org.apache.asterix.app.result.ResultReader;
-import org.apache.asterix.app.result.fields.ErrorsPrinter;
+import org.apache.asterix.app.result.fields.CreatedAtPrinter;
+import org.apache.asterix.app.result.fields.MetricsPrinter;
+import org.apache.asterix.app.result.fields.PartitionInfoPrinter;
+import org.apache.asterix.app.result.fields.ResultCountPrinter;
 import org.apache.asterix.app.result.fields.ResultHandlePrinter;
 import org.apache.asterix.app.result.fields.StatusPrinter;
 import org.apache.asterix.common.api.IApplicationContext;
+import org.apache.asterix.common.api.IClientRequest;
+import org.apache.asterix.common.dataflow.ICcApplicationContext;
+import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.exceptions.RuntimeDataException;
+import org.apache.asterix.translator.ClientRequest;
+import org.apache.asterix.translator.ResultMetadata;
 import org.apache.asterix.translator.SessionOutput;
+import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.job.JobId;
 import org.apache.hyracks.api.result.ResultJobRecord;
+import org.apache.hyracks.control.cc.ClusterControllerService;
+import org.apache.hyracks.control.cc.job.JobRun;
 import org.apache.hyracks.http.api.IServletRequest;
 import org.apache.hyracks.http.api.IServletResponse;
 import org.apache.hyracks.http.server.utils.HttpUtil;
-import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -54,51 +67,100 @@ public class QueryStatusApiServlet extends AbstractQueryApiServlet {
     @Override
     protected void get(IServletRequest request, IServletResponse response) throws Exception {
         final String strHandle = localPath(request);
-        final ResultHandle handle = ResultHandle.parse(strHandle);
+        final ResultHandle handle = parseAndValidateHandle(request, response);
         if (handle == null) {
-            response.setStatus(HttpResponseStatus.BAD_REQUEST);
-            return;
+            return; // Response status already set in parseAndValidateHandle
         }
+        boolean uriMode = handle.getRequestId() != null;
         ResultReader resultReader = new ResultReader(getResultSet(), handle.getJobId(), handle.getResultSetId());
         final ResultJobRecord.Status resultReaderStatus = resultReader.getStatus();
         if (resultReaderStatus == null) {
-            LOGGER.log(Level.INFO, "No results for: \"" + strHandle + "\"");
+            LOGGER.info("No results for: \"{}\"", strHandle);
             response.setStatus(HttpResponseStatus.NOT_FOUND);
             return;
         }
         ResultStatus resultStatus = resultStatus(resultReaderStatus);
-        Exception ex = extractException(resultReaderStatus);
+        RequestExecutionState executionState = new RequestExecutionState();
         HttpUtil.setContentType(response, HttpUtil.ContentType.APPLICATION_JSON, request);
-        final PrintWriter resultWriter = response.writer();
+        // Always return 200 OK for valid status requests irrespective of the result status.
         response.setStatus(HttpResponseStatus.OK);
+        final PrintWriter resultWriter = response.writer();
         SessionOutput sessionOutput = new SessionOutput(resultWriter);
         ResponsePrinter printer = new ResponsePrinter(sessionOutput);
         printer.begin();
         printer.addHeaderPrinter(new StatusPrinter(resultStatus));
         printer.printHeaders();
-        if (ResultStatus.SUCCESS == resultStatus) {
-            String servletPath = servletPath(request).replace("status", "result");
-            String resHandle = "http://" + host(request) + servletPath + strHandle;
-            printer.addResultPrinter(new ResultHandlePrinter(resHandle));
-        } else if (ex != null) {
-            printer.addResultPrinter(new ErrorsPrinter(Collections.singletonList(ExecutionError.of(ex))));
+        ResultMetadata metadata = null;
+        if (uriMode || resultStatus == ResultStatus.SUCCESS) {
+            metadata = (ResultMetadata) resultReader.getMetadata();
+        }
+        switch (resultStatus) {
+            case SUCCESS -> {
+                if (metadata != null) {
+                    handleSuccessfulResult(request, strHandle, uriMode, printer, resultReader, metadata);
+                }
+            }
+            case TIMEOUT -> handleTimeout(handle, executionState, printer, response);
+            case FATAL, FAILED -> handleFailure(handle, executionState, printer, response, resultReaderStatus);
+            case QUEUED, RUNNING -> {}
         }
         printer.printResults();
+        if (uriMode) {
+            printMetricsAndFooters(printer, metadata, request, handle.getRequestId(), handle.getJobId(), resultStatus);
+        }
         printer.end();
         if (response.writer().checkError()) {
-            LOGGER.warn("Error flushing output writer");
+            LOGGER.warn("the status of {} was not written in full; the client has most likely disconnected or"
+                    + " stopped reading it", handle.getRequestId());
+        }
+    }
+
+    private void handleSuccessfulResult(IServletRequest request, String strHandle, boolean uriMode,
+            ResponsePrinter printer, ResultReader resultReader, ResultMetadata metadata) throws HyracksDataException {
+        String servletPath = servletPath(request).replace("status", "result");
+        String resHandle;
+        if (uriMode) {
+            resHandle = servletPath + strHandle;
+        } else {
+            resHandle = "http://" + host(request) + servletPath + strHandle;
+        }
+        printer.addResultPrinter(new ResultHandlePrinter(resHandle));
+        if (uriMode) {
+            printer.addResultPrinter(new ResultCountPrinter(metadata.getResultCount()));
+            printer.addResultPrinter(new PartitionInfoPrinter(resultReader.getResultSetReader().getResultRecords(),
+                    resHandle, metadata.isResultSetOrdered()));
+        }
+    }
+
+    private void handleTimeout(ResultHandle handle, RequestExecutionState executionState, ResponsePrinter printer,
+            IServletResponse response) {
+        RuntimeDataException hde = new RuntimeDataException(ErrorCode.REQUEST_TIMEOUT);
+        hde.addSuppressed(new TimeoutException());
+        handleExecuteStatementException(hde, executionState, handle.getRequestId(), null, response);
+        requestFailed(hde, printer, executionState);
+    }
+
+    private void handleFailure(ResultHandle handle, RequestExecutionState executionState, ResponsePrinter printer,
+            IServletResponse response, ResultJobRecord.Status resultReaderStatus) {
+        Exception ex = extractException(resultReaderStatus);
+        if (ex != null) {
+            handleExecuteStatementException(ex, executionState, handle.getRequestId(), null, response);
+            requestFailed(ex, printer, executionState);
         }
     }
 
     ResultStatus resultStatus(ResultJobRecord.Status status) {
         switch (status.getState()) {
             case IDLE:
+                return ResultStatus.QUEUED;
             case RUNNING:
                 return ResultStatus.RUNNING;
             case SUCCESS:
                 return ResultStatus.SUCCESS;
             case FAILED:
-                return FAILED;
+                return ResultStatus.FAILED;
+            case TIMEOUT:
+                return ResultStatus.TIMEOUT;
             default:
                 return ResultStatus.FATAL;
         }
@@ -115,5 +177,70 @@ public class QueryStatusApiServlet extends AbstractQueryApiServlet {
             default:
                 return null;
         }
+    }
+
+    private void printMetricsAndFooters(ResponsePrinter printer, ResultMetadata metadata, IServletRequest request,
+            String requestId, JobId jobId, ResultStatus status) throws HyracksDataException {
+        if (metadata != null && status != ResultStatus.QUEUED && status != ResultStatus.RUNNING) {
+            printMetricsWithResultMetadata(printer, request, metadata);
+        } else {
+            printMetricsWithoutResultMetadata(printer, request, requestId, jobId, status);
+        }
+        printer.printFooters();
+    }
+
+    public void printMetricsWithResultMetadata(ResponsePrinter printer, IServletRequest request,
+            ResultMetadata metadata) {
+        //TODO: check elapsedTime calculation.
+        ResponseMetrics metrics = ResponseMetrics.of(
+                metadata.getCompileTimeNanos() + metadata.getQueueWaitTimeNanos() + metadata.getJobDuration(),
+                metadata.getJobDuration(), 0, 0, metadata.getProcessedObjects(), 0, metadata.getTotalWarningsCount(),
+                metadata.getCompileTimeNanos(), metadata.getQueueWaitTimeNanos(), 0, 0, 0, 0, 0);
+        printer.addFooterPrinter(new MetricsPrinter(metrics, HttpUtil.getPreferredCharset(request),
+                Set.of(MetricsPrinter.Metrics.ELAPSED_TIME, MetricsPrinter.Metrics.EXECUTION_TIME,
+                        MetricsPrinter.Metrics.QUEUE_WAIT_TIME, MetricsPrinter.Metrics.COMPILE_TIME,
+                        MetricsPrinter.Metrics.WARNING_COUNT, MetricsPrinter.Metrics.ERROR_COUNT,
+                        MetricsPrinter.Metrics.PROCESSED_OBJECTS_COUNT)));
+        printer.addFooterPrinter(new CreatedAtPrinter(metadata.getCreateTimeMillis()));
+    }
+
+    public void printMetricsWithoutResultMetadata(ResponsePrinter printer, IServletRequest request, String requestId,
+            JobId jobId, ResultStatus status) throws HyracksDataException {
+        try {
+            ClusterControllerService ccs = (ClusterControllerService) appCtx.getServiceContext().getControllerService();
+            JobRun run = ccs.getJobManager().get(jobId);
+            Optional<IClientRequest> clientRequestOpt =
+                    ((ICcApplicationContext) appCtx).getRequestTracker().getAsyncOrDeferredRequest(requestId);
+
+            long requestTimeMillis = 0;
+            long compileTimeNanos = 0;
+            long elapsedTimeMillis = 0;
+            if (clientRequestOpt.isPresent()) {
+                ClientRequest clientRequest = (ClientRequest) clientRequestOpt.get();
+                requestTimeMillis = clientRequest.getRequestTimeMillis();
+                compileTimeNanos = clientRequest.getCompileTimeNanos(jobId);
+                elapsedTimeMillis = clientRequest.getElapsedTimeMillis();
+            }
+            printMetricsWithoutMetadata(printer, request, status, requestTimeMillis, compileTimeNanos,
+                    elapsedTimeMillis, run.getCreateTime(), run.getStartTime(), run.getQueueWaitTime());
+        } catch (Exception e) {
+            throw HyracksDataException.create(e);
+        }
+    }
+
+    protected void printMetricsWithoutMetadata(ResponsePrinter printer, IServletRequest request, ResultStatus status,
+            long requestTimeMillis, long compileTimeNanos, long elapsedTimeMillis, long jobCreateTimeMillis,
+            long jobStartTimeMillis, long queueWaitTimeMillis) {
+        long currentTime = System.currentTimeMillis();
+        long elapsedTimeNanos = TimeUnit.MILLISECONDS.toNanos(elapsedTimeMillis);
+        long executionTimeNanos = status == ResultStatus.RUNNING ? elapsedTimeNanos : 0;
+
+        ResponseMetrics metrics = ResponseMetrics.of(elapsedTimeNanos, executionTimeNanos, 0, 0, 0, 0, 0,
+                compileTimeNanos, TimeUnit.MILLISECONDS.toNanos(queueWaitTimeMillis), 0, 0, 0, 0, 0);
+
+        printer.addFooterPrinter(new MetricsPrinter(metrics, HttpUtil.getPreferredCharset(request),
+                Set.of(MetricsPrinter.Metrics.ELAPSED_TIME, MetricsPrinter.Metrics.EXECUTION_TIME,
+                        MetricsPrinter.Metrics.QUEUE_WAIT_TIME, MetricsPrinter.Metrics.COMPILE_TIME)));
+        printer.addFooterPrinter(new CreatedAtPrinter(requestTimeMillis));
     }
 }

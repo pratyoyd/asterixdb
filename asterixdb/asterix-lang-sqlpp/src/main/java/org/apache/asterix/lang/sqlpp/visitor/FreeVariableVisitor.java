@@ -54,6 +54,7 @@ import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.struct.QuantifiedPair;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateClause;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateWithConditionClause;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.HavingClause;
@@ -67,12 +68,14 @@ import org.apache.asterix.lang.sqlpp.clause.SelectRegular;
 import org.apache.asterix.lang.sqlpp.clause.SelectSetOperation;
 import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.CaseExpression;
+import org.apache.asterix.lang.sqlpp.expression.ChangeExpression;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationRight;
+import org.apache.asterix.lang.sqlpp.struct.TimeTravelSpec;
 import org.apache.asterix.lang.sqlpp.util.SqlppVariableUtil;
 import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppQueryExpressionVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 
 public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Void, Collection<VariableExpr>> {
 
@@ -103,6 +106,7 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
 
         // Visit the left expression of a from term.
         fromTerm.getLeftExpression().accept(this, freeVars);
+        collectTimeTravelFreeVariables(fromTerm.getTimeTravel(), freeVars);
 
         // Adds binding variables.
         bindingVariables.add(fromTerm.getLeftVariable());
@@ -120,6 +124,7 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
                 clauseFreeVars.clear();
             }
             clause.getRightExpression().accept(this, clauseFreeVars);
+            collectTimeTravelFreeVariables(clause.getTimeTravel(), clauseFreeVars);
 
             switch (clause.getClauseType()) {
                 case UNNEST_CLAUSE:
@@ -200,11 +205,15 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
         Collection<VariableExpr> gbyBindingVars = SqlppVariableUtil.getBindingVariables(selectBlock.getGroupbyClause());
         Collection<VariableExpr> gbyLetsBindingVars =
                 SqlppVariableUtil.getLetBindingVariables(selectBlock.getLetHavingListAfterGroupby());
+        // The CLUSTER BY clause binds in the same position GROUP BY does: its descriptor, members, cluster-id,
+        // centroid and decoration variables are this block's, not an enclosing query's.
+        Collection<VariableExpr> clusterByBindingVars =
+                SqlppVariableUtil.getBindingVariables(selectBlock.getClusterbyClause());
 
         selectBlock.getSelectClause().accept(this, selectFreeVars);
-        // Removes group-by, from, let, and gby-let binding vars.
+        // Removes group-by, cluster-by, from, let, and gby-let binding vars.
         removeAllBindingVarsInSelectBlock(selectFreeVars, fromBindingVars, letsBindingVars, gbyBindingVars,
-                gbyLetsBindingVars);
+                gbyLetsBindingVars, clusterByBindingVars);
 
         if (selectBlock.hasFromClause()) {
             selectBlock.getFromClause().accept(this, fromFreeVars);
@@ -214,10 +223,15 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
             letWheresFreeVars.removeAll(fromBindingVars);
         }
         if (selectBlock.hasGroupbyClause()) {
-            selectBlock.getGroupbyClause().accept(this, gbyFreeVars);
+            GroupbyClause groupbyClause = selectBlock.getGroupbyClause();
+            groupbyClause.accept(this, gbyFreeVars);
             // Remove group-by and let binding vars.
             gbyFreeVars.removeAll(fromBindingVars);
             gbyFreeVars.removeAll(letsBindingVars);
+            // A decoration carries a variable bound outside the block through the clause, so its variables stay
+            // free even where a FROM or LET variable of the block shares the name: dropping them would hide the
+            // read from an enclosing GROUP BY, which then fails to carry the variable through.
+            visitDecorations(groupbyClause.getDecorPairList(), gbyFreeVars);
             if (selectBlock.hasLetHavingClausesAfterGroupby()) {
                 visitLetWhereClauses(selectBlock.getLetHavingListAfterGroupby(), gbyLetHavingsFreeVars);
                 gbyLetHavingsFreeVars.removeAll(fromBindingVars);
@@ -225,11 +239,30 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
                 gbyLetHavingsFreeVars.removeAll(gbyBindingVars);
             }
         }
+        if (selectBlock.hasClusterbyClause()) {
+            // The clustering expression's free vars are bound by the FROM/LET vars of this block.
+            Collection<VariableExpr> clusterByFreeVars = new HashSet<>();
+            selectBlock.getClusterbyClause().accept(this, clusterByFreeVars);
+            clusterByFreeVars.removeAll(fromBindingVars);
+            clusterByFreeVars.removeAll(letsBindingVars);
+            // Decorations stay free, as for GROUP BY.
+            visitDecorations(selectBlock.getClusterbyClause().getDecorPairList(), clusterByFreeVars);
+            freeVars.addAll(clusterByFreeVars);
+            // A LET or HAVING after CLUSTER BY parses into the same list as one after GROUP BY, so it has to be
+            // traversed here too: skipping it hides a read of an enclosing query's variable from every caller
+            // of getFreeVariables(), including the CLUSTER BY correlation check.
+            if (selectBlock.hasLetHavingClausesAfterGroupby()) {
+                visitLetWhereClauses(selectBlock.getLetHavingListAfterGroupby(), gbyLetHavingsFreeVars);
+                gbyLetHavingsFreeVars.removeAll(fromBindingVars);
+                gbyLetHavingsFreeVars.removeAll(letsBindingVars);
+                gbyLetHavingsFreeVars.removeAll(clusterByBindingVars);
+            }
+        }
 
         // Removes all binding vars from <code>freeVars</code>, which contains the free
         // vars in the order-by and limit.
         removeAllBindingVarsInSelectBlock(freeVars, fromBindingVars, letsBindingVars, gbyBindingVars,
-                gbyLetsBindingVars);
+                gbyLetsBindingVars, clusterByBindingVars);
 
         // Adds all free vars.
         freeVars.addAll(selectFreeVars);
@@ -320,12 +353,32 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
         }
         if (gc.hasGroupFieldList()) {
             for (Pair<Expression, Identifier> groupField : gc.getGroupFieldList()) {
-                groupField.first.accept(this, freeVars);
+                groupField.getLeft().accept(this, freeVars);
             }
         }
         if (gc.hasWithMap()) {
             for (Expression expr : gc.getWithVarMap().keySet()) {
                 expr.accept(this, freeVars);
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public Void visit(ClusterbyClause cc, Collection<VariableExpr> freeVars) throws CompilationException {
+        // The clustering expression's variables are free; the descriptor/members vars are bound by the clause.
+        cc.getClusteringExpression().accept(this, freeVars);
+        if (cc.hasClusterFieldList()) {
+            for (Pair<Expression, Identifier> field : cc.getClusterFieldList()) {
+                field.getLeft().accept(this, freeVars);
+            }
+        }
+        if (cc.hasWithOptions()) {
+            cc.getWithOptions().accept(this, freeVars);
+        }
+        if (cc.hasDecorList()) {
+            for (GbyVariableExpressionPair pair : cc.getDecorPairList()) {
+                pair.getExpr().accept(this, freeVars);
             }
         }
         return null;
@@ -490,6 +543,12 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
     }
 
     @Override
+    public Void visit(ChangeExpression changeExpr, Collection<VariableExpr> freeVars) throws CompilationException {
+        // Change expressions are changed to select expressions before getting to this visitor.
+        throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE, changeExpr.getSourceLocation());
+    }
+
+    @Override
     public Void visit(WindowExpression winExpr, Collection<VariableExpr> freeVars) throws CompilationException {
         if (winExpr.hasPartitionList()) {
             visit(winExpr.getPartitionList(), freeVars);
@@ -505,7 +564,7 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
         }
         if (winExpr.hasWindowFieldList()) {
             for (Pair<Expression, Identifier> field : winExpr.getWindowFieldList()) {
-                field.first.accept(this, freeVars);
+                field.getLeft().accept(this, freeVars);
             }
         }
         visit(winExpr.getExprList(), freeVars);
@@ -554,6 +613,15 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
         }
     }
 
+    private void visitDecorations(List<GbyVariableExpressionPair> decorPairList, Collection<VariableExpr> freeVars)
+            throws CompilationException {
+        if (decorPairList != null) {
+            for (GbyVariableExpressionPair pair : decorPairList) {
+                pair.getExpr().accept(this, freeVars);
+            }
+        }
+    }
+
     /**
      * Removes all binding variables defined in the select block for a free variable collection.
      *
@@ -562,13 +630,28 @@ public class FreeVariableVisitor extends AbstractSqlppQueryExpressionVisitor<Voi
      * @param letsBindingVars,   binding variables defined in the let clauses of the select block.
      * @param gbyBindingVars     binding variables defined in the groupby clauses of the select block
      * @param gbyLetsBindingVars binding variables defined in the let clauses after groupby of the select block.
+     * @param clusterByBindingVars binding variables defined in the cluster-by clause of the select block.
      */
     private void removeAllBindingVarsInSelectBlock(Collection<VariableExpr> selectFreeVars,
             Collection<VariableExpr> fromBindingVars, Collection<VariableExpr> letsBindingVars,
-            Collection<VariableExpr> gbyBindingVars, Collection<VariableExpr> gbyLetsBindingVars) {
+            Collection<VariableExpr> gbyBindingVars, Collection<VariableExpr> gbyLetsBindingVars,
+            Collection<VariableExpr> clusterByBindingVars) {
         selectFreeVars.removeAll(fromBindingVars);
         selectFreeVars.removeAll(letsBindingVars);
         selectFreeVars.removeAll(gbyBindingVars);
         selectFreeVars.removeAll(gbyLetsBindingVars);
+        selectFreeVars.removeAll(clusterByBindingVars);
+    }
+
+    /**
+     * A time travel value has to be a compile-time constant, so it should not reference anything. Its free
+     * variables are still collected so that a reference is reported here rather than silently surviving into
+     * the rewrites that consume this information.
+     */
+    private void collectTimeTravelFreeVariables(TimeTravelSpec timeTravel, Collection<VariableExpr> freeVars)
+            throws CompilationException {
+        if (timeTravel != null) {
+            timeTravel.getValueExpression().accept(this, freeVars);
+        }
     }
 }

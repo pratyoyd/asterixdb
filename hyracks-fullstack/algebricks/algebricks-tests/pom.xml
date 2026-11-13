@@ -49,7 +49,7 @@
           <execution>
             <phase>generate-sources</phase>
             <configuration>
-              <tasks>
+              <target>
                 <ant antfile="build-script.xml" target="build">
                   <property name="main.class" value="org.apache.hyracks.algebricks.tests.script.IdentityStreamingScript" />
                   <property name="script.classpath" refid="maven.compile.classpath" />
@@ -59,7 +59,7 @@
                   <property name="target.dir" value="${basedir}/target/testscripts" />
                   <property name="target" value="idscript" />
                 </ant>
-              </tasks>
+              </target>
             </configuration>
             <goals>
               <goal>run</goal>
@@ -77,6 +77,10 @@
           </excludes>
         </configuration>
       </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+      </plugin>
     </plugins>
     <pluginManagement>
       <plugins>
@@ -84,7 +88,6 @@
         <plugin>
           <groupId>org.eclipse.m2e</groupId>
           <artifactId>lifecycle-mapping</artifactId>
-          <version>1.0.0</version>
           <configuration>
             <lifecycleMappingMetadata>
               <pluginExecutions>

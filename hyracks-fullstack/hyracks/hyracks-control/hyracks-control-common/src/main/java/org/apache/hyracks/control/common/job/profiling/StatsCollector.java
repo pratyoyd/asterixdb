@@ -33,25 +33,29 @@ import org.apache.hyracks.api.job.profiling.NoOpOperatorStats;
 import org.apache.hyracks.api.job.profiling.OperatorStats;
 
 public class StatsCollector implements IStatsCollector {
-    private static final long serialVersionUID = 6858817639895434379L;
+    private static final long serialVersionUID = 6858817639895434279L;
 
     private final Map<String, IOperatorStats> operatorStatsMap = new LinkedHashMap<>();
 
     @Override
-    public void add(IOperatorStats operatorStats) {
-        if (operatorStatsMap.containsKey(operatorStats.getName())) {
+    public synchronized void add(IOperatorStats operatorStats) {
+        String name = operatorStats.getName();
+        if (NoOpOperatorStats.NOOP_NAME.equals(name)) {
+            return;
+        }
+        if (operatorStatsMap.containsKey(name)) {
             throw new IllegalArgumentException("Operator with the same name already exists");
         }
         operatorStatsMap.put(operatorStats.getName(), operatorStats);
     }
 
     @Override
-    public IOperatorStats getOperatorStats(String operatorName) {
+    public synchronized IOperatorStats getOperatorStats(String operatorName) {
         return operatorStatsMap.getOrDefault(operatorName, NoOpOperatorStats.INSTANCE);
     }
 
     @Override
-    public Map<String, IOperatorStats> getAllOperatorStats() {
+    public synchronized Map<String, IOperatorStats> getAllOperatorStats() {
         return Collections.unmodifiableMap(operatorStatsMap);
     }
 
@@ -67,7 +71,7 @@ public class StatsCollector implements IStatsCollector {
         for (IOperatorStats stats : operatorStatsMap.values()) {
             aggregatedStats.getInputTupleCounter().update(stats.getInputTupleCounter().get());
             aggregatedStats.getTimeCounter().update(stats.getTimeCounter().get());
-            aggregatedStats.getPageReads().update(stats.getPageReads().get());
+            aggregatedStats.getPageReadCounter().update(stats.getPageReadCounter().get());
             aggregatedStats.coldReadCounter().update(stats.coldReadCounter().get());
             aggregatedStats.cloudReadRequestCounter().update(stats.cloudReadRequestCounter().get());
             aggregatedStats.cloudReadPageCounter().update(stats.cloudReadPageCounter().get());
@@ -79,8 +83,8 @@ public class StatsCollector implements IStatsCollector {
     @Override
     public void writeFields(DataOutput output) throws IOException {
         output.writeInt(operatorStatsMap.size());
-        for (IOperatorStats stats : operatorStatsMap.values()) {
-            stats.writeFields(output);
+        for (IOperatorStats stat : operatorStatsMap.values()) {
+            stat.writeFields(output);
         }
     }
 

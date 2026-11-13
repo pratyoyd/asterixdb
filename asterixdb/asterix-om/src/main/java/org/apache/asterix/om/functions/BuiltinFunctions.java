@@ -96,6 +96,7 @@ import org.apache.asterix.om.typecomputer.impl.IfNullTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.InjectFailureTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.Int64ArrayToStringTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.LocalAvgTypeComputer;
+import org.apache.asterix.om.typecomputer.impl.LocalCentroidTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.LocalMedianTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.LocalSingleVarStatisticsTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.MinMaxAggTypeComputer;
@@ -104,6 +105,7 @@ import org.apache.asterix.om.typecomputer.impl.NonTaggedGetItemResultType;
 import org.apache.asterix.om.typecomputer.impl.NotUnknownTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.NullIfTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.NullableDoubleTypeComputer;
+import org.apache.asterix.om.typecomputer.impl.NullableOrderedListOfADoubleTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.NullableTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.NumericAddSubMulDivTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.NumericBinaryToDoubleTypeComputer;
@@ -126,8 +128,10 @@ import org.apache.asterix.om.typecomputer.impl.RecordAddTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.RecordMergeTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.RecordPutTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.RecordRemoveFieldsTypeComputer;
+import org.apache.asterix.om.typecomputer.impl.RecordRemoveRecursiveTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.RecordRemoveTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.RecordRenameTypeComputer;
+import org.apache.asterix.om.typecomputer.impl.RecordTransformTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.ScalarArrayAggTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.ScalarVersionOfAggregateResultType;
 import org.apache.asterix.om.typecomputer.impl.SleepTypeComputer;
@@ -170,6 +174,7 @@ public class BuiltinFunctions {
     private static final Map<FunctionIdentifier, FunctionIdentifier> aggregateToIntermediateAggregate = new HashMap<>();
     private static final Map<FunctionIdentifier, FunctionIdentifier> aggregateToGlobalAggregate = new HashMap<>();
     private static final Map<FunctionIdentifier, FunctionIdentifier> aggregateToSerializableAggregate = new HashMap<>();
+    private static final Map<FunctionIdentifier, FunctionIdentifier> jobClockToImmediateVariant = new HashMap<>();
     private static final Map<FunctionIdentifier, FunctionIdentifier> scalarToAggregateFunctionMap = new HashMap<>();
     private static final Map<FunctionIdentifier, FunctionIdentifier> distinctToRegularAggregateFunctionMap =
             new HashMap<>();
@@ -235,6 +240,7 @@ public class BuiltinFunctions {
     public static final FunctionIdentifier ARRAY_SYMDIFFN =
             FunctionConstants.newAsterix("array-symdiffn", FunctionIdentifier.VARARGS);
     public static final FunctionIdentifier ARRAY_STAR = FunctionConstants.newAsterix("array-star", 1);
+    public static final FunctionIdentifier ARRAY_STAR_FIELD = FunctionConstants.newAsterix("array-star-field", 2);
     public static final FunctionIdentifier ARRAY_SLICE_WITHOUT_END_POSITION =
             FunctionConstants.newAsterix("array-slice", 2);
     public static final FunctionIdentifier ARRAY_SLICE_WITH_END_POSITION =
@@ -254,6 +260,9 @@ public class BuiltinFunctions {
             FunctionConstants.newAsterix("object-concat-strict", FunctionIdentifier.VARARGS);
     public static final FunctionIdentifier REMOVE_FIELDS = FunctionConstants.newAsterix("object-remove-fields", 2);
     public static final FunctionIdentifier ADD_FIELDS = FunctionConstants.newAsterix("object-add-fields", 2);
+    public static final FunctionIdentifier RECORD_TRANSFORM = FunctionConstants.newAsterix("object-transform", 2);
+    public static final FunctionIdentifier RECORD_REMOVE_RECURSIVE =
+            FunctionConstants.newAsterix("object-remove-recursive", 2);
 
     public static final FunctionIdentifier CLOSED_RECORD_CONSTRUCTOR =
             FunctionConstants.newAsterix("closed-object-constructor", FunctionIdentifier.VARARGS);
@@ -398,6 +407,8 @@ public class BuiltinFunctions {
     public static final FunctionIdentifier STRING_REPEAT = FunctionConstants.newAsterix("repeat", 2);
     public static final FunctionIdentifier STRING_SPLIT = FunctionConstants.newAsterix("split", 2);
     public static final FunctionIdentifier STRING_PARSE_JSON = FunctionConstants.newAsterix("parse-json", 1);
+    public static final FunctionIdentifier STRING_LPAD = FunctionConstants.newAsterix("lpad", 3);
+    public static final FunctionIdentifier STRING_RPAD = FunctionConstants.newAsterix("rpad", 3);
 
     public static final FunctionIdentifier DATASET =
             FunctionConstants.newAsterix("dataset", FunctionIdentifier.VARARGS); // 1, 2 or 3
@@ -434,6 +445,12 @@ public class BuiltinFunctions {
     public static final FunctionIdentifier GLOBAL_AVG = FunctionConstants.newAsterix("agg-global-avg", 1);
     public static final FunctionIdentifier INTERMEDIATE_AVG = FunctionConstants.newAsterix("agg-intermediate-avg", 1);
     public static final FunctionIdentifier LOCAL_AVG = FunctionConstants.newAsterix("agg-local-avg", 1);
+    // CLUSTER BY: CENTROID aggregate family (vector sum + count -> average), two-step distributed like AVG.
+    public static final FunctionIdentifier CENTROID = FunctionConstants.newAsterix("agg-centroid", 1);
+    public static final FunctionIdentifier GLOBAL_CENTROID = FunctionConstants.newAsterix("agg-global-centroid", 1);
+    public static final FunctionIdentifier INTERMEDIATE_CENTROID =
+            FunctionConstants.newAsterix("agg-intermediate-centroid", 1);
+    public static final FunctionIdentifier LOCAL_CENTROID = FunctionConstants.newAsterix("agg-local-centroid", 1);
     public static final FunctionIdentifier MEDIAN = FunctionConstants.newAsterix("agg-median", 1);
     public static final FunctionIdentifier FIRST_ELEMENT = FunctionConstants.newAsterix("agg-first-element", 1);
     public static final FunctionIdentifier LOCAL_FIRST_ELEMENT =
@@ -449,6 +466,8 @@ public class BuiltinFunctions {
             FunctionConstants.newAsterix("agg-local-sampling", FunctionIdentifier.VARARGS);
     public static final FunctionIdentifier RANGE_MAP =
             FunctionConstants.newAsterix("agg-range-map", FunctionIdentifier.VARARGS);
+    public static final FunctionIdentifier QUANTIZATION_CONSTANTS =
+            FunctionConstants.newAsterix("agg-quantization-constants", 1);
     public static final FunctionIdentifier STDDEV_POP = FunctionConstants.newAsterix("agg-stddev_pop", 1);
     public static final FunctionIdentifier GLOBAL_STDDEV_POP = FunctionConstants.newAsterix("agg-global-stddev_pop", 1);
     public static final FunctionIdentifier INTERMEDIATE_STDDEV_POP =
@@ -483,6 +502,8 @@ public class BuiltinFunctions {
 
     public static final FunctionIdentifier SCALAR_ARRAYAGG = FunctionConstants.newAsterix("arrayagg", 1);
     public static final FunctionIdentifier SCALAR_AVG = FunctionConstants.newAsterix("avg", 1);
+    // CLUSTER BY: SQL++-callable name for the CENTROID aggregate (centroid(vec) in a GROUP BY -> averaged centroid).
+    public static final FunctionIdentifier SCALAR_CENTROID = FunctionConstants.newAsterix("centroid", 1);
     public static final FunctionIdentifier SCALAR_COUNT = FunctionConstants.newAsterix("count", 1);
     public static final FunctionIdentifier SCALAR_COUNTN = FunctionConstants.newAsterix("countn", 1);
     public static final FunctionIdentifier SCALAR_SUM = FunctionConstants.newAsterix("sum", 1);
@@ -500,6 +521,13 @@ public class BuiltinFunctions {
     public static final FunctionIdentifier SCALAR_SKEWNESS = FunctionConstants.newAsterix("skewness", 1);
     public static final FunctionIdentifier SCALAR_KURTOSIS = FunctionConstants.newAsterix("kurtosis", 1);
     public static final FunctionIdentifier SCALAR_UNION_MBR = FunctionConstants.newAsterix("union_mbr", 1);
+
+    // aggregates for clustering
+    public static final FunctionIdentifier KMEANS_ACCUMULATE = FunctionConstants.newAsterix("agg-kmeans-accumulate", 1);
+    public static final FunctionIdentifier LOCAL_KMEANS_ACCUMULATE =
+            FunctionConstants.newAsterix("agg-local-kmeans-accumulate", 1);
+    public static final FunctionIdentifier GLOBAL_KMEANS_ACCUMULATE =
+            FunctionConstants.newAsterix("agg-global-kmeans-accumulate", 1);
 
     // serializable aggregate functions
     public static final FunctionIdentifier SERIAL_AVG = FunctionConstants.newAsterix("avg-serial", 1);
@@ -753,6 +781,8 @@ public class BuiltinFunctions {
             FunctionConstants.newAsterix("agg-sql-count-distinct", 1);
     public static final FunctionIdentifier SCALAR_SQL_COUNT_DISTINCT =
             FunctionConstants.newAsterix("sql-count-distinct", 1);
+    public static final FunctionIdentifier SQL_COUNT_DISTINCT_HASH =
+            FunctionConstants.newAsterix("agg-sql-count-distinct-hash", 1);
     public static final FunctionIdentifier SQL_COUNTN_DISTINCT =
             FunctionConstants.newAsterix("agg-sql-countn-distinct", 1);
     public static final FunctionIdentifier SCALAR_SQL_COUNTN_DISTINCT =
@@ -830,6 +860,8 @@ public class BuiltinFunctions {
             FunctionConstants.newAsterix("win-mark-first-missing-impl", FunctionIdentifier.VARARGS);
     public static final FunctionIdentifier WIN_MARK_FIRST_NULL_IMPL =
             FunctionConstants.newAsterix("win-mark-first-null-impl", FunctionIdentifier.VARARGS);
+    public static final FunctionIdentifier WIN_MARK_VALID_TUPLES_IMPL =
+            FunctionConstants.newAsterix("win-mark-valid-tuple-impl", FunctionIdentifier.VARARGS);
     public static final FunctionIdentifier WIN_PARTITION_LENGTH_IMPL =
             FunctionConstants.newAsterix("win-partition-length-impl", 0);
 
@@ -1115,8 +1147,46 @@ public class BuiltinFunctions {
     public static final FunctionIdentifier ST_SYM_DIFFERENCE = FunctionConstants.newAsterix("st-sym-difference", 2);
     public static final FunctionIdentifier ST_POLYGONIZE = FunctionConstants.newAsterix("st-polygonize", 1);
 
+    public static final FunctionIdentifier ST_TRANSFORM = FunctionConstants.newAsterix("st-transform", 3);
+    public static final FunctionIdentifier ST_DISTANCE_SPHEROID =
+            FunctionConstants.newAsterix("st-distance-spheroid", 2);
+
     public static final FunctionIdentifier ST_MBR = FunctionConstants.newAsterix("st-mbr", 1);
     public static final FunctionIdentifier ST_MBR_ENLARGE = FunctionConstants.newAsterix("st-mbr-enlarge", 2);
+
+    public static final FunctionIdentifier ST_CONVEX_HULL = FunctionConstants.newAsterix("st-convex-hull", 1);
+    public static final FunctionIdentifier ST_CENTROID = FunctionConstants.newAsterix("st-centroid", 1);
+    public static final FunctionIdentifier ST_IS_VALID = FunctionConstants.newAsterix("st-is-valid", 1);
+    public static final FunctionIdentifier ST_REVERSE = FunctionConstants.newAsterix("st-reverse", 1);
+    public static final FunctionIdentifier ST_FLIP_COORDINATES = FunctionConstants.newAsterix("st-flip-coordinates", 1);
+    public static final FunctionIdentifier ST_SET_SRID = FunctionConstants.newAsterix("st-set-srid", 2);
+    public static final FunctionIdentifier ST_DISTANCE_SPHERE = FunctionConstants.newAsterix("st-distance-sphere", 2);
+    public static final FunctionIdentifier ST_DWITHIN = FunctionConstants.newAsterix("st-dwithin", 3);
+    public static final FunctionIdentifier ST_BUFFER = FunctionConstants.newAsterix("st-buffer", 2);
+    public static final FunctionIdentifier ST_CONCAVE_HULL = FunctionConstants.newAsterix("st-concave-hull", 2);
+    public static final FunctionIdentifier ST_SIMPLIFY = FunctionConstants.newAsterix("st-simplify", 2);
+    public static final FunctionIdentifier ST_SIMPLIFY_PRESERVE_TOPOLOGY =
+            FunctionConstants.newAsterix("st-simplify-preserve-topology", 2);
+    public static final FunctionIdentifier ST_POINT_ON_SURFACE = FunctionConstants.newAsterix("st-point-on-surface", 1);
+    public static final FunctionIdentifier ST_LINE_MERGE = FunctionConstants.newAsterix("st-line-merge", 1);
+    // OGC SFA conformant siblings of existing functions: 1-indexed N-functions
+    // and a GeometryType that returns "ST_Point" form. Kept separate so the existing
+    // 0-indexed N-functions and JTS-form geometry-type continue to behave unchanged.
+    public static final FunctionIdentifier ST_GEOMETRYTYPE = FunctionConstants.newAsterix("st-geometrytype", 1);
+    public static final FunctionIdentifier ST_POINTN = FunctionConstants.newAsterix("st-pointn", 2);
+    public static final FunctionIdentifier ST_GEOMETRYN = FunctionConstants.newAsterix("st-geometryn", 2);
+    public static final FunctionIdentifier ST_INTERIORRINGN = FunctionConstants.newAsterix("st-interiorringn", 2);
+    // Additional OGC-standard functions, all JTS one-liners.
+    // ST_NUM_POINTS_OGC is line-only vertex count (OGC SFA); distinct from
+    // ST_N_POINTS which counts vertices across all geometry types.
+    public static final FunctionIdentifier ST_NUM_POINTS_OGC = FunctionConstants.newAsterix("st-num-points", 1);
+    public static final FunctionIdentifier ST_MULTI = FunctionConstants.newAsterix("st-multi", 1);
+    public static final FunctionIdentifier ST_COLLECTION_EXTRACT =
+            FunctionConstants.newAsterix("st-collection-extract", 2);
+    public static final FunctionIdentifier ST_UNARY_UNION = FunctionConstants.newAsterix("st-unary-union", 1);
+    public static final FunctionIdentifier ST_NORMALIZE = FunctionConstants.newAsterix("st-normalize", 1);
+    public static final FunctionIdentifier ST_IS_VALID_REASON = FunctionConstants.newAsterix("st-is-valid-reason", 1);
+    public static final FunctionIdentifier ST_RELATE_MATCH = FunctionConstants.newAsterix("st-relate-match", 2);
 
     // Spatial and temporal type accessors
     public static final FunctionIdentifier ACCESSOR_TEMPORAL_YEAR = FunctionConstants.newAsterix("get-year", 1);
@@ -1148,6 +1218,21 @@ public class BuiltinFunctions {
     public static final FunctionIdentifier GET_OVERLAPPING_INTERVAL =
             FunctionConstants.newAsterix("get-overlapping-interval", 2);
 
+    //Vector functions
+    public static final FunctionIdentifier EUCLIDEAN_DISTANCE = FunctionConstants.newAsterix("euclidean-distance", 2);
+    public static final FunctionIdentifier EUCLIDEAN_SQUARED_DISTANCE =
+            FunctionConstants.newAsterix("euclidean-squared-distance", 2);
+    public static final FunctionIdentifier COSINE_SIMILARITY = FunctionConstants.newAsterix("cosine-similarity", 2);
+    public static final FunctionIdentifier DOT_PRODUCT = FunctionConstants.newAsterix("dot-product", 2);
+    public static final FunctionIdentifier COSINE_DISTANCE = FunctionConstants.newAsterix("cosine-distance", 2);
+    public static final FunctionIdentifier DOT_DISTANCE = FunctionConstants.newAsterix("dot-distance", 2);
+    public static final FunctionIdentifier VECTOR_DISTANCE = FunctionConstants.newAsterix("vector-distance", 3);
+    public static final FunctionIdentifier NORMALIZE_VECTOR = FunctionConstants.newAsterix("normalize-vector", 1);
+
+    // Vector search functions
+    public static final FunctionIdentifier ANN_DISTANCE =
+            FunctionConstants.newAsterix("ann-distance", FunctionIdentifier.VARARGS);
+    public static final FunctionIdentifier VECTOR_SHUFFLE_KEY = FunctionConstants.newAsterix("vector-shuffle-key", 2);
     // Temporal functions
     public static final FunctionIdentifier UNIX_TIME_FROM_DATE_IN_DAYS =
             FunctionConstants.newAsterix("unix-time-from-date-in-days", 1);
@@ -1242,12 +1327,18 @@ public class BuiltinFunctions {
     public static final FunctionIdentifier IS_NUMBER = FunctionConstants.newAsterix("is-number", 1);
     public static final FunctionIdentifier IS_STRING = FunctionConstants.newAsterix("is-string", 1);
     public static final FunctionIdentifier IS_ARRAY = FunctionConstants.newAsterix("is-array", 1);
+    public static final FunctionIdentifier IS_VECTOR = FunctionConstants.newAsterix("is-vector", 1);
+    public static final FunctionIdentifier IS_VECTOR_WITH_DIMENSION = FunctionConstants.newAsterix("is-vector", 2);
     public static final FunctionIdentifier IS_OBJECT = FunctionConstants.newAsterix("is-object", 1);
     public static final FunctionIdentifier IS_MULTISET = FunctionConstants.newAsterix("is-multiset", 1);
     public static final FunctionIdentifier GET_TYPE = FunctionConstants.newAsterix("get-type", 1);
 
     public static final FunctionIdentifier IS_SYSTEM_NULL = FunctionConstants.newAsterix("is-system-null", 1);
     public static final FunctionIdentifier CHECK_UNKNOWN = FunctionConstants.newAsterix("check-unknown", 1);
+    public static final FunctionIdentifier CHECK_LIST = FunctionConstants.newAsterix("check-list", 1);
+    public static final FunctionIdentifier CHECK_INSERT_POSITION =
+            FunctionConstants.newAsterix("check-insert-position", 2);
+    public static final FunctionIdentifier CHECK_INTEGER = FunctionConstants.newAsterix("check-integer", 1);
     public static final FunctionIdentifier COLLECTION_TO_SEQUENCE =
             FunctionConstants.newAsterix("collection-to-sequence", 1);
 
@@ -1305,6 +1396,14 @@ public class BuiltinFunctions {
 
     public static final FunctionIdentifier ACCESS_NESTED_FIELD = FunctionConstants.newAsterix("access-nested-field", 2);
 
+    public static final FunctionIdentifier IF_ERROR = FunctionConstants.newAsterix("if-error", 2);
+
+    // crypto
+    public static final FunctionIdentifier SHA1_HEX = FunctionConstants.newAsterix("sha1-hex", 1);
+    public static final FunctionIdentifier SHA1_BASE64 = FunctionConstants.newAsterix("sha1-base64", 1);
+
+    public static final FunctionIdentifier FROM_BASE = FunctionConstants.newAsterix("from-base", 2);
+
     static {
         // first, take care of Algebricks builtin functions
         addFunction(IS_MISSING, BooleanOnlyTypeComputer.INSTANCE, true);
@@ -1330,12 +1429,13 @@ public class BuiltinFunctions {
         addFunction(IS_NUMBER, ABooleanTypeComputer.INSTANCE, true);
         addFunction(IS_STRING, ABooleanTypeComputer.INSTANCE, true);
         addFunction(IS_ARRAY, ABooleanTypeComputer.INSTANCE, true);
+        addPrivateFunction(IS_VECTOR, ABooleanTypeComputer.INSTANCE, true);
+        addFunction(IS_VECTOR_WITH_DIMENSION, ABooleanTypeComputer.INSTANCE, true);
         addFunction(IS_OBJECT, ABooleanTypeComputer.INSTANCE, true);
         addFunction(IS_MULTISET, ABooleanTypeComputer.INSTANCE, true);
         addFunction(NOT, ABooleanTypeComputer.INSTANCE, true);
 
         addFunction(GET_TYPE, AStringTypeComputer.INSTANCE, true);
-
         addPrivateFunction(EQ, BooleanFunctionTypeComputer.INSTANCE, true);
         addPrivateFunction(LE, BooleanFunctionTypeComputer.INSTANCE, true);
         addPrivateFunction(GE, BooleanFunctionTypeComputer.INSTANCE, true);
@@ -1351,6 +1451,9 @@ public class BuiltinFunctions {
 
         // and then, Asterix builtin functions
         addPrivateFunction(CHECK_UNKNOWN, NotUnknownTypeComputer.INSTANCE, true);
+        addPrivateFunction(CHECK_LIST, ABooleanTypeComputer.INSTANCE, true);
+        addPrivateFunction(CHECK_INSERT_POSITION, NotUnknownTypeComputer.INSTANCE, true);
+        addPrivateFunction(CHECK_INTEGER, NotUnknownTypeComputer.INSTANCE, true);
         addPrivateFunction(ANY_COLLECTION_MEMBER, CollectionMemberResultType.INSTANCE_MISSABLE, true);
         addFunction(BOOLEAN_CONSTRUCTOR, ABooleanTypeComputer.INSTANCE_NULLABLE, true);
         addFunction(CIRCLE_CONSTRUCTOR, ACircleTypeComputer.INSTANCE, true);
@@ -1532,6 +1635,8 @@ public class BuiltinFunctions {
         addFunction(STRING_REPEAT, AStringTypeComputer.INSTANCE_NULLABLE, true);
         addFunction(STRING_SPLIT, UniformInputTypeComputer.STRING_STRING_LIST_INSTANCE, true);
         addFunction(STRING_PARSE_JSON, AnyTypeComputer.INSTANCE, true);
+        addFunction(STRING_LPAD, AStringTypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(STRING_RPAD, AStringTypeComputer.INSTANCE_NULLABLE, true);
 
         addPrivateFunction(ORDERED_LIST_CONSTRUCTOR, OrderedListConstructorTypeComputer.INSTANCE, true);
         addFunction(POINT_CONSTRUCTOR, APointTypeComputer.INSTANCE, true);
@@ -1554,10 +1659,10 @@ public class BuiltinFunctions {
         addPrivateFunction(TREAT_AS_INTEGER, TreatAsTypeComputer.INSTANCE_INTEGER, true);
         addPrivateFunction(IS_NUMERIC_ADD_COMPATIBLE, BooleanOnlyTypeComputer.INSTANCE, true);
 
-        addFunction(IF_INF, IfNanOrInfTypeComputer.INSTANCE, true);
         addFunction(IF_MISSING, IfMissingTypeComputer.INSTANCE, true);
         addFunction(IF_MISSING_OR_NULL, IfMissingOrNullTypeComputer.INSTANCE, true);
         addFunction(IF_NULL, IfNullTypeComputer.INSTANCE, true);
+        addFunction(IF_INF, IfNanOrInfTypeComputer.INSTANCE_SKIP_MISSING, true);
         addFunction(IF_NAN, IfNanOrInfTypeComputer.INSTANCE_SKIP_MISSING, true);
         addFunction(IF_NAN_OR_INF, IfNanOrInfTypeComputer.INSTANCE_SKIP_MISSING, true);
         addPrivateFunction(IF_SYSTEM_NULL, IfNullTypeComputer.INSTANCE, true);
@@ -1592,6 +1697,14 @@ public class BuiltinFunctions {
         addPrivateFunction(LOCAL_AVG, LocalAvgTypeComputer.INSTANCE, true);
         addFunction(AVG, NullableDoubleTypeComputer.INSTANCE, true);
         addPrivateFunction(GLOBAL_AVG, NullableDoubleTypeComputer.INSTANCE, true);
+        // CLUSTER BY CENTROID family. The steps do NOT all produce the same shape, exactly as with AVG: the
+        // local and intermediate steps emit the partial record {sum:[double]?, count:int64} that
+        // finishPartialResults builds, while the aggregate's own type is the final list -- nullable, because
+        // finishFinalResults writes NULL for an empty cluster and for a NULL aggregate type.
+        addPrivateFunction(CENTROID, NullableOrderedListOfADoubleTypeComputer.INSTANCE, true);
+        addPrivateFunction(LOCAL_CENTROID, LocalCentroidTypeComputer.INSTANCE, true);
+        addPrivateFunction(INTERMEDIATE_CENTROID, LocalCentroidTypeComputer.INSTANCE, true);
+        addPrivateFunction(GLOBAL_CENTROID, NullableOrderedListOfADoubleTypeComputer.INSTANCE, true);
         addPrivateFunction(SCALAR_FIRST_ELEMENT, CollectionMemberResultType.INSTANCE_NULLABLE, true);
         addPrivateFunction(SCALAR_LOCAL_FIRST_ELEMENT, CollectionMemberResultType.INSTANCE_NULLABLE, true);
         addPrivateFunction(SCALAR_LAST_ELEMENT, CollectionMemberResultType.INSTANCE_NULLABLE, true);
@@ -1603,6 +1716,7 @@ public class BuiltinFunctions {
         addPrivateFunction(GLOBAL_STDDEV_SAMP, NullableDoubleTypeComputer.INSTANCE, true);
         addPrivateFunction(LOCAL_SAMPLING, ABinaryTypeComputer.INSTANCE, true);
         addPrivateFunction(RANGE_MAP, ABinaryTypeComputer.INSTANCE, true);
+        addPrivateFunction(QUANTIZATION_CONSTANTS, ABinaryTypeComputer.INSTANCE, true);
         addPrivateFunction(LOCAL_STDDEV_POP, LocalSingleVarStatisticsTypeComputer.INSTANCE, true);
         addFunction(STDDEV_POP, NullableDoubleTypeComputer.INSTANCE, true);
         addPrivateFunction(GLOBAL_STDDEV_POP, NullableDoubleTypeComputer.INSTANCE, true);
@@ -1642,6 +1756,7 @@ public class BuiltinFunctions {
         addPrivateFunction(SERIAL_LOCAL_SQL_AVG, LocalAvgTypeComputer.INSTANCE, true);
         addPrivateFunction(SERIAL_INTERMEDIATE_SQL_AVG, LocalAvgTypeComputer.INSTANCE, true);
         addFunction(SCALAR_AVG, NullableDoubleTypeComputer.INSTANCE, true);
+        addPrivateFunction(SCALAR_CENTROID, NullableOrderedListOfADoubleTypeComputer.INSTANCE, true);
         addFunction(SCALAR_COUNT, AInt64TypeComputer.INSTANCE, true);
         addFunction(SCALAR_COUNTN, CountNTypeComputer.INSTANCE, true);
         addFunction(SCALAR_MAX, scalarMinMaxTypeComputer, true);
@@ -1701,6 +1816,7 @@ public class BuiltinFunctions {
         addPrivateFunction(LOCAL_SQL_AVG, LocalAvgTypeComputer.INSTANCE, true);
         addPrivateFunction(INTERMEDIATE_SQL_AVG, LocalAvgTypeComputer.INSTANCE, true);
         addFunction(SQL_COUNT, AInt64TypeComputer.INSTANCE, true);
+        addFunction(SQL_COUNT_DISTINCT_HASH, AInt64TypeComputer.INSTANCE, true);
         addFunction(SQL_COUNTN, CountNTypeComputer.INSTANCE, true);
         addFunction(SQL_MAX, MinMaxAggTypeComputer.INSTANCE, true);
         addPrivateFunction(LOCAL_SQL_MAX, MinMaxAggTypeComputer.INSTANCE, true);
@@ -1856,6 +1972,22 @@ public class BuiltinFunctions {
         addFunction(SQL_KURTOSIS_DISTINCT, NullableDoubleTypeComputer.INSTANCE, true);
         addFunction(SCALAR_SQL_KURTOSIS_DISTINCT, NullableDoubleTypeComputer.INSTANCE, true);
 
+        // Vector functions
+        addFunction(EUCLIDEAN_DISTANCE, ADoubleTypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(EUCLIDEAN_SQUARED_DISTANCE, ADoubleTypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(COSINE_SIMILARITY, ADoubleTypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(DOT_PRODUCT, ADoubleTypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(COSINE_DISTANCE, ADoubleTypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(DOT_DISTANCE, ADoubleTypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(VECTOR_DISTANCE, ADoubleTypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(NORMALIZE_VECTOR, NullableOrderedListOfADoubleTypeComputer.INSTANCE, true);
+
+        // Ann functions
+        addFunction(ANN_DISTANCE, ADoubleTypeComputer.INSTANCE_NULLABLE, true);
+
+        // Non-functional, as random() is: the value is a pure hash, but the flag keeps the optimizer from moving or
+        // sharing the assign that computes it, which would rewire the hand-built REPLICATE the draw branch hangs off.
+        addPrivateFunction(VECTOR_SHUFFLE_KEY, AInt64TypeComputer.INSTANCE_NULLABLE, false);
         // Window functions
 
         addFunction(CUME_DIST, ADoubleTypeComputer.INSTANCE, false);
@@ -1884,6 +2016,7 @@ public class BuiltinFunctions {
         addFunction(PERCENT_RANK_IMPL, ADoubleTypeComputer.INSTANCE, false);
         addPrivateFunction(WIN_MARK_FIRST_MISSING_IMPL, ABooleanTypeComputer.INSTANCE, false);
         addPrivateFunction(WIN_MARK_FIRST_NULL_IMPL, ABooleanTypeComputer.INSTANCE, false);
+        addPrivateFunction(WIN_MARK_VALID_TUPLES_IMPL, ABooleanTypeComputer.INSTANCE, false);
         addPrivateFunction(WIN_PARTITION_LENGTH_IMPL, AInt64TypeComputer.INSTANCE, false);
 
         // Similarity functions
@@ -1981,9 +2114,36 @@ public class BuiltinFunctions {
         addPrivateFunction(ST_UNION_AGG, AGeometryTypeComputer.INSTANCE, true);
         addPrivateFunction(ST_UNION_SQL_AGG, AGeometryTypeComputer.INSTANCE, true);
         addFunction(ST_POLYGONIZE, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_TRANSFORM, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_DISTANCE_SPHEROID, ADoubleTypeComputer.INSTANCE, true);
 
         addPrivateFunction(ST_MBR, ARectangleTypeComputer.INSTANCE, true);
         addPrivateFunction(ST_MBR_ENLARGE, ARectangleTypeComputer.INSTANCE, true);
+
+        addFunction(ST_CONVEX_HULL, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_CENTROID, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_IS_VALID, ABooleanTypeComputer.INSTANCE, true);
+        addFunction(ST_REVERSE, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_FLIP_COORDINATES, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_DISTANCE_SPHERE, ADoubleTypeComputer.INSTANCE, true);
+        addFunction(ST_DWITHIN, ABooleanTypeComputer.INSTANCE, true);
+        addFunction(ST_BUFFER, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_CONCAVE_HULL, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_SIMPLIFY, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_SIMPLIFY_PRESERVE_TOPOLOGY, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_POINT_ON_SURFACE, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_LINE_MERGE, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_GEOMETRYTYPE, AStringTypeComputer.INSTANCE, true);
+        addFunction(ST_POINTN, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_GEOMETRYN, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_INTERIORRINGN, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_NUM_POINTS_OGC, AInt32TypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(ST_MULTI, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_COLLECTION_EXTRACT, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_UNARY_UNION, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_NORMALIZE, AGeometryTypeComputer.INSTANCE, true);
+        addFunction(ST_IS_VALID_REASON, AStringTypeComputer.INSTANCE, true);
+        addFunction(ST_RELATE_MATCH, ABooleanTypeComputer.INSTANCE, true);
 
         // Binary functions
         addFunction(BINARY_HEX_CONSTRUCTOR, ABinaryTypeComputer.INSTANCE_NULLABLE, true);
@@ -2027,6 +2187,7 @@ public class BuiltinFunctions {
         addFunction(ARRAY_SYMDIFF, AListMultiListArgsTypeComputer.INSTANCE, true);
         addFunction(ARRAY_SYMDIFFN, AListMultiListArgsTypeComputer.INSTANCE, true);
         addFunction(ARRAY_STAR, OpenARecordTypeComputer.INSTANCE, true);
+        addFunction(ARRAY_STAR_FIELD, OrderedListOfAnyTypeComputer.INSTANCE, true);
         addFunction(ARRAY_SLICE_WITH_END_POSITION, AListTypeComputer.INSTANCE_SLICE, true);
         addFunction(ARRAY_SLICE_WITHOUT_END_POSITION, AListTypeComputer.INSTANCE_SLICE, true);
         addFunction(ARRAY_EXCEPT, ArrayExceptTypeComputer.INSTANCE, true);
@@ -2041,6 +2202,8 @@ public class BuiltinFunctions {
         addPrivateFunction(RECORD_CONCAT_STRICT, OpenARecordTypeComputer.INSTANCE, true);
         addFunction(ADD_FIELDS, RecordAddFieldsTypeComputer.INSTANCE, true);
         addFunction(REMOVE_FIELDS, RecordRemoveFieldsTypeComputer.INSTANCE, true);
+        addPrivateFunction(RECORD_REMOVE_RECURSIVE, RecordRemoveRecursiveTypeComputer.INSTANCE, true);
+        addPrivateFunction(RECORD_TRANSFORM, RecordTransformTypeComputer.INSTANCE, true);
         addPrivateFunction(CLOSED_RECORD_CONSTRUCTOR, ClosedRecordConstructorResultType.INSTANCE, true);
         addPrivateFunction(OPEN_RECORD_CONSTRUCTOR, OpenRecordConstructorResultType.INSTANCE, true);
         addPrivateFunction(FIELD_ACCESS_BY_INDEX, FieldAccessByIndexResultType.INSTANCE, true);
@@ -2118,6 +2281,9 @@ public class BuiltinFunctions {
         addFunction(CURRENT_TIME_IMMEDIATE, ATimeTypeComputer.INSTANCE, false);
         addFunction(CURRENT_DATETIME, ADateTimeTypeComputer.INSTANCE, false);
         addFunction(CURRENT_DATETIME_IMMEDIATE, ADateTimeTypeComputer.INSTANCE, false);
+        addImmediateVariant(CURRENT_DATE, CURRENT_DATE_IMMEDIATE);
+        addImmediateVariant(CURRENT_TIME, CURRENT_TIME_IMMEDIATE);
+        addImmediateVariant(CURRENT_DATETIME, CURRENT_DATETIME_IMMEDIATE);
         addPrivateFunction(DAY_TIME_DURATION_GREATER_THAN, ABooleanTypeComputer.INSTANCE, true);
         addPrivateFunction(DAY_TIME_DURATION_LESS_THAN, ABooleanTypeComputer.INSTANCE, true);
         addPrivateFunction(YEAR_MONTH_DURATION_GREATER_THAN, ABooleanTypeComputer.INSTANCE, true);
@@ -2161,6 +2327,7 @@ public class BuiltinFunctions {
         addPrivateFunction(COLLECTION_TO_SEQUENCE, CollectionToSequenceTypeComputer.INSTANCE, true);
         addFunction(SERIALIZED_SIZE, AInt64TypeComputer.INSTANCE, true);
         // used by CBO's internal sampling queries for determining projection sizes
+        addPrivateFunction(IF_ERROR, AnyTypeComputer.INSTANCE, true);
 
         // external lookup
         addPrivateFunction(EXTERNAL_LOOKUP, AnyTypeComputer.INSTANCE, false);
@@ -2177,6 +2344,11 @@ public class BuiltinFunctions {
         addPrivateFunction(ACCESS_FIELD, FieldAccessByNameResultType.INSTANCE, false);
         addPrivateFunction(ACCESS_NESTED_FIELD, FieldAccessNestedResultType.INSTANCE, false);
 
+        // crypto
+        addFunction(SHA1_HEX, AStringTypeComputer.INSTANCE_NULLABLE, true);
+        addFunction(SHA1_BASE64, AStringTypeComputer.INSTANCE_NULLABLE, true);
+
+        addFunction(FROM_BASE, AInt64TypeComputer.INSTANCE_NULLABLE, true);
     }
 
     static {
@@ -2192,6 +2364,17 @@ public class BuiltinFunctions {
         addIntermediateAgg(LOCAL_AVG, INTERMEDIATE_AVG);
         addIntermediateAgg(GLOBAL_AVG, INTERMEDIATE_AVG);
         addGlobalAgg(AVG, GLOBAL_AVG);
+
+        // CLUSTER BY CENTROID: two-step local/global aggregation (no scalar-agg sugar; used by the translator).
+        addAgg(CENTROID);
+        addAgg(LOCAL_CENTROID);
+        addAgg(GLOBAL_CENTROID);
+        addLocalAgg(CENTROID, LOCAL_CENTROID);
+        addIntermediateAgg(CENTROID, INTERMEDIATE_CENTROID);
+        addIntermediateAgg(LOCAL_CENTROID, INTERMEDIATE_CENTROID);
+        addIntermediateAgg(GLOBAL_CENTROID, INTERMEDIATE_CENTROID);
+        addGlobalAgg(CENTROID, GLOBAL_CENTROID);
+        addScalarAgg(CENTROID, SCALAR_CENTROID);
 
         addScalarAgg(AVG, SCALAR_AVG);
 
@@ -2472,6 +2655,11 @@ public class BuiltinFunctions {
         addIntermediateAgg(LOCAL_SAMPLING, RANGE_MAP);
         addIntermediateAgg(RANGE_MAP, RANGE_MAP);
         addGlobalAgg(RANGE_MAP, RANGE_MAP);
+
+        // QUANTIZATION_CONSTANTS
+        addAgg(QUANTIZATION_CONSTANTS);
+        addIntermediateAgg(QUANTIZATION_CONSTANTS, QUANTIZATION_CONSTANTS);
+        addGlobalAgg(QUANTIZATION_CONSTANTS, QUANTIZATION_CONSTANTS);
 
         addAgg(NULL_WRITER);
         addLocalAgg(NULL_WRITER, NULL_WRITER);
@@ -2763,6 +2951,10 @@ public class BuiltinFunctions {
         addDistinctAgg(SQL_COUNT_DISTINCT, SQL_COUNT);
         addScalarAgg(SQL_COUNT_DISTINCT, SCALAR_SQL_COUNT_DISTINCT);
 
+        // HASH DISTINCT COUNT: single-pass distinct counter
+
+        addAgg(SQL_COUNT_DISTINCT_HASH);
+
         // SQL COUNTN
 
         addAgg(SQL_COUNTN);
@@ -2949,6 +3141,7 @@ public class BuiltinFunctions {
         addWindowFunction(ROW_NUMBER, ROW_NUMBER_IMPL, NO_FRAME_CLAUSE);
         addWindowFunction(null, WIN_MARK_FIRST_MISSING_IMPL, NO_FRAME_CLAUSE, INJECT_ORDER_ARGS);
         addWindowFunction(null, WIN_MARK_FIRST_NULL_IMPL, NO_FRAME_CLAUSE, INJECT_ORDER_ARGS);
+        addWindowFunction(null, WIN_MARK_VALID_TUPLES_IMPL, NO_FRAME_CLAUSE, INJECT_ORDER_ARGS);
         addWindowFunction(null, WIN_PARTITION_LENGTH_IMPL, NO_FRAME_CLAUSE, MATERIALIZE_PARTITION);
     }
 
@@ -3117,6 +3310,24 @@ public class BuiltinFunctions {
     public static void addGlobalAgg(FunctionIdentifier fi, FunctionIdentifier globalfi) {
         aggregateToGlobalAggregate.put(fi, globalfi);
         globalAggregateFunctions.add(globalfi);
+    }
+
+    /**
+     * Pairs a function that reads the job start time with the variant that reads the wall clock instead. A job
+     * clock function can only be evaluated inside a running job; where a value has to be computed without one
+     * (an {@code AT SNAPSHOT} / {@code AT TIMESTAMP} value is resolved while the query is compiled), the
+     * immediate variant is what can be used, and this is what the error naming it is built from.
+     */
+    public static void addImmediateVariant(FunctionIdentifier jobClockFi, FunctionIdentifier immediateFi) {
+        jobClockToImmediateVariant.put(jobClockFi, immediateFi);
+    }
+
+    /**
+     * @return the wall clock variant registered for a job clock function, or {@code null} if {@code fi} is not
+     *         a job clock function
+     */
+    public static FunctionIdentifier getImmediateVariant(FunctionIdentifier fi) {
+        return jobClockToImmediateVariant.get(fi);
     }
 
     public static void addUnnestFun(FunctionIdentifier fi, boolean returnsUniqueValues) {

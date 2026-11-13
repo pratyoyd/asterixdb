@@ -43,7 +43,9 @@ import org.apache.asterix.metadata.api.IExtensionMetadataSearchKey;
 import org.apache.asterix.metadata.api.IMetadataIndex;
 import org.apache.asterix.metadata.api.IMetadataManager;
 import org.apache.asterix.metadata.api.IMetadataNode;
+import org.apache.asterix.metadata.entities.Catalog;
 import org.apache.asterix.metadata.entities.CompactionPolicy;
+import org.apache.asterix.metadata.entities.CoordinateReferenceSystem;
 import org.apache.asterix.metadata.entities.Database;
 import org.apache.asterix.metadata.entities.Dataset;
 import org.apache.asterix.metadata.entities.DatasourceAdapter;
@@ -687,12 +689,6 @@ public abstract class MetadataManager implements IMetadataManager {
         if (ctx.functionIsDropped(functionSignature)) {
             // Function has been dropped by this transaction but could still be
             // in the cache.
-            return null;
-        }
-        //TODO(DB): review this and other similar ones
-        if (ctx.getDataverse(functionSignature.getDatabaseName(), functionSignature.getDataverseName()) != null) {
-            // This transaction has dropped and subsequently created the same
-            // dataverse.
             return null;
         }
         function = cache.getFunction(functionSignature);
@@ -1346,6 +1342,133 @@ public abstract class MetadataManager implements IMetadataManager {
 
     public static void initialize(Collection<IAsterixStateProxy> proxies, MetadataNode metadataNode) {
         INSTANCE = new NCMetadataManagerImpl(proxies, metadataNode);
+    }
+
+    @Override
+    public List<Dataset> getAllDatasets(MetadataTransactionContext ctx) throws AlgebricksException {
+        try {
+            return metadataNode.getAllDatasets(ctx.getTxnId());
+        } catch (RemoteException e) {
+            throw new MetadataException(ErrorCode.REMOTE_EXCEPTION_WHEN_CALLING_METADATA_NODE, e);
+        }
+    }
+
+    @Override
+
+    public boolean isActive(TxnId txnId) throws AlgebricksException {
+        try {
+            return metadataNode.isActive(txnId);
+        } catch (RemoteException e) {
+            throw new MetadataException(ErrorCode.REMOTE_EXCEPTION_WHEN_CALLING_METADATA_NODE, e);
+        }
+    }
+
+    public void addCatalog(MetadataTransactionContext ctx, Catalog catalog) throws AlgebricksException {
+        try {
+            metadataNode.addCatalog(ctx.getTxnId(), catalog);
+        } catch (RemoteException e) {
+            throw new MetadataException(ErrorCode.REMOTE_EXCEPTION_WHEN_CALLING_METADATA_NODE, e);
+        }
+        ctx.addCatalog(catalog);
+    }
+
+    @Override
+    public List<Catalog> getCatalogs(MetadataTransactionContext ctx) throws AlgebricksException {
+        try {
+            return metadataNode.getCatalogs(ctx.getTxnId());
+        } catch (RemoteException e) {
+            throw new MetadataException(ErrorCode.REMOTE_EXCEPTION_WHEN_CALLING_METADATA_NODE, e);
+        }
+    }
+
+    @Override
+    public Catalog getCatalog(MetadataTransactionContext ctx, String catalogName) throws AlgebricksException {
+        Objects.requireNonNull(catalogName);
+        // first look in the context to see if this transaction created the
+        // requested entity itself (but the entity is still uncommitted)
+        Catalog catalog = ctx.getCatalog(catalogName);
+        if (catalog != null) {
+            // don't add this entity to the cache, since it is still uncommitted
+            return catalog;
+        }
+        if (ctx.catalogIsDropped(catalogName)) {
+            // entity has been dropped by this transaction but could still be in the cache
+            return null;
+        }
+        catalog = cache.getCatalog(catalogName);
+        if (catalog != null) {
+            // entity is already in the cache, don't add it again
+            return catalog;
+        }
+        try {
+            catalog = metadataNode.getCatalog(ctx.getTxnId(), catalogName);
+        } catch (RemoteException e) {
+            throw new MetadataException(ErrorCode.REMOTE_EXCEPTION_WHEN_CALLING_METADATA_NODE, e);
+        }
+        // we fetched the entity from the MetadataNode. add it to the cache when this transaction commits
+        if (catalog != null) {
+            ctx.addCatalog(catalog);
+        }
+        return catalog;
+    }
+
+    @Override
+    public void dropCatalog(MetadataTransactionContext ctx, String catalogName) throws AlgebricksException {
+        try {
+            Objects.requireNonNull(catalogName);
+            metadataNode.dropCatalog(ctx.getTxnId(), catalogName);
+        } catch (RemoteException e) {
+            throw new MetadataException(ErrorCode.REMOTE_EXCEPTION_WHEN_CALLING_METADATA_NODE, e);
+        }
+        ctx.dropCatalog(catalogName);
+    }
+
+    @Override
+    public void addCRS(MetadataTransactionContext ctx, CoordinateReferenceSystem crs) throws AlgebricksException {
+        try {
+            metadataNode.addCRS(ctx.getTxnId(), crs);
+        } catch (RemoteException e) {
+            throw new MetadataException(ErrorCode.REMOTE_EXCEPTION_WHEN_CALLING_METADATA_NODE, e);
+        }
+        ctx.addCRS(crs);
+    }
+
+    @Override
+    public CoordinateReferenceSystem getCRS(MetadataTransactionContext ctx, String database,
+            DataverseName dataverseName, int srid) throws AlgebricksException {
+        Objects.requireNonNull(database);
+        CoordinateReferenceSystem crs = ctx.getCrs(database, dataverseName, srid);
+        if (crs != null) {
+            return crs;
+        }
+        if (ctx.crsIsDropped(database, dataverseName, srid)) {
+            return null;
+        }
+        crs = cache.getCrs(database, dataverseName, srid);
+        if (crs != null) {
+            return crs;
+        }
+        try {
+            crs = metadataNode.getCRS(ctx.getTxnId(), database, dataverseName, srid);
+        } catch (RemoteException e) {
+            throw new MetadataException(ErrorCode.REMOTE_EXCEPTION_WHEN_CALLING_METADATA_NODE, e);
+        }
+        if (crs != null) {
+            ctx.addCRS(crs);
+        }
+        return crs;
+    }
+
+    @Override
+    public void dropCRS(MetadataTransactionContext ctx, String database, DataverseName dataverseName, int srid)
+            throws AlgebricksException {
+        try {
+            Objects.requireNonNull(database);
+            metadataNode.dropCRS(ctx.getTxnId(), database, dataverseName, srid);
+        } catch (RemoteException e) {
+            throw new MetadataException(ErrorCode.REMOTE_EXCEPTION_WHEN_CALLING_METADATA_NODE, e);
+        }
+        ctx.dropCRS(database, dataverseName, srid);
     }
 
     private static class CCMetadataManagerImpl extends MetadataManager {

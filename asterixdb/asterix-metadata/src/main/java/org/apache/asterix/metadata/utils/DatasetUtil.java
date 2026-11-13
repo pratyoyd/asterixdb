@@ -24,20 +24,26 @@ import static org.apache.asterix.om.utils.ProjectionFiltrationTypeUtil.EMPTY_TYP
 import java.io.DataOutput;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.apache.asterix.builders.IARecordBuilder;
 import org.apache.asterix.builders.RecordBuilder;
 import org.apache.asterix.common.cluster.PartitioningProperties;
 import org.apache.asterix.common.config.DatasetConfig;
 import org.apache.asterix.common.config.DatasetConfig.DatasetType;
+import org.apache.asterix.common.config.StorageProperties;
 import org.apache.asterix.common.context.CorrelatedPrefixMergePolicyFactory;
+import org.apache.asterix.common.context.DatasetLifecycleManager;
+import org.apache.asterix.common.context.DatasetResource;
 import org.apache.asterix.common.context.IStorageComponentProvider;
 import org.apache.asterix.common.context.ITransactionSubsystemProvider;
 import org.apache.asterix.common.context.TransactionSubsystemProvider;
+import org.apache.asterix.common.dataflow.DatasetLocalResource;
 import org.apache.asterix.common.dataflow.ICcApplicationContext;
 import org.apache.asterix.common.exceptions.ACIDException;
 import org.apache.asterix.common.exceptions.AsterixException;
@@ -45,8 +51,11 @@ import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.common.metadata.DataverseName;
 import org.apache.asterix.common.metadata.MetadataConstants;
 import org.apache.asterix.common.metadata.MetadataUtil;
+import org.apache.asterix.common.storage.IndexCompletionMode;
 import org.apache.asterix.common.transactions.IRecoveryManager;
+import org.apache.asterix.common.utils.JobUtils;
 import org.apache.asterix.external.util.ExternalDataUtils;
+import org.apache.asterix.external.util.iceberg.IcebergUtils;
 import org.apache.asterix.formats.base.IDataFormat;
 import org.apache.asterix.formats.nontagged.SerializerDeserializerProvider;
 import org.apache.asterix.formats.nontagged.TypeTraitProvider;
@@ -68,14 +77,18 @@ import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.types.visitor.SimpleStringBuilderForIATypeVisitor;
 import org.apache.asterix.om.utils.ProjectionFiltrationTypeUtil;
+import org.apache.asterix.runtime.operators.DatasetSampleCardinalityProbeOperatorDescriptor;
 import org.apache.asterix.runtime.operators.LSMPrimaryUpsertOperatorDescriptor;
 import org.apache.asterix.runtime.utils.RuntimeUtils;
 import org.apache.asterix.transaction.management.opcallbacks.PrimaryIndexInstantSearchOperationCallbackFactory;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.hyracks.algebricks.common.constraints.AlgebricksAbsolutePartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraintHelper;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.hyracks.algebricks.core.jobgen.impl.ConnectorPolicyAssignmentPolicy;
 import org.apache.hyracks.algebricks.data.IBinaryComparatorFactoryProvider;
+import org.apache.hyracks.api.client.IHyracksClientConnection;
 import org.apache.hyracks.api.dataflow.IOperatorDescriptor;
 import org.apache.hyracks.api.dataflow.value.IBinaryComparatorFactory;
 import org.apache.hyracks.api.dataflow.value.IBinaryHashFunctionFactory;
@@ -86,11 +99,14 @@ import org.apache.hyracks.api.dataflow.value.ITypeTraits;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.FileSplit;
+import org.apache.hyracks.api.job.HyracksJobProperty;
+import org.apache.hyracks.api.job.JobKind;
 import org.apache.hyracks.api.job.JobSpecification;
 import org.apache.hyracks.data.std.util.ArrayBackedValueStorage;
 import org.apache.hyracks.dataflow.common.comm.io.ArrayTupleBuilder;
 import org.apache.hyracks.dataflow.common.data.marshalling.IntegerSerializerDeserializer;
 import org.apache.hyracks.dataflow.common.data.partition.FieldHashPartitionerFactory;
+import org.apache.hyracks.dataflow.std.connectors.OneToOneConnectorDescriptor;
 import org.apache.hyracks.dataflow.std.file.IFileSplitProvider;
 import org.apache.hyracks.dataflow.std.misc.ConstantTupleSourceOperatorDescriptor;
 import org.apache.hyracks.storage.am.btree.dataflow.BTreeSearchOperatorDescriptor;
@@ -99,14 +115,18 @@ import org.apache.hyracks.storage.am.common.api.ISearchOperationCallbackFactory;
 import org.apache.hyracks.storage.am.common.build.IndexBuilderFactory;
 import org.apache.hyracks.storage.am.common.dataflow.IIndexDataflowHelperFactory;
 import org.apache.hyracks.storage.am.common.dataflow.IndexCreateOperatorDescriptor;
+import org.apache.hyracks.storage.am.common.dataflow.IndexDataflowHelper;
 import org.apache.hyracks.storage.am.common.dataflow.IndexDataflowHelperFactory;
 import org.apache.hyracks.storage.am.common.dataflow.IndexDropOperatorDescriptor;
 import org.apache.hyracks.storage.am.common.impls.DefaultTupleProjectorFactory;
 import org.apache.hyracks.storage.am.common.ophelpers.IndexOperation;
+import org.apache.hyracks.storage.am.lsm.btree.dataflow.BTreeSampleCollectorOperatorDescriptor;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMMergePolicyFactory;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMTupleFilterCallbackFactory;
 import org.apache.hyracks.storage.am.lsm.common.dataflow.LSMTreeIndexCompactOperatorDescriptor;
 import org.apache.hyracks.storage.common.IResourceFactory;
+import org.apache.hyracks.storage.common.IStorageManager;
+import org.apache.hyracks.storage.common.LocalResource;
 import org.apache.hyracks.storage.common.projection.ITupleProjectorFactory;
 import org.apache.hyracks.util.LogRedactionUtil;
 import org.apache.logging.log4j.LogManager;
@@ -267,7 +287,7 @@ public class DatasetUtil {
         } catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
             throw new AlgebricksException(e);
         }
-        return new Pair<>(mergePolicyFactory, properties);
+        return Pair.of(mergePolicyFactory, properties);
     }
 
     public static void writePropertyTypeRecord(String name, String value, DataOutput out, ARecordType recordType)
@@ -311,10 +331,11 @@ public class DatasetUtil {
     public static JobSpecification dropDatasetJobSpec(Dataset dataset, MetadataProvider metadataProvider,
             Set<IndexDropOperatorDescriptor.DropOption> options) throws AlgebricksException, ACIDException {
         LOGGER.info("DROP DATASET: " + dataset);
-        if (dataset.getDatasetType() == DatasetType.EXTERNAL) {
-            return RuntimeUtils.createJobSpecification(metadataProvider.getApplicationContext());
-        }
         JobSpecification specPrimary = RuntimeUtils.createJobSpecification(metadataProvider.getApplicationContext());
+        specPrimary.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DDL);
+        if (dataset.getDatasetType() == DatasetType.EXTERNAL) {
+            return specPrimary;
+        }
         PartitioningProperties partitioningProperties = metadataProvider.getPartitioningProperties(dataset);
         IIndexDataflowHelperFactory indexHelperFactory =
                 new IndexDataflowHelperFactory(metadataProvider.getStorageComponentProvider().getStorageManager(),
@@ -336,7 +357,7 @@ public class DatasetUtil {
         if (dataset.hasMetaPart()) {
             metaItemType = (ARecordType) metadataProvider.findMetaType(dataset);
         }
-        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, metaItemType, dataset);
+        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, dataset);
 
         JobSpecification spec = RuntimeUtils.createJobSpecification(metadataProvider.getApplicationContext());
         PartitioningProperties partitioningProperties = metadataProvider.getPartitioningProperties(dataset);
@@ -353,26 +374,28 @@ public class DatasetUtil {
         // repository
         int[][] computeStorageMap = partitioningProperties.getComputeStorageMap();
         IndexBuilderFactory[][] indexBuilderFactories = getIndexBuilderFactories(dataset, metadataProvider, index,
-                itemType, metaItemType, splitsProvider, compactionInfo.first, compactionInfo.second, computeStorageMap);
+                itemType, metaItemType, splitsProvider, compactionInfo.getLeft(), compactionInfo.getRight(),
+                computeStorageMap, IndexCompletionMode.ON_CREATE);
         IndexCreateOperatorDescriptor indexCreateOp =
                 new IndexCreateOperatorDescriptor(spec, indexBuilderFactories, computeStorageMap);
         AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(spec, indexCreateOp,
                 partitioningProperties.getConstraints());
         spec.addRoot(indexCreateOp);
+        spec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DDL);
         return spec;
     }
 
     public static IndexBuilderFactory[][] getIndexBuilderFactories(Dataset dataset, MetadataProvider metadataProvider,
             Index index, ARecordType itemType, ARecordType metaItemType, IFileSplitProvider fileSplitProvider,
             ILSMMergePolicyFactory mergePolicyFactory, Map<String, String> mergePolicyProperties,
-            int[][] computeStorageMap) throws AlgebricksException {
+            int[][] computeStorageMap, IndexCompletionMode completionMode) throws AlgebricksException {
         IndexBuilderFactory[][] indexBuilderFactories = new IndexBuilderFactory[computeStorageMap.length][];
         for (int i = 0; i < computeStorageMap.length; i++) {
             int len = computeStorageMap[i].length;
             indexBuilderFactories[i] = new IndexBuilderFactory[len];
             for (int k = 0; k < len; k++) {
                 IResourceFactory resourceFactory = dataset.getResourceFactory(metadataProvider, index, itemType,
-                        metaItemType, mergePolicyFactory, mergePolicyProperties);
+                        metaItemType, mergePolicyFactory, mergePolicyProperties, completionMode);
                 IndexBuilderFactory indexBuilderFactory =
                         new IndexBuilderFactory(metadataProvider.getStorageComponentProvider().getStorageManager(),
                                 fileSplitProvider, resourceFactory, true);
@@ -441,6 +464,33 @@ public class DatasetUtil {
         return primarySearchOp;
     }
 
+    public static IOperatorDescriptor createSampleScanOp(JobSpecification spec, MetadataProvider metadataProvider,
+            Dataset dataset, int sampleCardinalityTargetPerPartition, long sampleSeed,
+            ITupleProjectorFactory projectorFactory) throws AlgebricksException {
+        PartitioningProperties partitioningProperties = metadataProvider.getPartitioningProperties(dataset);
+        IFileSplitProvider primaryFileSplitProvider = partitioningProperties.getSplitsProvider();
+        AlgebricksPartitionConstraint primaryPartitionConstraint = partitioningProperties.getConstraints();
+        // -Infinity
+        int[] lowKeyFields = null;
+        // +Infinity
+        int[] highKeyFields = null;
+        ITransactionSubsystemProvider txnSubsystemProvider = TransactionSubsystemProvider.INSTANCE;
+        ISearchOperationCallbackFactory searchCallbackFactory = new PrimaryIndexInstantSearchOperationCallbackFactory(
+                dataset.getDatasetId(), dataset.getPrimaryBloomFilterFields(), txnSubsystemProvider,
+                IRecoveryManager.ResourceType.LSM_BTREE);
+        IndexDataflowHelperFactory indexHelperFactory = new IndexDataflowHelperFactory(
+                metadataProvider.getStorageComponentProvider().getStorageManager(), primaryFileSplitProvider);
+        StorageProperties storageProperties = metadataProvider.getStorageProperties();
+        BTreeSampleCollectorOperatorDescriptor sampleOp = new BTreeSampleCollectorOperatorDescriptor(spec,
+                dataset.getPrimaryRecordDescriptor(metadataProvider), lowKeyFields, highKeyFields, true, true,
+                indexHelperFactory, false, false, null, searchCallbackFactory, null, null, false, null, null, -1, false,
+                null, null, projectorFactory, null, partitioningProperties.getComputeStorageMap(),
+                sampleCardinalityTargetPerPartition, sampleSeed, storageProperties.getMaxSampleLeafAttempts(),
+                storageProperties.getSampleLeafDrawBatchSize());
+        AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(spec, sampleOp, primaryPartitionConstraint);
+        return sampleOp;
+    }
+
     /**
      * Creates a primary index upsert operator for a given dataset.
      *
@@ -460,7 +510,7 @@ public class DatasetUtil {
         int numFilterFields = DatasetUtil.getFilterField(dataset) == null ? 0 : 1;
         ARecordType itemType = (ARecordType) metadataProvider.findType(dataset);
         ARecordType metaItemType = (ARecordType) metadataProvider.findMetaType(dataset);
-        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, metaItemType, dataset);
+        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, dataset);
 
         Index primaryIndex = metadataProvider.getIndex(dataset.getDatabaseName(), dataset.getDataverseName(),
                 dataset.getDatasetName(), dataset.getDatasetName());
@@ -473,9 +523,9 @@ public class DatasetUtil {
             primaryKeyFields[i] = i;
             pkFields[i] = fieldPermutation[i];
         }
-        boolean hasSecondaries = metadataProvider
-                .getDatasetIndexes(dataset.getDatabaseName(), dataset.getDataverseName(), dataset.getDatasetName())
-                .size() > 1;
+
+        boolean hasSecondaries = metadataProvider.hasSecondaryIndexes(dataset);
+
         IStorageComponentProvider storageComponentProvider = metadataProvider.getStorageComponentProvider();
         IModificationOperationCallbackFactory modificationCallbackFactory = dataset.getModificationCallbackFactory(
                 storageComponentProvider, primaryIndex, IndexOperation.UPSERT, primaryKeyFields);
@@ -547,7 +597,7 @@ public class DatasetUtil {
                 dataset.getFrameOpCallbackFactory(metadataProvider), numKeys, filterSourceIndicator, filterItemType,
                 fieldIdx, hasSecondaries, projectorFactory, tuplePartitionerFactory,
                 partitioningProperties.getComputeStorageMap(), tupleFilterCallbackFactory);
-        return new Pair<>(op, partitioningProperties.getConstraints());
+        return Pair.of(op, partitioningProperties.getConstraints());
     }
 
     /**
@@ -581,6 +631,9 @@ public class DatasetUtil {
                 indexPaths.add(indexDetails.getIndexExpectedType());
             } else if (index.getIndexType() == DatasetConfig.IndexType.ARRAY) {
                 Index.ArrayIndexDetails indexDetails = (Index.ArrayIndexDetails) index.getIndexDetails();
+                indexPaths.add(indexDetails.getIndexExpectedType());
+            } else if (index.getIndexType() == DatasetConfig.IndexType.VTREE) {
+                Index.VectorIndexDetails indexDetails = (Index.VectorIndexDetails) index.getIndexDetails();
                 indexPaths.add(indexDetails.getIndexExpectedType());
             }
         }
@@ -641,6 +694,41 @@ public class DatasetUtil {
         ConstantTupleSourceOperatorDescriptor keyProviderOp = new ConstantTupleSourceOperatorDescriptor(spec,
                 keyRecDesc, tb.getFieldEndOffsets(), tb.getByteArray(), tb.getSize());
         return keyProviderOp;
+    }
+
+    public static final String SAMPLE_CARDINALITY_PROBE_OPERATOR_NAME = "Sample-Cardinality-Probe";
+
+    /**
+     * Builds a metadata-only job over the primary-index disk components that reports two values via
+     * {@link #SAMPLE_CARDINALITY_PROBE_OPERATOR_NAME} operator stats (both summed across partitions):
+     * <ul>
+     * <li>{@code tupleCounter} = number of disk components missing random-sampling metadata; {@code 0} means
+     * random sampling is safe, any positive value means the caller must fall back to a full scan (upgrade
+     * fallback — retired once pre-theta components are EoL).</li>
+     * <li>{@code tupleBytes} = number of storage partitions holding live data, used to set the sample
+     * allocation divisor so empty/fully-deleted partitions do not drop their share of the target (see
+     * {@code SampleOperationsHelper}).</li>
+     * </ul>
+     * Both come from a single partition walk.
+     */
+    public static JobSpecification buildSampleCardinalityProbeJobSpec(Dataset dataset,
+            MetadataProvider metadataProvider) throws AlgebricksException {
+        JobSpecification spec = RuntimeUtils.createJobSpecification(metadataProvider.getApplicationContext());
+        PartitioningProperties partitioningProperties = metadataProvider.getPartitioningProperties(dataset);
+        IStorageManager storageMgr = metadataProvider.getStorageComponentProvider().getStorageManager();
+        IIndexDataflowHelperFactory primaryIndexHelperFactory =
+                new IndexDataflowHelperFactory(storageMgr, partitioningProperties.getSplitsProvider());
+
+        IOperatorDescriptor keyProviderOp = createDummyKeyProviderOp(spec, dataset, metadataProvider);
+        DatasetSampleCardinalityProbeOperatorDescriptor probeOp =
+                new DatasetSampleCardinalityProbeOperatorDescriptor(spec, SAMPLE_CARDINALITY_PROBE_OPERATOR_NAME,
+                        primaryIndexHelperFactory, partitioningProperties.getComputeStorageMap());
+        AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(spec, probeOp,
+                partitioningProperties.getConstraints());
+        spec.connect(new OneToOneConnectorDescriptor(spec), keyProviderOp, 0, probeOp, 0);
+        spec.addRoot(probeOp);
+        spec.setConnectorPolicyAssignmentPolicy(new ConnectorPolicyAssignmentPolicy());
+        return spec;
     }
 
     public static String getFullyQualifiedDisplayName(Dataset dataset) {
@@ -721,6 +809,10 @@ public class DatasetUtil {
         return dataset.getDatasetType() != DatasetType.VIEW;
     }
 
+    public static boolean isView(Dataset dataset) {
+        return dataset.getDatasetType() == DatasetType.VIEW;
+    }
+
     public static boolean isFieldAccessPushdownSupported(Dataset dataset) {
         DatasetType datasetType = dataset.getDatasetType();
         if (datasetType == DatasetType.INTERNAL) {
@@ -743,5 +835,134 @@ public class DatasetUtil {
     public static boolean isRangeFilterPushdownSupported(Dataset dataset) {
         return dataset.getDatasetType() == DatasetType.INTERNAL
                 && dataset.getDatasetFormatInfo().getFormat() == DatasetConfig.DatasetFormat.COLUMN;
+    }
+
+    public static void truncate(MetadataProvider metadataProvider, Dataset ds) throws Exception {
+        if (ds.getDatasetType() == DatasetType.INTERNAL) {
+            IHyracksClientConnection hcc;
+            Map<String, List<DatasetPartitions>> nc2Resources = getNodeResources(metadataProvider, ds);
+            AlgebricksAbsolutePartitionConstraint nodeSet =
+                    new AlgebricksAbsolutePartitionConstraint(nc2Resources.keySet().toArray(new String[0]));
+            JobSpecification job = new JobSpecification();
+            IOperatorDescriptor truncateOp = new TruncateOperatorDescriptor(job, nc2Resources);
+            AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(job, truncateOp, nodeSet);
+            hcc = metadataProvider.getApplicationContext().getHcc();
+            job.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DML);
+            JobUtils.runJobIfActive(hcc, job, true);
+        } else {
+            // check should have been done by caller
+            throw new IllegalArgumentException(
+                    "Cannot truncate a non-internal dataset " + ds.getDatasetFullyQualifiedName());
+        }
+    }
+
+    public static DatasetPartitions getPartitionsAndDataflowHelperFactory(Dataset dataset,
+            List<DatasetPartitions> ncResources, IIndexDataflowHelperFactory primary,
+            List<IIndexDataflowHelperFactory> secondaries) {
+        DatasetPartitions partitionsAndDataflowHelperFactory;
+        if (ncResources.isEmpty()) {
+            partitionsAndDataflowHelperFactory =
+                    new DatasetPartitions(dataset, new ArrayList<>(), primary, secondaries);
+            ncResources.add(partitionsAndDataflowHelperFactory);
+        } else {
+            DatasetPartitions last = ncResources.get(ncResources.size() - 1);
+            if (last.getPrimaryIndexDataflowHelperFactory() == primary) {
+                partitionsAndDataflowHelperFactory = last;
+            } else {
+                partitionsAndDataflowHelperFactory =
+                        new DatasetPartitions(dataset, new ArrayList<>(), primary, secondaries);
+                ncResources.add(partitionsAndDataflowHelperFactory);
+            }
+        }
+        return partitionsAndDataflowHelperFactory;
+    }
+
+    public static Map<String, List<DatasetPartitions>> getNodeResources(MetadataProvider metadataProvider,
+            Dataset dataset) throws AlgebricksException {
+        Map<String, List<DatasetPartitions>> nc2Resources = new HashMap<>();
+        IStorageManager storageManager = metadataProvider.getStorageComponentProvider().getStorageManager();
+
+        // get secondary indexes
+        List<Index> secondaryIndexes =
+                metadataProvider
+                        .getDatasetIndexes(dataset.getDatabaseName(), dataset.getDataverseName(),
+                                dataset.getDatasetName())
+                        .stream().filter(Index::isSecondaryIndex).collect(Collectors.toList());
+        PartitioningProperties partitioningProperties = metadataProvider.getPartitioningProperties(dataset);
+        IIndexDataflowHelperFactory primary =
+                new IndexDataflowHelperFactory(storageManager, partitioningProperties.getSplitsProvider());
+        List<IIndexDataflowHelperFactory> secondaries =
+                secondaryIndexes.isEmpty() ? Collections.emptyList() : new ArrayList<>();
+        for (Index index : secondaryIndexes) {
+            PartitioningProperties idxPartitioningProperties =
+                    metadataProvider.getPartitioningProperties(dataset, index.getIndexName());
+            secondaries
+                    .add(new IndexDataflowHelperFactory(storageManager, idxPartitioningProperties.getSplitsProvider()));
+        }
+        populateNcResources(dataset, partitioningProperties, nc2Resources, primary, secondaries);
+        return nc2Resources;
+    }
+
+    private static void populateNcResources(Dataset dataset, PartitioningProperties partitioningProperties,
+            Map<String, List<DatasetPartitions>> nc2Resources, IIndexDataflowHelperFactory primary,
+            List<IIndexDataflowHelperFactory> secondaries) {
+        AlgebricksAbsolutePartitionConstraint computeLocations =
+                (AlgebricksAbsolutePartitionConstraint) partitioningProperties.getConstraints();
+        int[][] computeStorageMap = partitioningProperties.getComputeStorageMap();
+        for (int j = 0; j < computeLocations.getLocations().length; j++) {
+            String loc = computeLocations.getLocations()[j];
+            DatasetPartitions partitionsAndDataflowHelperFactories = getPartitionsAndDataflowHelperFactory(dataset,
+                    nc2Resources.computeIfAbsent(loc, key -> new ArrayList<>()), primary, secondaries);
+            List<Integer> dsPartitions = partitionsAndDataflowHelperFactories.getPartitions();
+            int[] computeStoragePartitions = computeStorageMap[j];
+            for (int storagePartition : computeStoragePartitions) {
+                dsPartitions.add(storagePartition);
+            }
+        }
+    }
+
+    public static Map<String, List<DatasetPartitions>> getNodeResourcesWithoutSecondaries(
+            MetadataProvider metadataProvider, Dataset dataset) throws AlgebricksException {
+        Map<String, List<DatasetPartitions>> nc2Resources = new HashMap<>();
+        IStorageManager storageManager = metadataProvider.getStorageComponentProvider().getStorageManager();
+
+        PartitioningProperties partitioningProperties = metadataProvider.getPartitioningProperties(dataset);
+        IIndexDataflowHelperFactory primary =
+                new IndexDataflowHelperFactory(storageManager, partitioningProperties.getSplitsProvider());
+
+        populateNcResources(dataset, partitioningProperties, nc2Resources, primary, Collections.emptyList());
+        return nc2Resources;
+    }
+
+    public static DatasetResource getDatasetResource(DatasetLifecycleManager dslMgr, Integer partition,
+            IndexDataflowHelper indexHelper) throws HyracksDataException {
+        LocalResource lr = indexHelper.getResource();
+        DatasetLocalResource dslr = (DatasetLocalResource) lr.getResource();
+        int datasetId = dslr.getDatasetId();
+        DatasetResource dsr = dslMgr.getDatasetLifecycle(datasetId);
+        // Ensure that no active operations exists
+        int numActiveOperations =
+                dslMgr.getOperationTracker(datasetId, partition, lr.getPath()).getNumActiveOperations();
+        if (numActiveOperations > 0) {
+            throw new IllegalStateException("Can't truncate the collection " + dsr.getDatasetInfo().getDatasetID()
+                    + " because the number of active operations = " + numActiveOperations + " in the partition "
+                    + partition);
+        }
+        return dsr;
+    }
+
+    public static boolean isDeltaTable(Dataset dataset) {
+        return dataset.getDatasetType() == DatasetType.EXTERNAL && ExternalDataUtils
+                .isDeltaTable(((ExternalDatasetDetails) dataset.getDatasetDetails()).getProperties());
+    }
+
+    public static boolean isIcebergTable(Dataset dataset) {
+        return dataset.getDatasetType() == DatasetType.EXTERNAL
+                && IcebergUtils.isIcebergTable(((ExternalDatasetDetails) dataset.getDatasetDetails()).getProperties());
+    }
+
+    public static boolean isParquetFormat(Dataset dataset) {
+        return dataset.getDatasetType() == DatasetType.EXTERNAL && ExternalDataUtils
+                .isParquetFormat(((ExternalDatasetDetails) dataset.getDatasetDetails()).getProperties());
     }
 }

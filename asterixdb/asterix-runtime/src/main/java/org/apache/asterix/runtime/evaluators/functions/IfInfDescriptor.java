@@ -23,16 +23,15 @@ import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.functions.IFunctionDescriptorFactory;
 import org.apache.asterix.runtime.evaluators.base.AbstractScalarFunctionDynamicDescriptor;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 
 /**
  * ifinf(arg1, arg2, ...) scans the list of arguments in order and returns the first numeric argument it encounters.
- * If the argument being inspected is infinity as determined by the mathematical definition of floating-points, then
- * it skips the argument and inspects the next one. It returns missing if the argument being inspected is missing.
- * It returns null if:
+ * If the argument being inspected is missing or infinity as determined by the mathematical definition of
+ * floating-points, then it skips the argument and inspects the next one. It returns null if:
  * 1. the argument being inspected is not numeric.
  * 2. all the arguments have been inspected and no candidate value has been found.
  *
@@ -50,7 +49,7 @@ public class IfInfDescriptor extends AbstractScalarFunctionDynamicDescriptor {
 
             @Override
             public IScalarEvaluator createScalarEvaluator(final IEvaluatorContext ctx) throws HyracksDataException {
-                return new IfNanOrInfDescriptor.AbstractIfInfOrNanEval(ctx, args, false) {
+                return new IfNanOrInfDescriptor.AbstractIfInfOrNanEval(ctx, args) {
                     @Override
                     protected boolean skipDouble(double d) {
                         return Double.isInfinite(d);

@@ -23,10 +23,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.properties.FilteredVariablePropagationPolicy;
 import org.apache.hyracks.algebricks.core.algebra.properties.VariablePropagationPolicy;
+import org.apache.hyracks.algebricks.core.algebra.visitors.ILogicalExpressionReferenceTransform;
 
 public abstract class AbstractUnnestNonMapOperator extends AbstractUnnestOperator {
 
@@ -36,16 +38,24 @@ public abstract class AbstractUnnestNonMapOperator extends AbstractUnnestOperato
      * Specify the type of the positional variable
      */
     protected Object positionalVariableType;
+    protected TimeTravel timeTravel;
 
     public AbstractUnnestNonMapOperator(LogicalVariable variable, Mutable<ILogicalExpression> expression) {
         super(makeSingletonList(variable), expression);
     }
 
     public AbstractUnnestNonMapOperator(LogicalVariable variable, Mutable<ILogicalExpression> expression,
-            LogicalVariable positionalVariable, Object positionalVariableType) {
-        this(variable, expression);
+            TimeTravel timeTravel) {
+        super(makeSingletonList(variable), expression);
+        this.timeTravel = timeTravel;
+    }
+
+    public AbstractUnnestNonMapOperator(LogicalVariable variable, Mutable<ILogicalExpression> expression,
+            LogicalVariable positionalVariable, Object positionalVariableType, TimeTravel timeTravel) {
+        this(variable, expression, timeTravel);
         this.setPositionalVariable(positionalVariable);
         this.setPositionalVariableType(positionalVariableType);
+        this.timeTravel = timeTravel;
     }
 
     public LogicalVariable getVariable() {
@@ -68,8 +78,30 @@ public abstract class AbstractUnnestNonMapOperator extends AbstractUnnestOperato
         this.positionalVariableType = positionalVariableType;
     }
 
+    /**
+     * Also transforms the time travel value, so that it is folded, type-checked and printed by the same rules
+     * that handle every other expression an operator carries -- constant folding in particular, which is what
+     * reduces it to the constant the scan needs.
+     */
+    @Override
+    public boolean acceptExpressionTransform(ILogicalExpressionReferenceTransform visitor) throws AlgebricksException {
+        boolean changed = super.acceptExpressionTransform(visitor);
+        if (timeTravel != null) {
+            changed |= visitor.transform(timeTravel.getValueExpressionRef());
+        }
+        return changed;
+    }
+
     public Object getPositionalVariableType() {
         return positionalVariableType;
+    }
+
+    public boolean hasTimeTravel() {
+        return timeTravel != null;
+    }
+
+    public TimeTravel getTimeTravel() {
+        return timeTravel;
     }
 
     @Override

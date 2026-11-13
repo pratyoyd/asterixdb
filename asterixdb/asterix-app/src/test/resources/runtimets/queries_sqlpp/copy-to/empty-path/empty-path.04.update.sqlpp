@@ -19,26 +19,22 @@
 USE test;
 
 COPY Customer c
-TO S3
+TO %adapter%
 PATH ()
 WITH {
-    "accessKeyId":"dummyAccessKey",
-    "secretAccessKey":"dummySecretKey",
-    "region":"us-west-2",
-    "serviceEndpoint":"http://127.0.0.1:8001",
-    "container":"empty-bucket1",
+    %template_colons%,
+    %additionalProperties%
+    "container":"emptybucket1",
     "format":"json"
 };
 
 COPY Customer c
-TO S3
+TO %adapter%
 PATH ("")
 WITH {
-    "accessKeyId":"dummyAccessKey",
-    "secretAccessKey":"dummySecretKey",
-    "region":"us-west-2",
-    "serviceEndpoint":"http://127.0.0.1:8001",
-    "container":"empty-bucket2",
+    %template_colons%,
+    %additionalProperties%
+    "container":"emptybucket2",
     "format":"json"
 };
 

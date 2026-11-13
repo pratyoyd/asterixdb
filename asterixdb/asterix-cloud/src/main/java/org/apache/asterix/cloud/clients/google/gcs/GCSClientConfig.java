@@ -18,14 +18,14 @@
  */
 package org.apache.asterix.cloud.clients.google.gcs;
 
-import static org.apache.asterix.external.util.google.gcs.GCSConstants.ENDPOINT_FIELD_NAME;
-import static org.apache.asterix.external.util.google.gcs.GCSConstants.STORAGE_PREFIX;
+import static org.apache.asterix.external.util.google.GCSConstants.ENDPOINT_FIELD_NAME;
+import static org.apache.asterix.external.util.google.GCSConstants.STORAGE_PREFIX;
 
 import java.io.IOException;
 import java.util.Map;
 
-import org.apache.asterix.common.config.CloudProperties;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.cloud.io.ICloudProperties;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.OAuth2Credentials;
@@ -43,11 +43,15 @@ public class GCSClientConfig {
     private final int readMaxRequestsPerSeconds;
     private final int writeMaxRequestsPerSeconds;
     private final int writeBufferSize;
+    private final int maxIdleSeconds;
+    private final int maxLifetimeSeconds;
+    private final int requestsMaxHttpConnections;
     private final String prefix;
 
     private GCSClientConfig(String region, String endpoint, boolean anonymousAuth, long profilerLogInterval,
             long tokenAcquireTimeout, int writeMaxRequestsPerSeconds, int readMaxRequestsPerSeconds,
-            int writeBufferSize, String prefix) {
+            int writeBufferSize, int maxIdleSeconds, int maxLifetimeSeconds, int requestsMaxHttpConnections,
+            String prefix) {
         this.region = region;
         this.endpoint = endpoint;
         this.anonymousAuth = anonymousAuth;
@@ -56,20 +60,25 @@ public class GCSClientConfig {
         this.writeMaxRequestsPerSeconds = writeMaxRequestsPerSeconds;
         this.readMaxRequestsPerSeconds = readMaxRequestsPerSeconds;
         this.writeBufferSize = writeBufferSize;
+        this.maxIdleSeconds = maxIdleSeconds;
+        this.maxLifetimeSeconds = maxLifetimeSeconds;
+        this.requestsMaxHttpConnections = requestsMaxHttpConnections;
         this.prefix = prefix;
     }
 
     public GCSClientConfig(String region, String endpoint, boolean anonymousAuth, long profilerLogInterval,
             int writeBufferSize, String prefix) {
-        this(region, endpoint, anonymousAuth, profilerLogInterval, 1, 0, 0, writeBufferSize, prefix);
+        this(region, endpoint, anonymousAuth, profilerLogInterval, 1, 0, 0, writeBufferSize, 0, 0, 0, prefix);
     }
 
-    public static GCSClientConfig of(CloudProperties cloudProperties) {
+    public static GCSClientConfig of(ICloudProperties cloudProperties) {
         return new GCSClientConfig(cloudProperties.getStorageRegion(), cloudProperties.getStorageEndpoint(),
                 cloudProperties.isStorageAnonymousAuth(), cloudProperties.getProfilerLogInterval(),
                 cloudProperties.getTokenAcquireTimeout(), cloudProperties.getWriteMaxRequestsPerSecond(),
                 cloudProperties.getReadMaxRequestsPerSecond(), cloudProperties.getWriteBufferSize(),
-                cloudProperties.getStoragePrefix());
+                cloudProperties.getRequestsHttpConnectionMaxIdleSeconds(),
+                cloudProperties.getRequestsHttpConnectionMaxLifetimeSeconds(),
+                cloudProperties.getRequestsMaxHttpConnections(), cloudProperties.getStoragePrefix());
     }
 
     public static GCSClientConfig of(Map<String, String> configuration, int writeBufferSize) {
@@ -121,6 +130,21 @@ public class GCSClientConfig {
 
     public int getWriteBufferSize() {
         return writeBufferSize;
+    }
+
+    public int getMaxIdleSeconds() {
+        return maxIdleSeconds;
+    }
+
+    public int getMaxLifetimeSeconds() {
+        return maxLifetimeSeconds;
+    }
+
+    /**
+     * @return the most HTTP connections a client may hold open, or 0 for no limit
+     */
+    public int getRequestsMaxHttpConnections() {
+        return requestsMaxHttpConnections;
     }
 
     public String getPrefix() {

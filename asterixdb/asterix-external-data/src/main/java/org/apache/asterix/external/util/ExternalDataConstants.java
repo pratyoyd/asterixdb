@@ -18,6 +18,7 @@
  */
 package org.apache.asterix.external.util;
 
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.LongSupplier;
@@ -46,6 +47,12 @@ public class ExternalDataConstants {
     public static final String KEY_DATASET_DATAVERSE = "dataset-dataverse";
     // used to specify the socket addresses when reading data from sockets
     public static final String KEY_SOCKETS = "sockets";
+    // specify how an illegal (invalid UTF-8) character in the source should be handled
+    public static final String KEY_ILLEGAL_CHARACTER_HANDLING = "illegalCharacterHandling";
+    // substitute illegal characters with the Unicode replacement character (U+FFFD) and keep reading (the default)
+    public static final String ILLEGAL_CHARACTER_HANDLING_REPLACE = "replace";
+    // fail the read as soon as an illegal character is encountered
+    public static final String ILLEGAL_CHARACTER_HANDLING_FAIL = "fail";
     // specify whether the socket address points to an NC or an IP
     public static final String KEY_MODE = "address-type";
     // specify the HDFS name node address when reading HDFS data
@@ -72,10 +79,8 @@ public class ExternalDataConstants {
     //Base64 encoded function call information
     public static final String KEY_HADOOP_ASTERIX_FUNCTION_CALL_INFORMATION = "org.apache.asterix.function.info";
     public static final String KEY_SOURCE_DATATYPE = "type-name";
-    public static final String KEY_DELIMITER = "delimiter";
     public static final String KEY_PARSER_FACTORY = "parser-factory";
     public static final String KEY_DATA_PARSER = "parser";
-    public static final String KEY_HEADER = "header";
     public static final String KEY_READER = "reader";
     public static final String KEY_READER_STREAM = "stream";
     public static final String KEY_TYPE_NAME = "type-name";
@@ -84,6 +89,7 @@ public class ExternalDataConstants {
     public static final String KEY_EXPRESSION = "expression";
     public static final String KEY_LOCAL_SOCKET_PATH = "local-socket-path";
     public static final String KEY_FORMAT = "format";
+    public static final String KEY_TIMEZONE = "timezone";
     public static final String KEY_SCHEMA = "schema";
     public static final String KEY_PARQUET_ROW_GROUP_SIZE = "row-group-size";
     public static final String PARQUET_DEFAULT_ROW_GROUP_SIZE = "10MB";
@@ -91,11 +97,6 @@ public class ExternalDataConstants {
     public static final String PARQUET_DEFAULT_PAGE_SIZE = "8KB";
     public static final String KEY_INCLUDE = "include";
     public static final String KEY_EXCLUDE = "exclude";
-    public static final String KEY_QUOTE = "quote";
-    public static final String KEY_FORCE_QUOTE = "force-quote";
-    public static final String KEY_EMPTY_FIELD_AS_NULL = "empty_field_as_null";
-    public static final String KEY_RECORD_DELIMITER = "record-delimiter";
-    public static final String KEY_ESCAPE = "escape";
     public static final String KEY_PARSER = "parser";
     public static final String KEY_DATASET_RECORD = "dataset-record";
     public static final String KEY_RSS_URL = "url";
@@ -139,8 +140,6 @@ public class ExternalDataConstants {
     public static final String KEY_HTTP_PROXY_PORT = "http-proxy-port";
     public static final String KEY_HTTP_PROXY_USER = "http-proxy-user";
     public static final String KEY_HTTP_PROXY_PASSWORD = "http-proxy-password";
-    // a string representing the NULL value
-    public static final String KEY_NULL_STR = "null";
     public static final String KEY_REDACT_WARNINGS = "redact-warnings";
     public static final String KEY_REQUESTED_FIELDS = "requested-fields";
     public static final String KEY_EXTERNAL_SCAN_BUFFER_SIZE = "external-scan-buffer-size";
@@ -161,15 +160,18 @@ public class ExternalDataConstants {
     public static final String KEY_ADAPTER_NAME_HTTP = "http_adapter";
     public static final String KEY_ADAPTER_NAME_AWS_S3 = "S3";
     public static final String KEY_ADAPTER_NAME_AZURE_BLOB = "AZUREBLOB";
-    public static final String KEY_ADAPTER_NAME_AZURE_DATA_LAKE = "AZUREDATALAKE";
+    public static final String KEY_ADAPTER_NAME_AZURE_BLOB_ALIAS = "AZURE_BLOB";
+    public static final String KEY_ADAPTER_NAME_AZURE_DATALAKE = "AZUREDATALAKE";
+    public static final String KEY_ADAPTER_NAME_AZURE_DATALAKE_ALIAS = "AZURE_DATALAKE";
     public static final String KEY_ADAPTER_NAME_GCS = "GCS";
     public static final String KEY_ADAPTER_NAME_HDFS = "HDFS";
+    public static final String KEY_ADAPTER_NAME_HTTP_ADAPTER = "http";
 
     public static final Set<String> EXTERNAL_READ_ADAPTERS = Set.of(KEY_ADAPTER_NAME_TWITTER_PUSH,
             KEY_ADAPTER_NAME_PUSH_TWITTER, KEY_ADAPTER_NAME_TWITTER_PULL, KEY_ADAPTER_NAME_PULL_TWITTER,
             KEY_ADAPTER_NAME_TWITTER_USER_STREAM, KEY_ADAPTER_NAME_LOCALFS, KEY_ADAPTER_NAME_SOCKET,
             KEY_ADAPTER_NAME_HTTP, KEY_ADAPTER_NAME_AWS_S3, KEY_ADAPTER_NAME_AZURE_BLOB,
-            KEY_ADAPTER_NAME_AZURE_DATA_LAKE, KEY_ADAPTER_NAME_GCS, KEY_ADAPTER_NAME_HDFS);
+            KEY_ADAPTER_NAME_AZURE_DATALAKE, KEY_ADAPTER_NAME_GCS, KEY_ADAPTER_NAME_HDFS);
 
     /**
      * HDFS class names
@@ -263,6 +265,7 @@ public class ExternalDataConstants {
     public static final String DUMMY_DATABASE_NAME = "dbname";
     public static final String DUMMY_TYPE_NAME = "typeName";
     public static final String DUMMY_DATAVERSE_NAME = "a.b.c";
+    public static final String FORMAT_ICEBERG = "iceberg";
     public static final String FORMAT_APACHE_ICEBERG = "apache-iceberg";
     public static final String FORMAT_DELTA = "delta";
     public static final Set<String> ALL_FORMATS;
@@ -360,6 +363,8 @@ public class ExternalDataConstants {
     public static final String CONTAINER_NAME_FIELD_NAME = "container";
     public static final String SUBPATH = "subpath";
     public static final String PREFIX_DEFAULT_DELIMITER = "/";
+    public static final String CERTIFICATES_FIELD_NAME = "certificates";
+    public static final String DISABLE_SSL_VERIFY_FIELD_NAME = "disableSslVerify";
     public static final Pattern COMPUTED_FIELD_PATTERN = Pattern.compile("\\{[^{}:]+:[^{}:]+}");
 
     /**
@@ -374,10 +379,16 @@ public class ExternalDataConstants {
      * Writer Constants
      */
     public static final String KEY_WRITER_MAX_RESULT = "max-objects-per-file";
+    public static final String KEY_WRITER_MAX_FILE_SIZE = "max-file-size";
     public static final String KEY_VALIDATE_WRITE_PERMISSION = "validate-write-permission";
     public static final String KEY_WRITER_COMPRESSION = "compression";
     public static final int WRITER_MAX_RESULT_DEFAULT = 10000;
     public static final int WRITER_MAX_RESULT_MINIMUM = 1000;
+    public static final long WRITER_MAX_FILE_SIZE_UNLIMITED = -1L;
+    public static final long WRITER_MAX_FILE_SIZE_MINIMUM =
+            StorageUtil.getLongSizeInBytes(5, StorageUtil.StorageUnit.MEGABYTE);
+    public static final long WRITER_MAX_FILE_SIZE_MAXIMUM =
+            StorageUtil.getLongSizeInBytes(5, StorageUtil.StorageUnit.GIGABYTE);
     public static final Set<String> WRITER_SUPPORTED_FORMATS;
     public static final Set<String> WRITER_SUPPORTED_ADAPTERS;
     public static final Set<String> TEXTUAL_WRITER_SUPPORTED_COMPRESSION;
@@ -385,8 +396,8 @@ public class ExternalDataConstants {
     public static final Set<String> PARQUET_WRITER_SUPPORTED_VERSION;
     public static final int PARQUET_DICTIONARY_PAGE_SIZE = 1048576;
     public static final List<String> WRITER_SUPPORTED_QUOTES;
-    public static final List<ATypeTag> CSV_WRITER_SUPPORTED_DATA_TYPES =
-            List.of(ATypeTag.TINYINT, ATypeTag.SMALLINT, ATypeTag.INTEGER, ATypeTag.BIGINT, ATypeTag.UINT8,
+    public static final EnumSet<ATypeTag> CSV_WRITER_SUPPORTED_DATA_TYPES =
+            EnumSet.of(ATypeTag.TINYINT, ATypeTag.SMALLINT, ATypeTag.INTEGER, ATypeTag.BIGINT, ATypeTag.UINT8,
                     ATypeTag.UINT16, ATypeTag.UINT64, ATypeTag.FLOAT, ATypeTag.DOUBLE, ATypeTag.STRING,
                     ATypeTag.BOOLEAN, ATypeTag.DATETIME, ATypeTag.UINT32, ATypeTag.DATE, ATypeTag.TIME);
     public static final String PARQUET_MAX_SCHEMAS_KEY = "max-schemas";
@@ -396,7 +407,8 @@ public class ExternalDataConstants {
     static {
         WRITER_SUPPORTED_FORMATS = Set.of(FORMAT_JSON_LOWER_CASE, FORMAT_PARQUET, FORMAT_CSV_LOWER_CASE);
         WRITER_SUPPORTED_ADAPTERS = Set.of(ALIAS_LOCALFS_ADAPTER.toLowerCase(), KEY_ADAPTER_NAME_AWS_S3.toLowerCase(),
-                KEY_ADAPTER_NAME_GCS.toLowerCase(), KEY_ADAPTER_NAME_HDFS.toLowerCase());
+                KEY_ADAPTER_NAME_GCS.toLowerCase(), KEY_ADAPTER_NAME_HDFS.toLowerCase(),
+                KEY_ADAPTER_NAME_AZURE_BLOB.toLowerCase());
         TEXTUAL_WRITER_SUPPORTED_COMPRESSION = Set.of(KEY_COMPRESSION_GZIP);
         PARQUET_WRITER_SUPPORTED_COMPRESSION =
                 Set.of(KEY_COMPRESSION_GZIP, KEY_COMPRESSION_SNAPPY, KEY_COMPRESSION_ZSTD);
@@ -416,7 +428,6 @@ public class ExternalDataConstants {
         public static final String DECIMAL_TO_DOUBLE = "decimal-to-double";
         public static final String UUID_AS_STRING = "uuid-to-string";
         public static final String DATE_AS_INT = "date-to-int";
-        public static final String TIMEZONE = "timezone";
         public static final String TIME_AS_LONG = "time-to-long";
         public static final String TIMESTAMP_AS_LONG = "timestamp-to-long";
     }
@@ -428,7 +439,65 @@ public class ExternalDataConstants {
         public static final String DECIMAL_TO_DOUBLE = "decimal-to-double";
         public static final String TIMESTAMP_AS_LONG = "timestamp-to-long";
         public static final String DATE_AS_INT = "date-to-int";
-        public static final String TIMEZONE = "timezone";
+    }
+
+    public static class IcebergOptions {
+        private IcebergOptions() {
+        }
+
+        public static final String DECIMAL_TO_DOUBLE = "decimal-to-double";
+        public static final String TIMESTAMP_AS_LONG = "timestamp-to-long";
+        public static final String TIME_AS_INT = "time-to-int";
+        public static final String DATE_AS_INT = "date-to-int";
+        public static final String VARIANT_DEPTH = "variantDepth";
+        // Bounds and default kept alongside VARIANT_DEPTH itself (rather than split across IcebergUtils'
+        // DDL-time validation and IcebergConverterContext's runtime read) so the two can't drift apart.
+        public static final int DEFAULT_VARIANT_DEPTH = 500;
+        public static final int MAX_VARIANT_DEPTH = 1000;
+
+        public static final String VARIANT_PROJECTION_PUSHDOWN = "variantProjectionPushdown";
+        public static final boolean DEFAULT_VARIANT_PROJECTION_PUSHDOWN = true;
+
+        // A second flag rather than one covering "variant pushdown", because the two fail differently: projection off
+        // reads more columns, stats off reads more files. Only stats pushdown could, if it were ever wrong, drop a row
+        // that should have been returned, which is what earns it a switch of its own.
+        public static final String VARIANT_STATS_PUSHDOWN = "variantStatsPushdown";
+        public static final boolean DEFAULT_VARIANT_STATS_PUSHDOWN = true;
+
+        // Splitting changes neither which rows are returned nor which files are read -- only how the same work is
+        // divided across partitions -- so unlike the two flags above it cannot drop a row. It still gets a switch
+        // because it changes the shape of every Iceberg scan: an unsplit large file occupies one reader while the
+        // rest of the cluster idles, and the off path is the differential-test oracle (same rows, fewer tasks).
+        public static final String SPLIT_SCAN_TASKS = "splitScanTasks";
+        public static final boolean DEFAULT_SPLIT_SCAN_TASKS = true;
+
+        // A third flag, for the same reason the second one exists: this is the only variant-pushdown path that can
+        // produce a WRONG ANSWER rather than a slow one. With it off, a delete-bearing file takes the standard
+        // delete-aware read exactly as before, and pruning survives on every file that carries no deletes — which is
+        // why this is not folded into VARIANT_PROJECTION_PUSHDOWN. Default on, as a break-glass off-switch, since
+        // releases rather than patches are shipped.
+        public static final String VARIANT_PROJECTION_PUSHDOWN_WITH_DELETES = "variantProjectionPushdownWithDeletes";
+        public static final boolean DEFAULT_VARIANT_PROJECTION_PUSHDOWN_WITH_DELETES = true;
+
+        // The readers of a scan on a node share the delete files they load rather than each loading every delete file
+        // of every data file it reads. Sharing makes one reader's loaded rows visible to the others, which is where a
+        // defect would turn into wrong answers, so it gets a break-glass off-switch that returns to per-file loading.
+        public static final String USE_DELETE_CACHE = "useDeleteCache";
+        public static final boolean DEFAULT_USE_DELETE_CACHE = true;
+
+        // Data and delete files are opened with the length their manifest records, sparing a storage request per file.
+        // A manifest that records a wrong length makes the read fail rather than return wrong rows, so this switch is
+        // for availability: it lets a table written that way be read again, asking storage for the length.
+        public static final String USE_MANIFEST_FILE_SIZES = "useManifestFileSizes";
+        public static final boolean DEFAULT_USE_MANIFEST_FILE_SIZES = true;
+
+        static {
+            if (DEFAULT_VARIANT_DEPTH < 1 || DEFAULT_VARIANT_DEPTH > MAX_VARIANT_DEPTH) {
+                throw new IllegalStateException(
+                        "DEFAULT_VARIANT_DEPTH must be in [1, MAX_VARIANT_DEPTH], found DEFAULT_VARIANT_DEPTH="
+                                + DEFAULT_VARIANT_DEPTH + ", MAX_VARIANT_DEPTH=" + MAX_VARIANT_DEPTH);
+            }
+        }
     }
 
     public static class ParquetOptions {
@@ -451,6 +520,29 @@ public class ExternalDataConstants {
          */
         public static final String DECIMAL_TO_DOUBLE = "decimal-to-double";
         public static final String HADOOP_DECIMAL_TO_DOUBLE = ASTERIX_HADOOP_PREFIX + DECIMAL_TO_DOUBLE;
+        /**
+         * Read a temporal value as the number the column stores rather than as a temporal type: a timestamp as
+         * its {@link ATypeTag#BIGINT} epoch value in the column's own unit, a date as days since the epoch, a
+         * time as its unit since midnight. The reader otherwise narrows a timestamp to milliseconds, so these
+         * are how a microsecond or nanosecond column keeps the precision it holds.
+         * <p>
+         * A value read this way is a plain number, so the timezone option does not apply to it -- there is no
+         * zone in an epoch value to shift out of.
+         * Default: false
+         */
+        public static final String TIMESTAMP_AS_LONG = "timestamp-to-long";
+        public static final String HADOOP_TIMESTAMP_AS_LONG = ASTERIX_HADOOP_PREFIX + TIMESTAMP_AS_LONG;
+        public static final boolean DEFAULT_TIMESTAMP_AS_LONG = false;
+
+        /** @see #TIMESTAMP_AS_LONG */
+        public static final String DATE_AS_INT = "date-to-int";
+        public static final String HADOOP_DATE_AS_INT = ASTERIX_HADOOP_PREFIX + DATE_AS_INT;
+        public static final boolean DEFAULT_DATE_AS_INT = false;
+
+        /** @see #TIMESTAMP_AS_LONG */
+        public static final String TIME_AS_INT = "time-to-int";
+        public static final String HADOOP_TIME_AS_INT = ASTERIX_HADOOP_PREFIX + TIME_AS_INT;
+        public static final boolean DEFAULT_TIME_AS_INT = false;
 
         /**
          * Time Zone ID to convert UTC time and timestamp {@link ATypeTag#TIME} and {@link ATypeTag#DATETIME}
@@ -458,7 +550,16 @@ public class ExternalDataConstants {
          * Note: If a UTC adjusted time and/or timestamp exist in the parquet file, and no time zone id is provided,
          * then we will return the UTC time and issue a warning about that.
          */
-        public static final String TIMEZONE = "timezone";
-        public static final String HADOOP_TIMEZONE = ASTERIX_HADOOP_PREFIX + TIMEZONE;
+        public static final String HADOOP_TIMEZONE = ASTERIX_HADOOP_PREFIX + KEY_TIMEZONE;
+
+        /**
+         * Push a query's predicate into the reader, so row groups whose statistics rule them out are skipped
+         * instead of decoded. It never changes an answer -- the engine evaluates the predicate itself either way
+         * -- so this exists to be turned off when a scan is slower with it, which a file whose statistics exclude
+         * nothing can be, since the predicate is then evaluated per row group for no benefit.
+         * Default: true
+         */
+        public static final String ROW_GROUP_FILTER = "rowGroupFilter";
+        public static final boolean DEFAULT_ROW_GROUP_FILTER = true;
     }
 }

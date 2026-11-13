@@ -54,8 +54,10 @@ import org.apache.asterix.common.storage.DatasetCopyIdentifier;
 import org.apache.asterix.common.storage.DatasetResourceReference;
 import org.apache.asterix.common.storage.IIndexCheckpointManager;
 import org.apache.asterix.common.storage.IIndexCheckpointManagerProvider;
+import org.apache.asterix.common.storage.IndexCompletionMode;
 import org.apache.asterix.common.storage.ResourceReference;
 import org.apache.asterix.common.storage.ResourceStorageStats;
+import org.apache.asterix.common.utils.Partitions;
 import org.apache.asterix.common.utils.StorageConstants;
 import org.apache.asterix.common.utils.StoragePathUtil;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
@@ -175,8 +177,12 @@ public class PersistentLocalResourceRepository implements ILocalResourceReposito
                 createResourceFileMask(resourceFile);
                 byte[] bytes = OBJECT_MAPPER.writeValueAsBytes(resource.toJson(persistedResourceRegistry));
                 ioManager.overwrite(resourceFile, bytes);
+                IndexCompletionMode completionMode =
+                        ((DatasetLocalResource) resource.getResource()).getCompletionMode();
+                boolean pendingCreation = completionMode == IndexCompletionMode.ON_LOAD;
                 indexCheckpointManagerProvider.get(DatasetResourceReference.of(resource)).init(
-                        UNINITIALIZED_COMPONENT_SEQ, 0, LSMComponentId.EMPTY_INDEX_LAST_COMPONENT_ID.getMaxId(), null);
+                        UNINITIALIZED_COMPONENT_SEQ, 0, LSMComponentId.EMPTY_INDEX_LAST_COMPONENT_ID.getMaxId(),
+                        pendingCreation, null);
                 deleteResourceFileMask(resourceFile);
             } catch (Exception e) {
                 cleanup(resourceFile);
@@ -251,6 +257,7 @@ public class PersistentLocalResourceRepository implements ILocalResourceReposito
         return ioManager.resolve(fileName);
     }
 
+    @Override
     public Map<Long, LocalResource> getResources(Predicate<LocalResource> filter, List<FileReference> roots)
             throws HyracksDataException {
         beforeReadAccess();
@@ -287,7 +294,7 @@ public class PersistentLocalResourceRepository implements ILocalResourceReposito
         }
     }
 
-    public Map<Long, LocalResource> getResources(Predicate<LocalResource> filter, Set<Integer> partitions)
+    public Map<Long, LocalResource> getResources(Predicate<LocalResource> filter, Partitions partitions)
             throws HyracksDataException {
         beforeReadAccess();
         try {
@@ -350,6 +357,23 @@ public class PersistentLocalResourceRepository implements ILocalResourceReposito
 
     public void invalidateResource(String relativePath) {
         resourceCache.invalidate(relativePath);
+    }
+
+    /**
+     * Invalidates any cached view of the resources of storage partition {@code partition}. Must be called when the
+     * node stops owning the partition.
+     */
+    public void invalidatePartitionResources(int partition) {
+        // write access excludes get(), which populates the cache from the resource's metadata file
+        beforeWriteAccess();
+        try {
+            resourceCache.asMap().entrySet().removeIf(entry -> {
+                DatasetLocalResource dsResource = (DatasetLocalResource) entry.getValue().getResource();
+                return dsResource.getPartition() == partition;
+            });
+        } finally {
+            afterWriteAccess();
+        }
     }
 
     public void clearResourcesCache() {
@@ -426,12 +450,12 @@ public class PersistentLocalResourceRepository implements ILocalResourceReposito
         }
     }
 
-    public Set<Integer> getAllPartitions() throws HyracksDataException {
+    public Partitions getAllPartitions() throws HyracksDataException {
         beforeReadAccess();
         try {
             return loadAndGetAllResources().values().stream().map(LocalResource::getResource)
                     .map(DatasetLocalResource.class::cast).map(DatasetLocalResource::getPartition)
-                    .collect(Collectors.toSet());
+                    .collect(Partitions.collector());
         } finally {
             afterReadAccess();
         }
@@ -478,7 +502,7 @@ public class PersistentLocalResourceRepository implements ILocalResourceReposito
     public Map<Long, LocalResource> getPartitionResources(int partition) throws HyracksDataException {
         beforeReadAccess();
         try {
-            return getResources(r -> true, Collections.singleton(partition));
+            return getResources(r -> true, Partitions.singleton(partition));
         } finally {
             afterReadAccess();
         }
@@ -558,11 +582,19 @@ public class PersistentLocalResourceRepository implements ILocalResourceReposito
         }
     }
 
+    public void cleanup(Partitions partitions) throws HyracksDataException {
+        LOGGER.info("Cleaning up indexes in partitions {}", partitions);
+        for (int partition : partitions) {
+            cleanup(partition);
+        }
+        LOGGER.info("Finished cleaning up indexes in partitions {} successfully", partitions);
+    }
+
     public void cleanup(int partition) throws HyracksDataException {
-        LOGGER.info("Cleaning up indexes in partition {}", partition);
+        LOGGER.debug("Cleaning up indexes in partition {}", partition);
         CleanupBlockingIOOperation cleanupOp = new CleanupBlockingIOOperation(partition, this, ioManager);
         datasetLifecycleManager.waitForIOAndPerform(AllDatasetsReplicationStrategy.INSTANCE, partition, cleanupOp);
-        LOGGER.info("Finished cleaning up indexes in partition {} successfully", partition);
+        LOGGER.debug("Finished cleaning up indexes in partition {} successfully", partition);
     }
 
     /**
@@ -711,7 +743,7 @@ public class PersistentLocalResourceRepository implements ILocalResourceReposito
         return null;
     }
 
-    public long getDatasetSize(DatasetCopyIdentifier datasetIdentifier, Set<Integer> nodePartitions)
+    public long getDatasetSize(DatasetCopyIdentifier datasetIdentifier, Partitions nodePartitions)
             throws HyracksDataException {
         beforeReadAccess();
         try {

@@ -34,8 +34,10 @@ import org.apache.asterix.om.typecomputer.base.IResultTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.BooleanOnlyTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.BooleanOrMissingTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.ClosedRecordConstructorResultType;
+import org.apache.asterix.om.typecomputer.impl.DoubleIfTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.InjectFailureTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.LocalAvgTypeComputer;
+import org.apache.asterix.om.typecomputer.impl.LocalCentroidTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.LocalMedianTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.LocalSingleVarStatisticsTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.NullableDoubleTypeComputer;
@@ -43,6 +45,7 @@ import org.apache.asterix.om.typecomputer.impl.OpenRecordConstructorResultType;
 import org.apache.asterix.om.typecomputer.impl.RecordAddFieldsTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.RecordMergeTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.RecordRemoveFieldsTypeComputer;
+import org.apache.asterix.om.typecomputer.impl.RecordRemoveRecursiveTypeComputer;
 import org.apache.asterix.om.typecomputer.impl.ToObjectVarStrTypeComputer;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.AUnionType;
@@ -162,10 +165,8 @@ public class TypeComputerTest {
             // Ensure the field is one of the instances of the class
             if (field.getType().equals(clazz)) {
                 LOGGER.log(Level.INFO, "Testing " + clazz.getSimpleName() + ": " + field.getName());
-
-                when(functionCallExpression.getArguments()).thenReturn(sixArgs);
-
                 instance = (IResultTypeComputer) field.get(null);
+                when(functionCallExpression.getArguments()).thenReturn(argsFor(instance, sixArgs));
                 resultType = instance.computeType(functionCallExpression, typeEnv, metadataProvider);
                 ATypeTag typeTag = resultType.getTypeTag();
 
@@ -174,6 +175,14 @@ public class TypeComputerTest {
                         && (((AUnionType) resultType).isNullableType() || ((AUnionType) resultType).isMissableType())));
             }
         }
+    }
+
+    private static List<Mutable<ILogicalExpression>> argsFor(IResultTypeComputer typeComputer,
+            List<Mutable<ILogicalExpression>> sixArgs) {
+        if (typeComputer.getClass() == DoubleIfTypeComputer.class) {
+            return sixArgs.subList(0, 2);
+        }
+        return sixArgs;
     }
 
     public static void prepare() {
@@ -188,9 +197,13 @@ public class TypeComputerTest {
         differentBehaviorFunctions.add(InjectFailureTypeComputer.class.getSimpleName());
         differentBehaviorFunctions.add(RecordAddFieldsTypeComputer.class.getSimpleName());
         differentBehaviorFunctions.add(OpenRecordConstructorResultType.class.getSimpleName());
+        differentBehaviorFunctions.add(RecordRemoveRecursiveTypeComputer.class.getSimpleName());
         differentBehaviorFunctions.add(RecordRemoveFieldsTypeComputer.class.getSimpleName());
         differentBehaviorFunctions.add(ClosedRecordConstructorResultType.class.getSimpleName());
         differentBehaviorFunctions.add(LocalAvgTypeComputer.class.getSimpleName());
+        // Same reason as LocalAvgTypeComputer: the CENTROID aggregate's local and intermediate steps emit a
+        // partial record {sum, count}, not a nullable scalar, so the nullable/missable rule does not apply.
+        differentBehaviorFunctions.add(LocalCentroidTypeComputer.class.getSimpleName());
         differentBehaviorFunctions.add(LocalMedianTypeComputer.class.getSimpleName());
         differentBehaviorFunctions.add(BooleanOnlyTypeComputer.class.getSimpleName());
         //        differentBehaviorFunctions.add("AMissingTypeComputer"); // TODO What type computer is this?

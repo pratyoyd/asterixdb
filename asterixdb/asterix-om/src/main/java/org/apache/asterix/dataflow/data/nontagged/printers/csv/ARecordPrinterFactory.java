@@ -28,9 +28,10 @@ import org.apache.asterix.om.pointables.printer.csv.APrintVisitor;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.IAType;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.MutablePair;
 import org.apache.hyracks.algebricks.data.IPrinter;
 import org.apache.hyracks.algebricks.data.IPrinterFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 
 public class ARecordPrinterFactory implements IPrinterFactory {
@@ -38,33 +39,42 @@ public class ARecordPrinterFactory implements IPrinterFactory {
     private static final long serialVersionUID = 1L;
     private final ARecordType recType;
     private final ARecordType itemType;
+    private final Map<String, String> formatConfigs;
     private final Map<String, String> configuration;
 
-    public ARecordPrinterFactory(ARecordType recType, ARecordType itemType, Map<String, String> configuration) {
+    public ARecordPrinterFactory(ARecordType recType, ARecordType itemType, Map<String, String> formatConfigs,
+            Map<String, String> configuration) {
         this.recType = recType;
         this.itemType = itemType;
+        this.formatConfigs = formatConfigs;
         this.configuration = configuration;
     }
 
     @Override
-    public IPrinter createPrinter() {
+    public IPrinter createPrinter(IEvaluatorContext context) {
+
         final PointableAllocator allocator = new PointableAllocator();
         final IAType inputType =
                 recType == null ? DefaultOpenFieldType.getDefaultOpenFieldType(ATypeTag.OBJECT) : recType;
         final IVisitablePointable recAccessor = allocator.allocateRecordValue(inputType);
-        final APrintVisitor printVisitor = new APrintVisitor(itemType, configuration);
-        final Pair<PrintStream, ATypeTag> arg = new Pair<>(null, null);
+        final APrintVisitor printVisitor = new APrintVisitor(context, itemType, formatConfigs, configuration);
+        final MutablePair<PrintStream, ATypeTag> arg = new MutablePair<>(null, null);
 
         return new IPrinter() {
             @Override
             public void init() {
-                arg.second = inputType.getTypeTag();
+                arg.setRight(inputType.getTypeTag());
+            }
+
+            @Override
+            public void initNewBatch() {
+                printVisitor.setFirstRecord(true);
             }
 
             @Override
             public void print(byte[] b, int start, int l, PrintStream ps) throws HyracksDataException {
                 recAccessor.set(b, start, l);
-                arg.first = ps;
+                arg.setLeft(ps);
                 recAccessor.accept(printVisitor, arg);
             }
         };

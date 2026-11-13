@@ -1,0 +1,848 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.asterix.runtime.operators.kmeans;
+
+import java.io.DataOutput;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.exceptions.RuntimeDataException;
+import org.apache.asterix.common.vector.VectorSimilarityMetric;
+import org.apache.asterix.runtime.utils.VectorDistanceFunctionFactory;
+import org.apache.hyracks.api.comm.VSizeFrame;
+import org.apache.hyracks.api.context.IHyracksTaskContext;
+import org.apache.hyracks.api.dataflow.TaskId;
+import org.apache.hyracks.api.dataflow.value.IBinaryComparatorFactory;
+import org.apache.hyracks.api.dataflow.value.ISerializerDeserializer;
+import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
+import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.job.JobId;
+import org.apache.hyracks.data.std.accessors.IntegerBinaryComparatorFactory;
+import org.apache.hyracks.data.std.primitive.DoublePointable;
+import org.apache.hyracks.data.std.primitive.IntegerPointable;
+import org.apache.hyracks.dataflow.common.comm.io.ArrayTupleBuilder;
+import org.apache.hyracks.dataflow.common.comm.io.FrameTupleAccessor;
+import org.apache.hyracks.dataflow.common.comm.io.FrameTupleAppender;
+import org.apache.hyracks.dataflow.common.data.accessors.FrameTupleReference;
+import org.apache.hyracks.dataflow.common.data.marshalling.DoubleSerializerDeserializer;
+import org.apache.hyracks.dataflow.common.data.marshalling.IntegerSerializerDeserializer;
+import org.apache.hyracks.dataflow.common.io.GeneratedRunFileReader;
+import org.apache.hyracks.dataflow.common.io.RunFileReader;
+import org.apache.hyracks.dataflow.std.misc.MaterializerTaskState;
+import org.apache.hyracks.dataflow.std.sort.AbstractSortRunGenerator;
+import org.apache.hyracks.storage.am.vector.api.IVTreeDistanceFunction;
+
+/**
+ * CLUSTER BY k-means‖ loops: shared wire formats and raw-vector (de)serialization for the loops' internal
+ * edges and run files. A vector field is its {@code dim} components written back-to-back as raw doubles,
+ * which {@link #readRawVector} reads by byte offset and {@link #writeRawVector} writes. The vector column's
+ * declared {@link ISerializerDeserializer} in the descriptors below is therefore a placeholder and is never
+ * invoked.
+ */
+public final class KMeansLoopIO {
+
+    private KMeansLoopIO() {
+    }
+
+    /** A draw frame carries a real drawn vector; an end-of-round marker closes a round's draw stream. */
+    public static final int KIND_DRAW = 0;
+    public static final int KIND_END = 1;
+
+    /** PhiMerge -> Sample: {@code {round:int, value:double}} (the reduced phi). */
+    public static final RecordDescriptor SCALAR_RD = new RecordDescriptor(new ISerializerDeserializer[] {
+            IntegerSerializerDeserializer.INSTANCE, DoubleSerializerDeserializer.INSTANCE });
+
+    /**
+     * Cost -> PhiMerge: {@code {round:int, part:int, localSigma:double}}. The partition id lets PhiMerge
+     * reduce in a fixed order; since floating-point addition is not associative, an arrival-order sum could
+     * change phi and with it the draw probabilities and the clustering.
+     */
+    public static final RecordDescriptor SIGMA_RD =
+            new RecordDescriptor(new ISerializerDeserializer[] { IntegerSerializerDeserializer.INSTANCE,
+                    IntegerSerializerDeserializer.INSTANCE, DoubleSerializerDeserializer.INSTANCE });
+
+    /**
+     * Sample -> PoolMerge and PoolMerge -> Release: {@code {round:int, part:int, seq:int, kind:int, vec:rawDoubles}}.
+     * For {@link #KIND_END} markers, {@code part} is the finishing partition and {@code seq}/{@code vec} are ignored.
+     */
+    public static final RecordDescriptor DRAW_RD = new RecordDescriptor(new ISerializerDeserializer[] {
+            IntegerSerializerDeserializer.INSTANCE, IntegerSerializerDeserializer.INSTANCE,
+            IntegerSerializerDeserializer.INSTANCE, IntegerSerializerDeserializer.INSTANCE,
+            DoubleSerializerDeserializer.INSTANCE /* placeholder: raw double[] read by offset */ });
+
+    /**
+     * Lloyd loop, Controller -&gt; CentroidMerge:
+     * {@code {iter:int, part:int, seq:int, kind:int, count:double, sum:rawDoubles}}: centroid {@code seq}'s local
+     * member count and component-wise sum. {@link #KIND_END} closes a partition's iteration, no payload.
+     */
+    public static final RecordDescriptor PARTIAL_RD =
+            new RecordDescriptor(new ISerializerDeserializer[] { IntegerSerializerDeserializer.INSTANCE,
+                    IntegerSerializerDeserializer.INSTANCE, IntegerSerializerDeserializer.INSTANCE,
+                    IntegerSerializerDeserializer.INSTANCE, DoubleSerializerDeserializer.INSTANCE,
+                    DoubleSerializerDeserializer.INSTANCE /* placeholder: raw double[] read by offset */ });
+
+    /** The pool run file: one raw-double vector per tuple, {@code {vec:rawDoubles}}. */
+    public static final RecordDescriptor POOL_RD = new RecordDescriptor(new ISerializerDeserializer[] {
+            DoubleSerializerDeserializer.INSTANCE /* placeholder: raw double[] read by offset */ });
+
+    /**
+     * RECLUSTER's internal weigh-partial layout: {@code {seq:int, part:int, count:double, sum:rawDoubles}}.
+     * The external sort keys on tuple fields, so it cannot sort the packed single-field form the operator
+     * edge carries; RECLUSTER therefore re-emits partials in this flat shape for a sort it owns.
+     */
+    public static final RecordDescriptor PARTIAL_FLAT_RD =
+            new RecordDescriptor(new ISerializerDeserializer[] { IntegerSerializerDeserializer.INSTANCE,
+                    IntegerSerializerDeserializer.INSTANCE, DoubleSerializerDeserializer.INSTANCE,
+                    DoubleSerializerDeserializer.INSTANCE /* placeholder: raw double[] read by offset */ });
+
+    /** Sort keys for {@link #PARTIAL_RD}: (seq, part) — by centroid, then by partition, never by arrival. */
+    public static final int[] PARTIAL_SORT_FIELDS = { 2, 1 };
+
+    public static final IBinaryComparatorFactory[] PARTIAL_SORT_COMPARATORS =
+            { IntegerBinaryComparatorFactory.INSTANCE, IntegerBinaryComparatorFactory.INSTANCE };
+
+    /**
+     * Sort keys for {@link #DRAW_RD}: (seq, part), where {@code seq} is the drawing Sample's content hash of
+     * the vector. Content-first ordering makes the pool layout a property of the drawn set alone, and
+     * {@code part} only breaks ties between equal hashes, whose candidates are interchangeable.
+     */
+    public static final int[] DRAW_SORT_FIELDS = { 2, 1 };
+
+    public static final IBinaryComparatorFactory[] DRAW_SORT_COMPARATORS =
+            { IntegerBinaryComparatorFactory.INSTANCE, IntegerBinaryComparatorFactory.INSTANCE };
+
+    /** Sort keys for {@link #PARTIAL_FLAT_RD}: (seq, part) — groups every partition's report per candidate. */
+    public static final int[] PARTIAL_FLAT_SORT_FIELDS = { 0, 1 };
+
+    public static final IBinaryComparatorFactory[] PARTIAL_FLAT_COMPARATORS =
+            { IntegerBinaryComparatorFactory.INSTANCE, IntegerBinaryComparatorFactory.INSTANCE };
+
+    /** Appends {@code v}'s components as one raw-double field (call after the tuple's earlier fields). */
+    public static void writeRawVector(ArrayTupleBuilder tb, double[] v) throws HyracksDataException {
+        try {
+            DataOutput out = tb.getDataOutput();
+            for (double d : v) {
+                out.writeDouble(d);
+            }
+            tb.addFieldEndOffset();
+        } catch (IOException e) {
+            throw HyracksDataException.create(e);
+        }
+    }
+
+    /** Decodes a raw-double vector field ({@code length} bytes = {@code length/8} components) at {@code start}. */
+    public static double[] readRawVector(byte[] data, int start, int length) {
+        int dim = length / Double.BYTES;
+        double[] v = new double[dim];
+        for (int i = 0; i < dim; i++) {
+            v[i] = DoublePointable.getDouble(data, start + i * Double.BYTES);
+        }
+        return v;
+    }
+
+    /** Sink for {@link #streamRawVectors}: receives each stored vector, may throw on cancellation/error. */
+    @FunctionalInterface
+    public interface RawVectorConsumer {
+        void accept(double[] vec) throws HyracksDataException;
+    }
+
+    /**
+     * Streams every raw-double vector out of a {@link MaterializerTaskState} run file (pool or resident vectors,
+     * both {@link #POOL_RD}) via a fresh reader — repeatable, non-deleting, one frame buffered at a time. Polls
+     * the task-thread interrupt per frame so a cancelled job's pure-CPU scan aborts promptly.
+     */
+    public static void streamRawVectors(MaterializerTaskState state, IHyracksTaskContext ctx, RawVectorConsumer sink)
+            throws HyracksDataException {
+        FrameTupleAccessor accessor = new FrameTupleAccessor(POOL_RD);
+        FrameTupleReference tuple = new FrameTupleReference();
+        VSizeFrame frame = new VSizeFrame(ctx);
+        RunFileReader reader = state.createReader();
+        reader.open();
+        try {
+            while (reader.nextFrame(frame)) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw HyracksDataException.create(new InterruptedException());
+                }
+                accessor.reset(frame.getBuffer());
+                int tupleCount = accessor.getTupleCount();
+                for (int i = 0; i < tupleCount; i++) {
+                    tuple.reset(accessor, i);
+                    sink.accept(readRawVector(tuple.getFieldData(0), tuple.getFieldStart(0), tuple.getFieldLength(0)));
+                }
+            }
+        } finally {
+            reader.close();
+        }
+    }
+
+    /**
+     * Hashes the contents of a vector into 64 bits, over each component's bit pattern
+     * ({@link Double#doubleToLongBits}). Equal vectors hash equally on any partition or position, so
+     * {@link #uniformDraw} can use the hash as randomness that is independent of the partition layout, and SAMPLE
+     * can order its draws by it so the pool's layout is a property of the drawn set alone.
+     */
+    public static long fingerprint(double[] v) {
+        long h = mix64(0x9E3779B97F4A7C15L ^ v.length);
+        for (double d : v) {
+            h = mix64(h ^ Double.doubleToLongBits(d));
+        }
+        return h;
+    }
+
+    /** SplitMix64's finalizer: a 64-bit bijection with full avalanche. */
+    public static long mix64(long z) {
+        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+        return z ^ (z >>> 31);
+    }
+
+    /**
+     * Returns the random number in {@code [0, 1)} that SAMPLE compares against the draw probability
+     * {@code l * d^2(x, pool) / phi} of one row in one round.
+     * <p>
+     * The number is computed from the vector hash ({@link #fingerprint}), the query seed, the round and
+     * {@code copy}, the number of rows with this same vector that the partition's scan met before this one. It does
+     * not depend on the partition the row is in or on its position in the run file, so a vector is drawn or not
+     * drawn on every topology and in every arrival order. Duplicate vectors get different numbers -- copy 0, copy 1,
+     * ... -- so each row is its own trial: a number from the hash alone made a point duplicated c times one trial
+     * instead of c, and it could then sit out every round.
+     */
+    public static double uniformDraw(long fingerprint, long seedBase, int round, int copy) {
+        long z = mix64(fingerprint ^ mix64(seedBase * 0x9E3779B97F4A7C15L + round) ^ mix64(copy * 0xBF58476D1CE4E5B9L));
+        return (z >>> 11) * 0x1.0p-53;
+    }
+
+    /** Bytes per column entry: the nearest distance, then the index of the pool member it was nearest to. */
+    public static final int SCORE_ENTRY_BYTES = Double.BYTES + Integer.BYTES;
+
+    /** Entries packed into one tuple, so per-tuple framing does not dominate a {@link #SCORE_ENTRY_BYTES} payload. */
+    private static final int SCORE_ENTRIES_PER_TUPLE = 1024;
+
+    /** One packed field of {@code (nearest:double, index:int)} entries; read by offset, like the vector layouts. */
+    public static final RecordDescriptor SCORE_RD = new RecordDescriptor(
+            new ISerializerDeserializer[] { DoubleSerializerDeserializer.INSTANCE /* placeholder: packed */ });
+
+    /**
+     * Writes the per-vector score column: for each resident vector, in run-file order, the distance to its
+     * nearest pool member and that member's index.
+     * <p>
+     * COST computes these while scanning anyway, so recording them is nearly free -- and it lets SAMPLE, which
+     * scores against the same pool in the same round, do no distance work and never open the pool at all.
+     * Alignment needs no key because both sides are strictly sequential: entry {@code i} is vector {@code i}.
+     */
+    public static final class ScoreColumnWriter {
+        private final MaterializerTaskState state;
+        private final VSizeFrame frame;
+        private final FrameTupleAppender appender;
+        private final ArrayTupleBuilder tb = new ArrayTupleBuilder(1);
+
+        public ScoreColumnWriter(MaterializerTaskState state, IHyracksTaskContext ctx) throws HyracksDataException {
+            this.state = state;
+            this.frame = new VSizeFrame(ctx);
+            this.appender = new FrameTupleAppender(frame);
+        }
+
+        /** Appends the first {@code count} entries of a finished block. */
+        public void append(double[] nearest, int[] index, int count) throws HyracksDataException {
+            for (int from = 0; from < count; from += SCORE_ENTRIES_PER_TUPLE) {
+                int to = Math.min(count, from + SCORE_ENTRIES_PER_TUPLE);
+                tb.reset();
+                try {
+                    DataOutput out = tb.getDataOutput();
+                    for (int i = from; i < to; i++) {
+                        out.writeDouble(nearest[i]);
+                        out.writeInt(index[i]);
+                    }
+                } catch (IOException e) {
+                    throw HyracksDataException.create(e);
+                }
+                tb.addFieldEndOffset();
+                if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
+                    flushFrame();
+                    if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
+                        throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE,
+                                "a score column chunk is too large to fit in a frame");
+                    }
+                }
+            }
+        }
+
+        /** Pushes the trailing partial frame; the column is only complete for readers after this. */
+        public void finish() throws HyracksDataException {
+            if (appender.getTupleCount() > 0) {
+                flushFrame();
+            }
+        }
+
+        private void flushFrame() throws HyracksDataException {
+            ByteBuffer buffer = frame.getBuffer();
+            buffer.position(0);
+            buffer.limit(buffer.capacity());
+            state.appendFrame(buffer);
+            appender.reset(frame, true);
+        }
+    }
+
+    /**
+     * Sequential reader over a {@link ScoreColumnWriter} column, advanced one entry per vector. Running off
+     * the end means the column and the vector run file disagree on length, a broken invariant, and raises.
+     */
+    public static final class ScoreColumnReader implements AutoCloseable {
+        private final FrameTupleAccessor accessor = new FrameTupleAccessor(SCORE_RD);
+        private final FrameTupleReference tuple = new FrameTupleReference();
+        private final VSizeFrame frame;
+        private final RunFileReader reader;
+        private int tupleIndex = -1;
+        private int tupleCount;
+        private byte[] data;
+        private int entryStart;
+        private int entryIndex;
+        private int entryCount;
+        private double nearest;
+        private int index;
+
+        public ScoreColumnReader(MaterializerTaskState state, IHyracksTaskContext ctx) throws HyracksDataException {
+            this.frame = new VSizeFrame(ctx);
+            this.reader = state.createReader();
+            reader.open();
+        }
+
+        /** Moves to the next entry; {@link #nearest()} and {@link #index()} then describe it. */
+        public void advance() throws HyracksDataException {
+            while (entryIndex == entryCount) {
+                if (++tupleIndex >= tupleCount) {
+                    if (!reader.nextFrame(frame)) {
+                        throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE,
+                                "the score column is shorter than the vectors it scores");
+                    }
+                    accessor.reset(frame.getBuffer());
+                    tupleCount = accessor.getTupleCount();
+                    tupleIndex = 0;
+                    if (tupleCount == 0) {
+                        tupleIndex = tupleCount; // an empty frame: keep pulling
+                        continue;
+                    }
+                }
+                tuple.reset(accessor, tupleIndex);
+                data = tuple.getFieldData(0);
+                entryStart = tuple.getFieldStart(0);
+                entryCount = tuple.getFieldLength(0) / SCORE_ENTRY_BYTES;
+                entryIndex = 0;
+            }
+            int at = entryStart + entryIndex * SCORE_ENTRY_BYTES;
+            nearest = DoublePointable.getDouble(data, at);
+            index = IntegerPointable.getInteger(data, at + Double.BYTES);
+            entryIndex++;
+        }
+
+        public double nearest() {
+            return nearest;
+        }
+
+        public int index() {
+            return index;
+        }
+
+        @Override
+        public void close() throws HyracksDataException {
+            reader.close();
+        }
+    }
+
+    /**
+     * Writes the payload column: each resident row's other columns, byte for byte, aligned with the vector run
+     * file (entry {@code i} is vector {@code i}), for the Lloyd loop to emit with the row's label.
+     */
+    public static final class PayloadColumnWriter {
+        private final MaterializerTaskState state;
+        private final VSizeFrame frame;
+        private final FrameTupleAppender appender;
+        private final ArrayTupleBuilder tb;
+        private final int[] columns;
+
+        public PayloadColumnWriter(MaterializerTaskState state, IHyracksTaskContext ctx, int[] columns)
+                throws HyracksDataException {
+            this.state = state;
+            this.frame = new VSizeFrame(ctx);
+            this.appender = new FrameTupleAppender(frame);
+            this.tb = new ArrayTupleBuilder(columns.length);
+            this.columns = columns;
+        }
+
+        /** Appends tuple {@code tIndex}'s payload columns. */
+        public void append(FrameTupleAccessor accessor, int tIndex) throws HyracksDataException {
+            tb.reset();
+            for (int column : columns) {
+                tb.addField(accessor, tIndex, column);
+            }
+            if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
+                flushFrame();
+                if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
+                    throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE,
+                            "a row's payload is too large to fit in a frame");
+                }
+            }
+        }
+
+        /** Flushes and closes the writer; readers open their own handles. */
+        public void finish() throws HyracksDataException {
+            if (appender.getTupleCount() > 0) {
+                flushFrame();
+            }
+            state.close();
+        }
+
+        private void flushFrame() throws HyracksDataException {
+            ByteBuffer buffer = frame.getBuffer();
+            buffer.position(0);
+            buffer.limit(buffer.capacity());
+            state.appendFrame(buffer);
+            appender.reset(frame, true);
+        }
+    }
+
+    /**
+     * Sequential reader over a {@link PayloadColumnWriter} column, one entry per vector.
+     */
+    public static final class PayloadColumnReader implements AutoCloseable {
+        private final FrameTupleAccessor accessor;
+        private final VSizeFrame frame;
+        private final RunFileReader reader;
+        private final int fieldCount;
+        private int tupleIndex = -1;
+        private int tupleCount;
+
+        public PayloadColumnReader(MaterializerTaskState state, IHyracksTaskContext ctx, int fieldCount)
+                throws HyracksDataException {
+            this.accessor = new FrameTupleAccessor(new RecordDescriptor(new ISerializerDeserializer[fieldCount]));
+            this.fieldCount = fieldCount;
+            this.frame = new VSizeFrame(ctx);
+            this.reader = state.createReader();
+            reader.open();
+        }
+
+        public void advance() throws HyracksDataException {
+            while (++tupleIndex >= tupleCount) {
+                if (!reader.nextFrame(frame)) {
+                    throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE,
+                            "the payload column is shorter than the vectors it belongs to");
+                }
+                accessor.reset(frame.getBuffer());
+                tupleCount = accessor.getTupleCount();
+                tupleIndex = -1;
+            }
+        }
+
+        public void copyInto(ArrayTupleBuilder tb) throws HyracksDataException {
+            for (int f = 0; f < fieldCount; f++) {
+                tb.addField(accessor, tupleIndex, f);
+            }
+        }
+
+        @Override
+        public void close() throws HyracksDataException {
+            reader.close();
+        }
+    }
+
+    /**
+     * Anything that can replay a sequence of raw vectors in a fixed order: a run file, or the centroid store.
+     * The scans below need only that, and the order they replay in is what makes their results reproducible.
+     */
+    @FunctionalInterface
+    public interface RawVectorSource {
+        void stream(RawVectorConsumer sink) throws HyracksDataException;
+    }
+
+    /** Adapts a materialized run file to {@link RawVectorSource}. */
+    public static RawVectorSource source(MaterializerTaskState state, IHyracksTaskContext ctx) {
+        return sink -> streamRawVectors(state, ctx, sink);
+    }
+
+    /**
+     * Deletes a run file the moment its last reader is done with it, instead of leaving it in the joblet
+     * workspace until the job ends. Closes the writer handle first. Null-safe and idempotent, so it can sit in
+     * both the success path and a {@code finally}.
+     */
+    public static void discard(MaterializerTaskState state) throws HyracksDataException {
+        if (state == null) {
+            return;
+        }
+        try {
+            state.close();
+        } finally {
+            state.deleteFile();
+        }
+    }
+
+    /**
+     * Deletes every run file a sort generated. The runs are delete-on-close readers, but a reader only deletes
+     * if it was opened, so runs a merge never reached -- because it failed part-way, or never ran -- would
+     * otherwise stay on disk until the job ends. Runs the merge already consumed are simply gone. Null-safe and
+     * idempotent; never throws, so it cannot mask the error that sent a caller to its {@code finally}.
+     */
+    public static void discardRuns(AbstractSortRunGenerator sort) {
+        if (sort == null) {
+            return;
+        }
+        List<GeneratedRunFileReader> runs = sort.getRuns();
+        for (GeneratedRunFileReader run : runs) {
+            try {
+                run.close();
+            } catch (HyracksDataException e) {
+                // Still delete below: a handle that would not close must not keep the file.
+            }
+            run.getFile().delete();
+        }
+        runs.clear();
+    }
+
+    /**
+     * An ordered sequence of vectors that stays in the heap while it fits the frame budget and moves to a run
+     * file when it does not.
+     * <p>
+     * RECLUSTER's candidate set is {@code O(k * dim)} and weighted k-means++ rereads it once per centroid it
+     * picks. Holding it grows the heap with k; always spilling it would charge a set that comfortably fits k
+     * passes of I/O. The budget decides instead: under it nothing is written and reads are list indexing, over
+     * it the heap holds one frame and reads stream.
+     * <p>
+     * Append-then-read: every vector is added before the first read. Reads are sequential
+     * ({@link #stream}); {@link #get} fetches one just-picked vector by scanning with an early exit.
+     */
+    public static final class VectorList implements RawVectorSource, AutoCloseable {
+        private final IHyracksTaskContext ctx;
+        private final JobId jobId;
+        private final TaskId taskId;
+        private final long byteBudget;
+        private final ArrayTupleBuilder tb = new ArrayTupleBuilder(1);
+        private List<double[]> resident = new ArrayList<>();
+        private long residentBytes;
+        private MaterializerTaskState spilled;
+        private VSizeFrame frame;
+        private FrameTupleAppender appender;
+        private int size;
+
+        public VectorList(IHyracksTaskContext ctx, JobId jobId, TaskId taskId, int framesLimit) {
+            this.ctx = ctx;
+            this.jobId = jobId;
+            this.taskId = taskId;
+            this.byteBudget = (long) Math.max(1, framesLimit) * ctx.getInitialFrameSize();
+        }
+
+        public void add(double[] vector) throws HyracksDataException {
+            if (spilled == null) {
+                resident.add(vector);
+                residentBytes += (long) vector.length * Double.BYTES + PER_VECTOR_OVERHEAD;
+                if (residentBytes > byteBudget) {
+                    spillResident();
+                }
+            } else {
+                append(vector);
+            }
+            size++;
+        }
+
+        public int size() {
+            return size;
+        }
+
+        /** True while nothing has been written; the common case, and the one that costs no I/O. */
+        public boolean isResident() {
+            return spilled == null;
+        }
+
+        /** The vector at {@code index}. A scan with an early exit once spilled -- used once per round. */
+        public double[] get(int index) throws HyracksDataException {
+            if (spilled == null) {
+                return resident.get(index);
+            }
+            final double[][] found = new double[1][];
+            final int[] at = { 0 };
+            streamRawVectors(spilled, ctx, v -> {
+                if (at[0]++ == index) {
+                    found[0] = v;
+                }
+            });
+            if (found[0] == null) {
+                throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE,
+                        "vector " + index + " is past the end of a list of " + size);
+            }
+            return found[0];
+        }
+
+        @Override
+        public void stream(RawVectorConsumer sink) throws HyracksDataException {
+            if (spilled == null) {
+                for (double[] v : resident) {
+                    sink.accept(v);
+                }
+            } else {
+                streamRawVectors(spilled, ctx, sink);
+            }
+        }
+
+        @Override
+        public void close() throws HyracksDataException {
+            resident = null;
+            if (spilled != null) {
+                spilled.close();
+                spilled.deleteFile();
+                spilled = null;
+            }
+        }
+
+        /** Crossing the budget: write out what is held, then keep appending. */
+        private void spillResident() throws HyracksDataException {
+            spilled = new MaterializerTaskState(jobId, taskId);
+            spilled.open(ctx);
+            frame = new VSizeFrame(ctx);
+            appender = new FrameTupleAppender(frame);
+            for (double[] v : resident) {
+                append(v);
+            }
+            resident = new ArrayList<>();
+            residentBytes = 0;
+        }
+
+        private void append(double[] vector) throws HyracksDataException {
+            tb.reset();
+            writeRawVector(tb, vector);
+            if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
+                flushFrame();
+                if (!appender.append(tb.getFieldEndOffsets(), tb.getByteArray(), 0, tb.getSize())) {
+                    throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE, "a vector is too large for a frame");
+                }
+            }
+        }
+
+        private void flushFrame() throws HyracksDataException {
+            ByteBuffer buffer = frame.getBuffer();
+            buffer.position(0);
+            buffer.limit(buffer.capacity());
+            spilled.appendFrame(buffer);
+            appender.reset(frame, true);
+        }
+
+        /** Pushes the trailing partial frame. Must be called once adding is done, before any read. */
+        public void seal() throws HyracksDataException {
+            if (spilled != null && appender.getTupleCount() > 0) {
+                flushFrame();
+            }
+        }
+    }
+
+    /** Receives one non-empty accumulator slot: its index, how many vectors landed on it, and their sum. */
+    @FunctionalInterface
+    public interface WeighedSlotConsumer {
+        void accept(int index, long count, double[] sum) throws HyracksDataException;
+    }
+
+    /**
+     * Reduces vectors onto {@code slotCount} accumulator slots while holding at most {@code window} of them.
+     * <p>
+     * A slot is written at whichever index a vector proved nearest to, so the writes are random and there is
+     * no side to stream. The precomputed score column lets the slot range be swept: each pass admits only the
+     * vectors whose nearest index falls in the current window, one sequential read, {@code window} sums held.
+     * <p>
+     * The window is a memory bound, not a semantic one. Slots reach the sink in ascending index order and each
+     * sums its vectors in run-file order, so the sums are identical bit for bit at any window; a window of at
+     * least {@code slotCount} simply does it in one pass.
+     */
+    public static void accumulateInWindows(MaterializerTaskState vectorState, MaterializerTaskState scoreState,
+            IHyracksTaskContext ctx, int slotCount, int window, WeighedSlotConsumer sink) throws HyracksDataException {
+        accumulateInWindows(source(vectorState, ctx), scoreState, ctx, slotCount, window, sink);
+    }
+
+    /** As above, over any replayable vector source. */
+    public static void accumulateInWindows(RawVectorSource vectors, MaterializerTaskState scoreState,
+            IHyracksTaskContext ctx, int slotCount, int window, WeighedSlotConsumer sink) throws HyracksDataException {
+        if (slotCount <= 0) {
+            return;
+        }
+        int span = Math.max(1, window);
+        for (int start = 0; start < slotCount; start += span) {
+            final int from = start;
+            final int to = Math.min(slotCount, start + span);
+            final long[] counts = new long[to - from];
+            final double[][] sums = new double[to - from][];
+            try (ScoreColumnReader scores = new ScoreColumnReader(scoreState, ctx)) {
+                vectors.stream(vec -> {
+                    scores.advance();
+                    int nearestIndex = scores.index();
+                    // Outside this window, or unassigned (-1): another pass owns it, or no pass does.
+                    if (nearestIndex < from || nearestIndex >= to || Double.isNaN(scores.nearest())) {
+                        return;
+                    }
+                    int slot = nearestIndex - from;
+                    counts[slot]++;
+                    double[] sum = sums[slot];
+                    if (sum == null) {
+                        sum = new double[vec.length];
+                        sums[slot] = sum;
+                    }
+                    if (vec.length != sum.length) {
+                        // Every vector was decoded at the declared dimension, so a mismatch here is a corrupt
+                        // frame; summing a prefix would be a silently wrong centroid.
+                        throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE,
+                                "a vector is " + vec.length + " wide where its accumulator is " + sum.length);
+                    }
+                    for (int d = 0; d < sum.length; d++) {
+                        sum[d] += vec[d];
+                    }
+                });
+            }
+            for (int i = 0; i < counts.length; i++) {
+                if (counts[i] > 0) {
+                    sink.accept(from + i, counts[i], sums[i]);
+                }
+            }
+        }
+    }
+
+    /** The distance a stage measures with, built the way the vector index builds its own. */
+    public static IVTreeDistanceFunction distanceFunction(VectorSimilarityMetric metric) throws HyracksDataException {
+        return new VectorDistanceFunctionFactory(metric).createDistanceFunction();
+    }
+
+    /**
+     * The centroid of a cluster whose members sum to {@code sum}: for squared Euclidean, the arithmetic mean,
+     * the point minimizing total distance to the members.
+     *
+     * @param sum    component-wise sum of the cluster's members; not modified
+     * @param weight how many members it holds, at least one
+     */
+    public static double[] centroidOf(double[] sum, long weight, VectorSimilarityMetric metric) {
+        double[] centroid = new double[sum.length];
+        for (int d = 0; d < centroid.length; d++) {
+            centroid[d] = sum[d] / weight;
+        }
+        return centroid;
+    }
+
+    /** Receives one finished block of {@link #streamScoredAgainstPool}: the vectors and their nearest pool member. */
+    @FunctionalInterface
+    public interface ScoredBlockConsumer {
+        void accept(double[][] vectors, int count, double[] nearestDistance, int[] nearestIndex)
+                throws HyracksDataException;
+    }
+
+    /**
+     * Scores every resident vector against the candidate pool without holding the pool in the heap: a block
+     * of vectors is held with a running nearest distance per slot, the pool streams past it, and the block's
+     * minima are final once the pool is exhausted. The heap is bounded by the frame budget, at the price of
+     * {@code ceil(N / B)} sequential passes over the pool; the distance-computation count is unchanged.
+     * <p>
+     * Order is exact: vectors reach the sink in run-file order, the pool streams in run-file order, and a
+     * strict {@code <} resolves ties to the first pool member, so the output is bit-identical at every block
+     * size.
+     */
+    public static void streamScoredAgainstPool(MaterializerTaskState vectorState, MaterializerTaskState poolState,
+            IHyracksTaskContext ctx, int framesLimit, IVTreeDistanceFunction distanceFn, ScoredBlockConsumer sink)
+            throws HyracksDataException {
+        streamScoredAgainstPool(source(vectorState, ctx), source(poolState, ctx), ctx, framesLimit, distanceFn, sink);
+    }
+
+    /** As above, over any replayable sources; the Lloyd loop passes its centroid store as the pool. */
+    public static void streamScoredAgainstPool(RawVectorSource vectors, RawVectorSource pool, IHyracksTaskContext ctx,
+            int framesLimit, IVTreeDistanceFunction distanceFn, ScoredBlockConsumer sink) throws HyracksDataException {
+        BlockScan scan = new BlockScan(pool, ctx, framesLimit, distanceFn, sink);
+        vectors.stream(scan::add);
+        scan.flush(); // the final short block
+    }
+
+    /** Accumulates vectors into a block and scores the block against the pool once it is full. */
+    private static final class BlockScan {
+        private final RawVectorSource pool;
+        private final IHyracksTaskContext ctx;
+        private final int framesLimit;
+        private final IVTreeDistanceFunction distanceFn;
+        private final ScoredBlockConsumer sink;
+        private double[][] block;
+        private double[] nearest;
+        private int[] nearestIndex;
+        private int count;
+
+        private BlockScan(RawVectorSource pool, IHyracksTaskContext ctx, int framesLimit,
+                IVTreeDistanceFunction distanceFn, ScoredBlockConsumer sink) {
+            this.pool = pool;
+            this.ctx = ctx;
+            this.framesLimit = framesLimit;
+            this.distanceFn = distanceFn;
+            this.sink = sink;
+        }
+
+        private void add(double[] vec) throws HyracksDataException {
+            if (block == null) {
+                // The width is only known once a vector has been read, and T6 guarantees every vector in the run
+                // file shares it, so sizing off the first one sizes the whole scan.
+                int capacity = blockCapacity(ctx, framesLimit, vec.length);
+                block = new double[capacity][];
+                nearest = new double[capacity];
+                nearestIndex = new int[capacity];
+            }
+            block[count++] = vec;
+            if (count == block.length) {
+                flush();
+            }
+        }
+
+        private void flush() throws HyracksDataException {
+            if (count == 0) {
+                return;
+            }
+            final int n = count;
+            for (int i = 0; i < n; i++) {
+                nearest[i] = Double.POSITIVE_INFINITY;
+                nearestIndex[i] = -1;
+            }
+            final int[] poolIndex = { 0 };
+            pool.stream(candidate -> {
+                int c = poolIndex[0]++;
+                for (int i = 0; i < n; i++) {
+                    double d = distanceFn.apply(block[i], candidate);
+                    // Strict <: ties resolve to the first pool member, as in the resident form.
+                    if (d < nearest[i]) {
+                        nearest[i] = d;
+                        nearestIndex[i] = c;
+                    }
+                }
+            });
+            count = 0;
+            sink.accept(block, n, nearest, nearestIndex);
+            Arrays.fill(block, 0, n, null); // drop the block's vectors before the next one is filled
+        }
+    }
+
+    /** Per-slot cost besides the doubles: array header (16) + reference (8) + a {@code double} + an {@code int}. */
+    private static final int PER_VECTOR_OVERHEAD = 16 + 8 + Double.BYTES + Integer.BYTES;
+
+    /**
+     * How many vectors fit the block budget, counting a slot's full heap cost (doubles, array header and
+     * reference, the two per-slot scoring scalars). At least one, so any width makes progress.
+     */
+    public static int blockCapacity(IHyracksTaskContext ctx, int framesLimit, int dim) {
+        long perVector = (long) dim * Double.BYTES + PER_VECTOR_OVERHEAD;
+        long capacity = (long) framesLimit * ctx.getInitialFrameSize() / perVector;
+        return (int) Math.max(1L, Math.min(capacity, Integer.MAX_VALUE));
+    }
+}

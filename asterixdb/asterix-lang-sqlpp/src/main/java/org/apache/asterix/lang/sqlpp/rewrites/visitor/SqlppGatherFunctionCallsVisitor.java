@@ -30,6 +30,7 @@ import org.apache.asterix.lang.common.expression.ListSliceExpression;
 import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.visitor.GatherFunctionCallsVisitor;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateClause;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.HavingClause;
@@ -43,11 +44,13 @@ import org.apache.asterix.lang.sqlpp.clause.SelectRegular;
 import org.apache.asterix.lang.sqlpp.clause.SelectSetOperation;
 import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.CaseExpression;
+import org.apache.asterix.lang.sqlpp.expression.ChangeExpression;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationRight;
+import org.apache.asterix.lang.sqlpp.struct.TimeTravelSpec;
 import org.apache.asterix.lang.sqlpp.visitor.base.ISqlppVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 
 public final class SqlppGatherFunctionCallsVisitor extends GatherFunctionCallsVisitor
         implements ISqlppVisitor<Void, Void> {
@@ -67,6 +70,7 @@ public final class SqlppGatherFunctionCallsVisitor extends GatherFunctionCallsVi
     @Override
     public Void visit(FromTerm fromTerm, Void arg) throws CompilationException {
         fromTerm.getLeftExpression().accept(this, arg);
+        gatherTimeTravelCalls(fromTerm.getTimeTravel(), arg);
         for (AbstractBinaryCorrelateClause correlateClause : fromTerm.getCorrelateClauses()) {
             correlateClause.accept(this, arg);
         }
@@ -76,6 +80,7 @@ public final class SqlppGatherFunctionCallsVisitor extends GatherFunctionCallsVi
     @Override
     public Void visit(JoinClause joinClause, Void arg) throws CompilationException {
         joinClause.getRightExpression().accept(this, arg);
+        gatherTimeTravelCalls(joinClause.getTimeTravel(), arg);
         joinClause.getConditionExpression().accept(this, arg);
         return null;
     }
@@ -93,6 +98,20 @@ public final class SqlppGatherFunctionCallsVisitor extends GatherFunctionCallsVi
     }
 
     @Override
+    public Void visit(ClusterbyClause cc, Void arg) throws CompilationException {
+        cc.getClusteringExpression().accept(this, arg);
+        if (cc.hasClusterFieldList()) {
+            for (Pair<Expression, Identifier> field : cc.getClusterFieldList()) {
+                field.getLeft().accept(this, arg);
+            }
+        }
+        if (cc.hasWithOptions()) {
+            cc.getWithOptions().accept(this, arg);
+        }
+        return null;
+    }
+
+    @Override
     public Void visit(SelectBlock selectBlock, Void arg) throws CompilationException {
         if (selectBlock.hasFromClause()) {
             selectBlock.getFromClause().accept(this, arg);
@@ -104,6 +123,9 @@ public final class SqlppGatherFunctionCallsVisitor extends GatherFunctionCallsVi
         }
         if (selectBlock.hasGroupbyClause()) {
             selectBlock.getGroupbyClause().accept(this, arg);
+        }
+        if (selectBlock.hasClusterbyClause()) {
+            selectBlock.getClusterbyClause().accept(this, arg);
         }
         if (selectBlock.hasLetHavingClausesAfterGroupby()) {
             for (AbstractClause letHavingClause : selectBlock.getLetHavingListAfterGroupby()) {
@@ -190,6 +212,44 @@ public final class SqlppGatherFunctionCallsVisitor extends GatherFunctionCallsVi
     }
 
     @Override
+    public Void visit(ChangeExpression changeExpr, Void arg) throws CompilationException {
+        if (changeExpr.getPriorExpr() != null) {
+            changeExpr.getPriorExpr().accept(this, arg);
+        }
+        if (changeExpr.hasPathValueExprs()) {
+            for (Expression pathExpr : changeExpr.getPathExprs()) {
+                pathExpr.accept(this, arg);
+            }
+            for (Expression valueExpr : changeExpr.getValueExprs()) {
+                valueExpr.accept(this, arg);
+            }
+        }
+        if (changeExpr.getChangeTargetExpr() != null) {
+            changeExpr.getChangeTargetExpr().accept(this, arg);
+        }
+
+        if (changeExpr.getChangeSeq() != null) {
+            changeExpr.getChangeSeq().accept(this, arg);
+        }
+        if (changeExpr.getCondition() != null) {
+            changeExpr.getCondition().accept(this, arg);
+        }
+        if (changeExpr.getPosExpr() != null) {
+            changeExpr.getPosExpr().accept(this, arg);
+        }
+        if (changeExpr.getSourceExpr() != null) {
+            changeExpr.getSourceExpr().accept(this, arg);
+        }
+        if (changeExpr.getDataTransformRecord() != null) {
+            changeExpr.getDataTransformRecord().accept(this, arg);
+        }
+        if (changeExpr.getDataRemovalRecord() != null) {
+            changeExpr.getDataRemovalRecord().accept(this, arg);
+        }
+        return null;
+    }
+
+    @Override
     public Void visit(WindowExpression winExpr, Void arg) throws CompilationException {
         calls.add(winExpr);
         if (winExpr.hasPartitionList()) {
@@ -210,7 +270,7 @@ public final class SqlppGatherFunctionCallsVisitor extends GatherFunctionCallsVi
         }
         if (winExpr.hasWindowFieldList()) {
             for (Pair<Expression, Identifier> p : winExpr.getWindowFieldList()) {
-                p.first.accept(this, arg);
+                p.getLeft().accept(this, arg);
             }
         }
         if (winExpr.hasAggregateFilterExpr()) {
@@ -231,5 +291,11 @@ public final class SqlppGatherFunctionCallsVisitor extends GatherFunctionCallsVi
             expression.getEndIndexExpression().accept(this, arg);
         }
         return null;
+    }
+
+    private void gatherTimeTravelCalls(TimeTravelSpec timeTravel, Void arg) throws CompilationException {
+        if (timeTravel != null) {
+            timeTravel.getValueExpression().accept(this, arg);
+        }
     }
 }

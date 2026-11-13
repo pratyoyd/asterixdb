@@ -18,21 +18,38 @@
  */
 package org.apache.asterix.external.input.stream;
 
+import static org.apache.hyracks.api.util.ExceptionUtils.getMessageOrToString;
+
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.Reader;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CoderResult;
 import java.nio.charset.StandardCharsets;
 
+import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.exceptions.RuntimeDataException;
 import org.apache.asterix.external.api.AsterixInputStream;
 import org.apache.asterix.external.dataflow.AbstractFeedDataFlowController;
 import org.apache.asterix.external.util.IFeedLogManager;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.exceptions.IWarningCollector;
+import org.apache.hyracks.api.exceptions.NoOpWarningCollector;
+import org.apache.hyracks.util.ParseUtil;
 
 public class AsterixInputStreamReader extends Reader {
+
+    // Unicode REPLACEMENT CHARACTER (U+FFFD) -- the standard substitute for an illegal/unmappable
+    // byte sequence during decoding (e.g. WHATWG Encoding Standard, Python's errors='replace').
+    private static final char ILLEGAL_CHARACTER_REPLACEMENT = '\uFFFD';
+
     private final AsterixInputStream in;
     private final CharsetDecoder decoder;
+    private final boolean failOnIllegalCharacter;
+    private final IWarningCollector warnings;
     private byte[] bytes;
     protected final ByteBuffer byteBuffer;
     protected final CharBuffer charBuffer;
@@ -40,12 +57,55 @@ public class AsterixInputStreamReader extends Reader {
     protected boolean remaining = false;
 
     public AsterixInputStreamReader(AsterixInputStream in, int bufferSize) {
+        this(in, bufferSize, false, NoOpWarningCollector.INSTANCE);
+    }
+
+    public AsterixInputStreamReader(AsterixInputStream in, int bufferSize, boolean failOnIllegalCharacter,
+            IWarningCollector warnings) {
         this.in = in;
+        this.failOnIllegalCharacter = failOnIllegalCharacter;
+        this.warnings = warnings;
+        // Always left at the default REPORT action for both malformed input and unmappable characters: the
+        // replace-and-continue path below is handled manually so a warning can be raised at the exact point of
+        // substitution, which CharsetDecoder's own CodingErrorAction.REPLACE does not surface.
         this.decoder = StandardCharsets.UTF_8.newDecoder();
         this.bytes = new byte[bufferSize];
         this.byteBuffer = ByteBuffer.wrap(bytes);
         this.charBuffer = CharBuffer.allocate(bufferSize);
         this.byteBuffer.flip();
+    }
+
+    private void decode(boolean endOfInput) throws IOException {
+        while (true) {
+            CoderResult result = decoder.decode(byteBuffer, charBuffer, endOfInput);
+            if (!result.isError()) {
+                return;
+            }
+            if (failOnIllegalCharacter) {
+                try {
+                    result.throwException();
+                } catch (CharacterCodingException e) {
+                    throw RuntimeDataException.create(ErrorCode.EXTERNAL_SOURCE_ERROR, e, getMessageOrToString(e));
+                }
+            }
+            if (!charBuffer.hasRemaining()) {
+                // No room for the replacement character right now. byteBuffer's position is unchanged, so the
+                // caller will flush charBuffer, refill it, and the same error will be reported again on retry.
+                return;
+            }
+            reportIllegalCharacter();
+            charBuffer.put(ILLEGAL_CHARACTER_REPLACEMENT);
+            byteBuffer.position(byteBuffer.position() + result.length());
+        }
+    }
+
+    private void reportIllegalCharacter() {
+        if (warnings.shouldWarn()) {
+            // fieldNum has no "not applicable" sentinel (unlike lineNum, negative values are not hidden), so pass 0
+            // to match the convention used by other ParseUtil.warn() callers in this package
+            ParseUtil.warn(warnings, in.getStreamName(), -1, 0,
+                    "illegal character encountered; substituted with the Unicode replacement character (U+FFFD)");
+        }
     }
 
     public void stop() throws IOException {
@@ -79,7 +139,7 @@ public class AsterixInputStreamReader extends Reader {
         while (charBuffer.position() == 0) {
             if (byteBuffer.hasRemaining()) {
                 remaining = true;
-                decoder.decode(byteBuffer, charBuffer, false);
+                decode(false);
                 System.arraycopy(charBuffer.array(), 0, cbuf, offset, charBuffer.position());
                 if (charBuffer.position() > 0) {
                     return charBuffer.position();
@@ -90,12 +150,14 @@ public class AsterixInputStreamReader extends Reader {
                     byteBuffer.position(byteBuffer.remaining());
                     byteBuffer.limit(byteBuffer.capacity()); //set limit to capacity for the new bytes
                     while (len == 0) {
+                        checkInterrupted();
                         len = in.read(bytes, byteBuffer.position(), bytes.length - byteBuffer.position());
                     }
                 }
             } else {
                 byteBuffer.clear();
                 while (len == 0) {
+                    checkInterrupted();
                     len = in.read(bytes, 0, bytes.length);
                 }
             }
@@ -110,10 +172,16 @@ public class AsterixInputStreamReader extends Reader {
             }
             byteBuffer.flip();
             remaining = false;
-            decoder.decode(byteBuffer, charBuffer, false);
+            decode(false);
             System.arraycopy(charBuffer.array(), 0, cbuf, offset, charBuffer.position());
         }
         return charBuffer.position();
+    }
+
+    private static void checkInterrupted() throws IOException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedIOException("Thread interrupted while reading stream");
+        }
     }
 
     @Override

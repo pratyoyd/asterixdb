@@ -23,6 +23,7 @@ import java.io.PrintStream;
 import org.apache.asterix.dataflow.data.nontagged.printers.PrintTools;
 import org.apache.hyracks.algebricks.data.IPrinter;
 import org.apache.hyracks.algebricks.data.IPrinterFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 
 public class ADayTimeDurationPrinterFactory implements IPrinterFactory {
 
@@ -32,11 +33,11 @@ public class ADayTimeDurationPrinterFactory implements IPrinterFactory {
     public static final IPrinter PRINTER = (byte[] b, int s, int l, PrintStream ps) -> {
         ps.print("\"");
         PrintTools.printDayTimeDurationString(b, s, l, ps);
-        ps.print("\")");
+        ps.print("\"");
     };
 
     @Override
-    public IPrinter createPrinter() {
+    public IPrinter createPrinter(IEvaluatorContext context) {
         return PRINTER;
     }
 }

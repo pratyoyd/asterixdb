@@ -23,9 +23,9 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.common.exceptions.NotImplementedException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -35,6 +35,8 @@ import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IAlgebricksConstantValue;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.InsertDeleteUpsertOperator.Kind;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.KMeansStageOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.TimeTravel;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
@@ -93,17 +95,22 @@ public class LogicalOperatorPrettyPrintVisitor extends AbstractLogicalOperatorPr
 
     private void printOperatorImpl(AbstractLogicalOperator op, int indent, boolean printInputs,
             boolean printOptimizerEstimates) throws AlgebricksException {
-        double opCard, opLocalCost, opTotalCost;
+        double opCard, opDocSize, opLocalCost, opTotalCost;
 
         op.accept(this, indent);
         if (printOptimizerEstimates) {
             opCard = getOpCardinality(op);
+            opDocSize = getOpDocSize(op);
             opLocalCost = getOpLocalCost(op);
             opTotalCost = getOpTotalCost(op);
             buffer.append(" [");
             buffer.append(CARDINALITY);
             buffer.append(": ");
             buffer.append(Double.toString(opCard));
+            buffer.append(", ");
+            buffer.append(DOCSIZE);
+            buffer.append(": ");
+            buffer.append(Double.toString(opDocSize));
             buffer.append(", ");
             buffer.append(OP_COST_LOCAL);
             buffer.append(": ");
@@ -262,9 +269,9 @@ public class LogicalOperatorPrettyPrintVisitor extends AbstractLogicalOperatorPr
 
     @Override
     public Void visitSelectOperator(SelectOperator op, Integer indent) throws AlgebricksException {
-        String retainMissing = op.getMissingPlaceholderVariable() != null
+        String retainMissing = (op.getMissingPlaceholderVariable() != null)
                 ? " retain-untrue (" + op.getMissingPlaceholderVariable() + " <- " + op.getRetainMissingAsValue() + ")"
-                : "";
+                : (op.getRetainMissingAsValue() != null ? " retain-untrue" : "");
         addIndent(indent).append("select (").append(op.getCondition().getValue().accept(exprVisitor, indent))
                 .append(")").append(retainMissing)
                 .append(op.isProjectPushed() ? " project: " + str(op.getProjectVariables()) : "");
@@ -317,12 +324,55 @@ public class LogicalOperatorPrettyPrintVisitor extends AbstractLogicalOperatorPr
     }
 
     @Override
-    public Void visitUnnestOperator(UnnestOperator op, Integer indent) throws AlgebricksException {
-        addIndent(indent).append("unnest " + op.getVariable());
-        if (op.getPositionalVariable() != null) {
-            buffer.append(" at " + op.getPositionalVariable());
+    public Void visitKMeansStageOperator(KMeansStageOperator op, Integer indent) throws AlgebricksException {
+        AlgebricksStringBuilderWriter out = addIndent(indent).append("kmeans-stage ")
+                .append(str(op.getCandidateVariable())).append(" <- ").append(op.getMode().getLabel());
+        switch (op.getMode()) {
+            case RECLUSTER:
+                out.append(" pool ").append(str(op.getPoolVariable())).append(" to ")
+                        .append(String.valueOf(op.getTopCount())).append(" means (seed ")
+                        .append(String.valueOf(op.getSeed())).append(')');
+                break;
+            case OVERSAMPLE_LOOP:
+                out.append(' ').append(String.valueOf(op.getLoopRounds())).append(" rounds of ")
+                        .append(str(op.getVectorVariable())).append(" vs seed ").append(str(op.getPoolVariable()))
+                        .append(" (seed ").append(String.valueOf(op.getSeed())).append(')');
+                break;
+            default:
+                out.append(' ').append(String.valueOf(op.getLoopRounds())).append(" iterations of ")
+                        .append(str(op.getVectorVariable())).append(" vs pool ").append(str(op.getPoolVariable()));
+                break;
         }
-        buffer.append(" <- " + op.getExpressionRef().getValue().accept(exprVisitor, indent));
+        out.append(" by ").append(op.getMetric());
+        return null;
+    }
+
+    @Override
+    public Void visitClusterByOperator(ClusterByOperator op, Integer indent) throws AlgebricksException {
+        addIndent(indent).append("cluster-by ").append(str(op.getClusterIdVariable())).append(", ")
+                .append(str(op.getCentroidVariable())).append(", ").append(str(op.getMembersVariable()))
+                .append(" <- clusters of ").append(str(op.getVectorVariable())).append(" by ")
+                .append(String.valueOf(op.getOptions()));
+        if (!op.getDecorList().isEmpty()) {
+            buffer.append(" decor (");
+            pprintVeList(op.getDecorList(), indent);
+            buffer.append(")");
+        }
+        return null;
+    }
+
+    @Override
+    public Void visitUnnestOperator(UnnestOperator op, Integer indent) throws AlgebricksException {
+        addIndent(indent).append("unnest ").append(String.valueOf(op.getVariable()));
+        if (op.hasTimeTravel()) {
+            TimeTravel timeTravel = op.getTimeTravel();
+            buffer.append(" at ").append(timeTravel.getType().getKeyword()).append(" ")
+                    .append(timeTravel.getValueExpression().accept(exprVisitor, indent));
+        }
+        if (op.hasPositionalVariable()) {
+            buffer.append(" at ").append(String.valueOf(op.getPositionalVariable()));
+        }
+        buffer.append(" <- ").append(op.getExpressionRef().getValue().accept(exprVisitor, indent));
         if (op.isProjectPushed()) {
             buffer.append(" project: ").append(str(op.getProjectVariables()));
         }
@@ -332,6 +382,11 @@ public class LogicalOperatorPrettyPrintVisitor extends AbstractLogicalOperatorPr
     @Override
     public Void visitLeftOuterUnnestOperator(LeftOuterUnnestOperator op, Integer indent) throws AlgebricksException {
         addIndent(indent).append("outer-unnest ").append(String.valueOf(op.getVariable()));
+        if (op.hasTimeTravel()) {
+            TimeTravel timeTravel = op.getTimeTravel();
+            buffer.append(" at ").append(timeTravel.getType().getKeyword()).append(" ")
+                    .append(timeTravel.getValueExpression().accept(exprVisitor, indent));
+        }
         if (op.getPositionalVariable() != null) {
             buffer.append(" at " + op.getPositionalVariable());
         }
@@ -642,7 +697,7 @@ public class LogicalOperatorPrettyPrintVisitor extends AbstractLogicalOperatorPr
         } else {
             for (ILogicalPlan p : op.getNestedPlans()) {
                 // PrettyPrintUtil.indent(buffer, level + 10).append("var " +
-                // p.first + ":\n");
+                // p.getLeft() + ":\n");
                 buffer.append("\n");
                 if (first) {
                     first = false;
@@ -694,10 +749,10 @@ public class LogicalOperatorPrettyPrintVisitor extends AbstractLogicalOperatorPr
             } else {
                 buffer.append("; ");
             }
-            if (ve.first != null) {
-                buffer.append(ve.first + " := " + ve.second);
+            if (ve.getLeft() != null) {
+                buffer.append(ve.getLeft() + " := " + ve.getRight());
             } else {
-                buffer.append(ve.second.getValue().accept(exprVisitor, indent));
+                buffer.append(ve.getRight().getValue().accept(exprVisitor, indent));
             }
         }
         buffer.append("]");
@@ -707,8 +762,8 @@ public class LogicalOperatorPrettyPrintVisitor extends AbstractLogicalOperatorPr
             Integer indent) throws AlgebricksException {
         for (Iterator<Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>>> i = orderList.iterator(); i.hasNext();) {
             Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>> p = i.next();
-            String fst = getOrderString(p.first);
-            buffer.append("(" + fst + ", " + p.second.getValue().accept(exprVisitor, indent) + ")");
+            String fst = getOrderString(p.getLeft());
+            buffer.append("(" + fst + ", " + p.getRight().getValue().accept(exprVisitor, indent) + ")");
             if (i.hasNext()) {
                 buffer.append(' ');
             }

@@ -30,12 +30,13 @@ import org.apache.asterix.om.types.AUnionType;
 import org.apache.asterix.om.types.AbstractCollectionType;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.types.IATypeVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Types;
 
+// Traverses the RecordType tree and converts it to a Parquet schema.
 public class SchemaConverterVisitor implements IATypeVisitor<Void, Pair<Types.Builder, String>> {
     public static String MESSAGE_NAME = "asterix_schema";
     private final ARecordType schemaType;
@@ -46,9 +47,9 @@ public class SchemaConverterVisitor implements IATypeVisitor<Void, Pair<Types.Bu
         this.unsupportedType = null;
     }
 
-    public static String convertToParquetSchemaString(ARecordType schemaType) throws CompilationException {
+    public static MessageType convertToParquetSchema(ARecordType schemaType) throws CompilationException {
         SchemaConverterVisitor schemaConverterVisitor = new SchemaConverterVisitor(schemaType);
-        return schemaConverterVisitor.getParquetSchema().toString();
+        return schemaConverterVisitor.getParquetSchema();
     }
 
     private MessageType getParquetSchema() throws CompilationException {
@@ -57,7 +58,7 @@ public class SchemaConverterVisitor implements IATypeVisitor<Void, Pair<Types.Bu
         for (int i = 0; i < schemaType.getFieldNames().length; i++) {
             String fieldName = schemaType.getFieldNames()[i];
             IAType childType = schemaType.getFieldType(fieldName);
-            childType.accept(this, new Pair<>(builder, fieldName));
+            childType.accept(this, Pair.of(builder, fieldName));
             if (unsupportedType != null) {
                 throw new CompilationException(ErrorCode.TYPE_UNSUPPORTED_PARQUET_WRITE, unsupportedType.toString());
             }
@@ -67,15 +68,15 @@ public class SchemaConverterVisitor implements IATypeVisitor<Void, Pair<Types.Bu
 
     @Override
     public Void visit(ARecordType recordType, Pair<Types.Builder, String> arg) {
-        Types.Builder builder = arg.first;
-        String fieldName = arg.second;
+        Types.Builder builder = arg.getLeft();
+        String fieldName = arg.getRight();
 
         Types.BaseGroupBuilder childBuilder = getGroupChild(builder);
         for (int i = 0; i < recordType.getFieldNames().length; i++) {
             String childFieldName = recordType.getFieldNames()[i];
             IAType childType = recordType.getFieldType(childFieldName);
 
-            childType.accept(this, new Pair<>(childBuilder, childFieldName));
+            childType.accept(this, Pair.of(childBuilder, childFieldName));
 
         }
         childBuilder.named(fieldName);
@@ -85,12 +86,12 @@ public class SchemaConverterVisitor implements IATypeVisitor<Void, Pair<Types.Bu
 
     @Override
     public Void visit(AbstractCollectionType collectionType, Pair<Types.Builder, String> arg) {
-        Types.Builder builder = arg.first;
-        String fieldName = arg.second;
+        Types.Builder builder = arg.getLeft();
+        String fieldName = arg.getRight();
 
         Types.BaseListBuilder childBuilder = getListChild(builder);
         IAType child = collectionType.getItemType();
-        child.accept(this, new Pair<>(childBuilder, fieldName));
+        child.accept(this, Pair.of(childBuilder, fieldName));
 
         return null;
     }
@@ -103,8 +104,8 @@ public class SchemaConverterVisitor implements IATypeVisitor<Void, Pair<Types.Bu
 
     @Override
     public Void visitFlat(IAType flatType, Pair<Types.Builder, String> arg) {
-        Types.Builder builder = arg.first;
-        String fieldName = arg.second;
+        Types.Builder builder = arg.getLeft();
+        String fieldName = arg.getRight();
 
         PrimitiveType.PrimitiveTypeName primitiveTypeName =
                 AsterixParquetTypeMap.PRIMITIVE_TYPE_NAME_MAP.get(flatType.getTypeTag());

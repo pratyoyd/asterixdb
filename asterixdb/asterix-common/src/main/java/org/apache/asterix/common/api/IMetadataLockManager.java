@@ -569,4 +569,11 @@ public interface IMetadataLockManager {
      */
     void downgradeDatasetLockToExclusiveModify(LockList locks, String database, DataverseName dataverseName,
             String datasetName) throws AlgebricksException;
+
+    void acquireCatalogReadLock(LockList locks, String catalogName) throws AlgebricksException;
+
+    void acquireCatalogWriteLock(LockList locks, String catalogName) throws AlgebricksException;
+
+    void acquireCRSWriteLock(LockList locks, String database, DataverseName dataverseName, int srid)
+            throws AlgebricksException;
 }

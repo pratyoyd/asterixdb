@@ -50,6 +50,10 @@
           </execution>
         </executions>
       </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+        </plugin>
     </plugins>
   </build>
   <dependencies>
@@ -115,7 +119,7 @@
     </dependency>
     <dependency>
       <groupId>it.unimi.dsi</groupId>
-      <artifactId>fastutil-core</artifactId>
+      <artifactId>fastutil</artifactId>
     </dependency>
   </dependencies>
 </project>

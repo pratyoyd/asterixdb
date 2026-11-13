@@ -1,0 +1,342 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.asterix.common.vector;
+
+import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.exceptions.RuntimeDataException;
+import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.storage.am.vector.utils.VTreeScalarQuantization;
+
+/**
+ * Optimized scalar quantization (OSQ) utilities for vector indexes.
+ *
+ * <p>
+ * Global quantization parameters ({@link Params}) are computed at index creation
+ * (via {@code QuantizationConstantsAggregate}) and stored on
+ * {@code LSMVTreeLocalResource}. This class applies those parameters to quantize and
+ * dequantize vectors during bulk load, static structure build, and query.
+ *
+ * <p>
+ * For an index whose {@code WITH similarity} is {@code "cosine"}, embedding and query vectors must
+ * be L2-normalized to unit length before insert and search. The engine does not re-normalize during
+ * quantization.
+ */
+public final class OptimizedScalarQuantizationCodec {
+
+    private OptimizedScalarQuantizationCodec() {
+    }
+
+    /**
+     * Similarity function types for vector quantization.
+     * Determines similarity metadata on {@link QuantizedVector}.
+     */
+    public enum SimilarityFunction {
+        /** Dot product similarity */
+        DOT_PRODUCT,
+        /**
+         * Cosine similarity. Vectors must already be L2-normalized to unit length by the
+         * caller; the engine does not normalize during quantization.
+         */
+        COSINE,
+        /** Euclidean distance (L2) */
+        EUCLIDEAN,
+        /** Squared Euclidean distance (L2 squared) */
+        EUCLIDEAN_SQUARED
+    }
+
+    /**
+     * Result of vector quantization: per-dimension codes plus similarity metadata.
+     */
+    public static final class QuantizedVector {
+        /** Quantized vector as byte[], short[], or int[] depending on bits */
+        public final Object quantizedBytes;
+        /** The similarity function used for quantization */
+        public final SimilarityFunction similarityFunction;
+
+        public QuantizedVector(Object quantizedBytes, SimilarityFunction similarityFunction) {
+            this.quantizedBytes = quantizedBytes;
+            this.similarityFunction = similarityFunction;
+        }
+    }
+
+    /**
+     * Converts a distance metric string to SimilarityFunction enum.
+     * 
+     * @param distanceMetric Distance metric string (e.g., "euclidean", "cosine", "dot")
+     * @return Corresponding SimilarityFunction enum
+     * @throws HyracksDataException if the metric is not one a vector index can be created with
+     */
+    public static SimilarityFunction fromDistanceMetric(String distanceMetric) throws HyracksDataException {
+        VectorSimilarityMetric metric = VectorSimilarityMetric.fromAlias(distanceMetric);
+        if (metric == null) {
+            // The codes must be built under the metric the index's distance function ranks by.
+            throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE,
+                    "Unknown vector distance metric '" + distanceMetric + "' reached the quantizer");
+        }
+        return switch (metric) {
+            case EUCLIDEAN -> SimilarityFunction.EUCLIDEAN;
+            case EUCLIDEAN_SQUARED -> SimilarityFunction.EUCLIDEAN_SQUARED;
+            case COSINE -> SimilarityFunction.COSINE;
+            case DOT -> SimilarityFunction.DOT_PRODUCT;
+        };
+    }
+
+    /**
+     * Global scalar-quantization parameters computed at index creation and reused for encode/decode.
+     *
+     * <p>
+     * {@link #minQuantile} and {@link #maxQuantile} are the lower/upper sample quantiles over all
+     * vector dimensions. {@link #alpha} is {@code (2^bits - 1) / (maxQuantile - minQuantile)} (see
+     * {@code QuantizationConstantsAggregate} at index creation). In practice {@link #bits} is 4 (SQ4)
+     * or 8 (SQ8).
+     */
+    public static final class Params {
+        /** Number of bits per dimension (e.g. 4 or 8); determines code range {@code [0, 2^bits - 1]}. */
+        public final int bits;
+        public final int vectorDimensions;
+        public final int sampleCount;
+        public final float confidenceInterval;
+        /** Global minimum scalar value (minQ in encode/decode formulas). */
+        public final float minQuantile;
+        /** Global maximum scalar value (maxQ in encode clamp). */
+        public final float maxQuantile;
+        /** Scale factor: {@code (2^bits - 1) / (maxQuantile - minQuantile)}. */
+        public final float alpha;
+
+        public Params(int bits, int vectorDimensions, int sampleCount, float confidenceInterval, float minQuantile,
+                float maxQuantile, float alpha) {
+            this.bits = bits;
+            this.vectorDimensions = vectorDimensions;
+            this.sampleCount = sampleCount;
+            this.confidenceInterval = confidenceInterval;
+            this.minQuantile = minQuantile;
+            this.maxQuantile = maxQuantile;
+            this.alpha = alpha;
+        }
+    }
+
+    /**
+     * Quantizes a vector using optimized scalar quantization with similarity-function awareness.
+     *
+     * <p>
+     * Vectors are quantized as provided. For cosine indexes, callers must supply L2-normalized unit vectors.
+     *
+     * <p>
+     * Encoding uses {@code levels = 2^bits} and delegates to {@link #quantizeToByte},
+     * {@link #quantizeToShort}, or {@link #quantizeToInt} depending on {@code bits}. See those methods
+     * for the per-dimension encode formula and {@link #dequantizeToDoubleArray} for the inverse.
+     *
+     * @param vector The input vector to quantize (double array)
+     * @param params Quantization parameters including bits, minQuantile, maxQuantile, alpha
+     * @param similarityFunction The similarity function type (recorded on the result)
+     * @return QuantizedVector containing quantized bytes and metadata
+     * @throws HyracksDataException if vector is null or params are invalid
+     */
+    public static QuantizedVector quantizeVector(double[] vector, Params params, SimilarityFunction similarityFunction)
+            throws HyracksDataException {
+        if (vector == null) {
+            throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE, "A null vector reached the quantizer");
+        }
+        if (params == null) {
+            throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE, "Null quantization params reached the quantizer");
+        }
+        if (vector.length != params.vectorDimensions) {
+            throw new RuntimeDataException(ErrorCode.VECTOR_DIMENSION_MISMATCH, params.vectorDimensions, vector.length);
+        }
+
+        final int bits = params.bits;
+        final float minQ = params.minQuantile;
+        final float maxQ = params.maxQuantile;
+        final float alpha = params.alpha;
+        final int levels = 1 << bits; // 2^bits
+
+        Object quantizedBytes;
+        if (bits <= 8) {
+            quantizedBytes = quantizeToByte(vector, minQ, maxQ, alpha, levels);
+        } else if (bits <= 16) {
+            quantizedBytes = quantizeToShort(vector, minQ, maxQ, alpha, levels);
+        } else if (bits <= 32) {
+            quantizedBytes = quantizeToInt(vector, minQ, maxQ, alpha, levels);
+        } else {
+            throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE,
+                    "Unsupported quantization bit width " + bits + "; the maximum is 32");
+        }
+
+        return new QuantizedVector(quantizedBytes, similarityFunction);
+    }
+
+    /*
+     * The per-dimension formula is VTreeScalarQuantization, shared with the DML insert path; this class
+     * owns the validation, the Params/SimilarityFunction types and the choice of storage width.
+     *
+     * Storage by bits: bits <= 8 -> byte[] (SQ4 uses codes 0..15 in byte[]); <= 16 -> short[]; <= 32 -> int[].
+     * Java byte/short are signed; codes above 127 or 32767 appear negative unless read with & 0xFF / & 0xFFFF.
+     * VectorQuantization offers SQ4 and SQ8 only and VTree leaf storage is byte[], so the short[] and int[]
+     * widths have no VTree reader.
+     *
+     * Debugging: log params.bits, levels, minQ, maxQ, alpha; check min/max q across dims; compare
+     * dequantizeToDoubleArray(quantizeVector(x)) against x for round-trip error on sample vectors.
+     */
+
+    /**
+     * Encodes a vector to {@code byte[]} when {@code bits <= 8} (including SQ4 with 16 levels).
+     *
+     * <p>
+     * Per dimension: clamp to {@code [minQ, maxQ]}, then {@code q = clamp(round((v - minQ) * alpha), 0, levels - 1)}.
+     * Caller must pass {@code levels == 1 << bits}. Inverse: {@link #dequantizeToDoubleArray}.
+     *
+     * <p>
+     * Codes 0..255 are stored in signed {@code byte}; consumers must read with {@code & 0xFF}.
+     *
+     * @see #quantizeToShort
+     * @see #quantizeToInt
+     */
+    private static byte[] quantizeToByte(double[] vector, float minQ, float maxQ, float alpha, int levels) {
+        byte[] quantized = new byte[vector.length];
+        for (int i = 0; i < vector.length; i++) {
+            quantized[i] = (byte) VTreeScalarQuantization.encodeDimension(vector[i], minQ, maxQ, alpha, levels);
+        }
+        return quantized;
+    }
+
+    /**
+     * Encodes a vector to {@code short[]} when {@code 8 < bits <= 16}.
+     *
+     * <p>
+     * Same encode formula as {@link #quantizeToByte}. Caller must pass {@code levels == 1 << bits}.
+     * Inverse: {@link #dequantizeToDoubleArray}. Codes above 32767 require unsigned read ({@code & 0xFFFF}).
+     *
+     * @see #quantizeToByte
+     * @see #quantizeToInt
+     */
+    private static short[] quantizeToShort(double[] vector, float minQ, float maxQ, float alpha, int levels) {
+        short[] quantized = new short[vector.length];
+        for (int i = 0; i < vector.length; i++) {
+            quantized[i] = (short) VTreeScalarQuantization.encodeDimension(vector[i], minQ, maxQ, alpha, levels);
+        }
+        return quantized;
+    }
+
+    /**
+     * Encodes a vector to {@code int[]} when {@code 16 < bits <= 32}.
+     *
+     * <p>
+     * Same encode formula as {@link #quantizeToByte}. Caller must pass {@code levels == 1 << bits}.
+     * Inverse: {@link #dequantizeToDoubleArray}. All three encoders round into a {@code long}, clamp to
+     * {@code [0, levels - 1]}, then narrow to the target type; {@code long} is required here because for
+     * {@code bits} near 32 the pre-clamp code {@code (value - minQ) * alpha} can exceed
+     * {@code Integer.MAX_VALUE}.
+     *
+     * @see #quantizeToByte
+     * @see #quantizeToShort
+     */
+    private static int[] quantizeToInt(double[] vector, float minQ, float maxQ, float alpha, int levels) {
+        int[] quantized = new int[vector.length];
+        for (int i = 0; i < vector.length; i++) {
+            quantized[i] = (int) VTreeScalarQuantization.encodeDimension(vector[i], minQ, maxQ, alpha, levels);
+        }
+        return quantized;
+    }
+
+    /**
+     * Converts quantized vector data to a double array for use with distance
+     * functions.
+     * Inverse of the encode path in {@link #quantizeToByte}, {@link #quantizeToShort}, and
+     * {@link #quantizeToInt}.
+     *
+     * <p>
+     * This is a simple type conversion that preserves the quantized integer values
+     * as doubles,
+     * allowing standard distance functions that expect double[] to work on
+     * quantized data.
+     * 
+     * <p>
+     * Example: quantized [71, 9, 88, 63] with alpha=2.0, minQuantile=-1.0
+     *          → dequantized [34.5, 3.5, 43.0, 30.5]
+     *
+     * @param quantizedBytes The quantized vector as byte[], short[], or int[]
+     * @param params         Quantization parameters (alpha and minQuantile used for
+     *                       inverse mapping; bits and vectorDimensions for validation)
+     * @return double[] array where each element approximates the original value via
+     *         inverse quantization: value = quantizedInt / alpha + minQuantile
+     * @throws HyracksDataException if inputs are null or array length doesn't
+     *                              match params
+     */
+    public static double[] dequantizeToDoubleArray(Object quantizedBytes, Params params) throws HyracksDataException {
+        if (quantizedBytes == null) {
+            throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE, "A null quantized vector reached the dequantizer");
+        }
+        if (params == null) {
+            throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE, "Null quantization params reached the dequantizer");
+        }
+
+        final int dims = params.vectorDimensions;
+        final int bits = params.bits;
+        double[] result = new double[dims];
+
+        // Determine data type based on bits and convert to double
+        if (bits <= 8) {
+            // byte[] - treat as unsigned
+            if (!(quantizedBytes instanceof byte[])) {
+                throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE, "Expected a byte[] quantized vector for " + bits
+                        + " bits, but got a " + quantizedBytes.getClass().getName());
+            }
+            byte[] bytes = (byte[]) quantizedBytes;
+            if (bytes.length != dims) {
+                throw new RuntimeDataException(ErrorCode.VECTOR_DIMENSION_MISMATCH, dims, bytes.length);
+            }
+            for (int i = 0; i < dims; i++) {
+                result[i] = VTreeScalarQuantization.decodeDimension(bytes[i] & 0xFF, params.alpha, params.minQuantile);
+            }
+        } else if (bits <= 16) {
+            // short[] - treat as unsigned
+            if (!(quantizedBytes instanceof short[])) {
+                throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE, "Expected a short[] quantized vector for "
+                        + bits + " bits, but got a " + quantizedBytes.getClass().getName());
+            }
+            short[] shorts = (short[]) quantizedBytes;
+            if (shorts.length != dims) {
+                throw new RuntimeDataException(ErrorCode.VECTOR_DIMENSION_MISMATCH, dims, shorts.length);
+            }
+            for (int i = 0; i < dims; i++) {
+                result[i] =
+                        VTreeScalarQuantization.decodeDimension(shorts[i] & 0xFFFF, params.alpha, params.minQuantile);
+            }
+        } else if (bits <= 32) {
+            // int[] - treat as unsigned
+            if (!(quantizedBytes instanceof int[])) {
+                throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE, "Expected an int[] quantized vector for " + bits
+                        + " bits, but got a " + quantizedBytes.getClass().getName());
+            }
+            int[] ints = (int[]) quantizedBytes;
+            if (ints.length != dims) {
+                throw new RuntimeDataException(ErrorCode.VECTOR_DIMENSION_MISMATCH, dims, ints.length);
+            }
+            for (int i = 0; i < dims; i++) {
+                result[i] = VTreeScalarQuantization.decodeDimension(ints[i] & 0xFFFFFFFFL, params.alpha,
+                        params.minQuantile);
+            }
+        } else {
+            throw new RuntimeDataException(ErrorCode.ILLEGAL_STATE,
+                    "Unsupported quantization bit width " + bits + "; the maximum is 32");
+        }
+
+        return result;
+    }
+}

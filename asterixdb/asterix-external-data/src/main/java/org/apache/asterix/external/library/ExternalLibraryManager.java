@@ -20,7 +20,10 @@ package org.apache.asterix.external.library;
 
 import static com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY;
 import static com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS;
+import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
+import static org.apache.asterix.external.library.PythonLibraryTCPSocketEvaluator.ENTRYPOINT;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -48,6 +51,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.zip.ZipEntry;
@@ -74,6 +78,7 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpHeaders;
 import org.apache.http.HttpStatus;
@@ -82,7 +87,6 @@ import org.apache.http.client.methods.HttpGet;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.HyracksException;
 import org.apache.hyracks.api.io.FileReference;
@@ -93,6 +97,7 @@ import org.apache.hyracks.api.lifecycle.ILifeCycleComponent;
 import org.apache.hyracks.api.network.INetworkSecurityConfig;
 import org.apache.hyracks.api.network.INetworkSecurityManager;
 import org.apache.hyracks.api.util.IoUtil;
+import org.apache.hyracks.cloud.io.ICloudIOManager;
 import org.apache.hyracks.control.common.work.AbstractWork;
 import org.apache.hyracks.control.nc.NodeControllerService;
 import org.apache.hyracks.ipc.impl.IPCSystem;
@@ -106,6 +111,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.google.common.io.ByteStreams;
 
 public class ExternalLibraryManager implements ILibraryManager, ILifeCycleComponent {
 
@@ -123,7 +129,7 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
 
     public static final String CONTENTS_DIR_NAME = "contents";
 
-    public static final String DESCRIPTOR_FILE_NAME = "lib.json";
+    public static final String DESCRIPTOR_FILE_NAME = "desc.json";
 
     public static final String DISTRIBUTION_DIR = "dist";
 
@@ -140,13 +146,16 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
     private final FileReference trashDir;
     private final FileReference distDir;
     private final Path trashDirPath;
-    //TODO(DB): change for database
     private final Map<Pair<Namespace, String>, ILibrary> libraries = new HashMap<>();
     private IPCSystem pythonIPC;
     private final ExternalFunctionResultRouter router;
     private final IIOManager ioManager;
     private final INamespacePathResolver namespacePathResolver;
     private final boolean sslEnabled;
+    private final boolean cloudMode;
+    private final long maxFileSize;
+    private final long maxTotalSize;
+    private final int maxEntries;
     private Function<ILibraryManager, CloseableHttpClient> uploadClientSupp;
 
     public ExternalLibraryManager(NodeControllerService ncs, IPersistedResourceRegistry reg, FileReference appDir,
@@ -165,12 +174,17 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
         this.sslEnabled = ncs.getConfiguration().isSslEnabled();
         this.ioManager = ioManager;
         uploadClientSupp = ExternalLibraryManager::defaultHttpClient;
+        cloudMode = ncs.getConfiguration().isCloudDeployment();
+        maxFileSize = ncs.getConfiguration().getLibraryMaxFileSize();
+        maxTotalSize = ncs.getConfiguration().getLibraryMaxExtractedSize();
+        maxEntries = ncs.getConfiguration().getLibraryMaxArchiveEntries();
     }
 
     public void initialize(boolean resetStorageData) throws HyracksDataException {
         try {
             pythonIPC = new IPCSystem(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0),
-                    PlainSocketChannelFactory.INSTANCE, router, new ExternalFunctionResultRouter.NoOpNoSerJustDe());
+                    PlainSocketChannelFactory.INSTANCE, router, new ExternalFunctionResultRouter.NoOpNoSerJustDe(),
+                    ncs.getExecutor());
             pythonIPC.start();
             Path baseDirPath = baseDir.getFile().toPath();
             if (Files.isDirectory(baseDirPath)) {
@@ -216,6 +230,13 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
 
     @Override
     public void start() {
+        if (cloudMode) {
+            try {
+                unzipAllLibs(baseDir);
+            } catch (IOException e) {
+                LOGGER.error("Failed to unzip all libraries", e);
+            }
+        }
     }
 
     @Override
@@ -226,7 +247,7 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
                 try {
                     library.close();
                 } catch (HyracksDataException e) {
-                    LOGGER.warn("Error closing library " + p.getKey().first + "." + p.getKey().second, e);
+                    LOGGER.warn("Error closing library " + p.getKey().getLeft() + "." + p.getKey().getRight(), e);
                 }
             }
         }
@@ -285,7 +306,7 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
                         if (tokens.length < 3) {
                             return FileVisitResult.TERMINATE;
                         }
-                        libs.add(new Pair<>(new Namespace(candidateDb, DataverseName.create(List.of(tokens[1]))),
+                        libs.add(Pair.of(new Namespace(candidateDb, DataverseName.create(List.of(tokens[1]))),
                                 tokens[3]));
                         return FileVisitResult.SKIP_SUBTREE;
 
@@ -308,7 +329,7 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
                     Namespace candidateNs = new Namespace(candidateDb, candidateDv);
                     FileReference candidateLibPath = findLibraryRevDir(candidateNs, candidateLib);
                     if (candidateLibPath != null) {
-                        libs.add(new Pair<>(candidateNs, candidateLib));
+                        libs.add(Pair.of(candidateNs, candidateLib));
                     }
                 } catch (AsterixException e) {
                     // shouldn't happen
@@ -423,7 +444,7 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
     }
 
     private static Pair<Namespace, String> getKey(Namespace namespace, String libraryName) {
-        return new Pair<>(namespace, libraryName);
+        return Pair.of(namespace, libraryName);
     }
 
     @Override
@@ -470,11 +491,40 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
         return outZip;
     }
 
+    private void unzipAllLibs(FileReference libDir) throws IOException {
+        byte[] copyBuf = new byte[4096];
+        Files.walkFileTree(libDir.getFile().toPath(), new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult visitFile(Path currPath, BasicFileAttributes attrs) throws IOException {
+                if (currPath.getFileName().toString().equals(LIBRARY_ARCHIVE_NAME)) {
+                    FileReference lib = ioManager.resolveAbsolutePath(currPath.toString());
+                    FileReference content = lib.getParent().getChild(REV_1_DIR_NAME).getChild(CONTENTS_DIR_NAME);
+                    if (!content.getFile().exists()) {
+                        FileUtils.forceMkdir(content.getFile());
+                    }
+                    unzip(lib, content);
+                    writeShim(content.getChild(ENTRYPOINT), copyBuf);
+                } else if (currPath.getFileName().toString().equals(DESCRIPTOR_FILE_NAME)) {
+                    Path revDir = currPath.resolveSibling(REV_1_DIR_NAME);
+                    if (!revDir.toFile().exists()) {
+                        FileUtils.forceMkdir(revDir.toFile());
+                    }
+                    Files.copy(currPath, currPath.resolveSibling(REV_1_DIR_NAME).resolve(DESCRIPTOR_FILE_NAME),
+                            REPLACE_EXISTING);
+                }
+                return FileVisitResult.CONTINUE;
+            }
+        });
+    }
+
     @Override
     public void dropLibraryPath(FileReference fileRef) throws HyracksDataException {
-        // does not flush any directories
         try {
             Path path = fileRef.getFile().toPath();
+            if (ncs.getConfiguration().isCloudDeployment()) {
+                ioManager.delete(fileRef.getChild(LIBRARY_ARCHIVE_NAME));
+                ioManager.delete(fileRef.getChild(DESCRIPTOR_FILE_NAME));
+            }
             Path trashPath = Files.createTempDirectory(trashDirPath, null);
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug("Drop (move) {} into {}", path, trashPath);
@@ -613,13 +663,33 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
 
     @Override
     public void unzip(FileReference sourceFile, FileReference outputDir) throws IOException {
+        unzip(sourceFile, outputDir, true);
+    }
+
+    @Override
+    public void unzip(FileReference sourceFile, FileReference outputDir, boolean limited) throws IOException {
         boolean logTraceEnabled = LOGGER.isTraceEnabled();
+        IIOManager localIoManager = ioManager;
+        if (ncs.getConfiguration().isCloudDeployment()) {
+            localIoManager = ((ICloudIOManager) ioManager).getLocalIOManager();
+        }
         Set<Path> newDirs = new HashSet<>();
         Path outputDirPath = outputDir.getFile().toPath().toAbsolutePath().normalize();
         try (ZipFile zipFile = new ZipFile(sourceFile.getFile())) {
             Enumeration<? extends ZipEntry> entries = zipFile.entries();
             byte[] writeBuf = new byte[4096];
+            int numEntries = 0;
+            long totalSize = 0;
             while (entries.hasMoreElements()) {
+                if (limited && numEntries >= maxEntries) {
+                    throw new IOException(
+                            "Library archive contains more files and directories than configuration permits");
+                }
+                //may exceed the total allowable size by the maximum size of one file, because we can't know how
+                //big the file is until we actually attempt to write it.
+                if (limited && totalSize > maxTotalSize) {
+                    throw new IOException("Library archive extracted size exceeds maximum configured allowable size");
+                }
                 ZipEntry entry = entries.nextElement();
                 if (entry.isDirectory()) {
                     continue;
@@ -635,12 +705,13 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
                     newDirs.add(p);
                 }
                 try (InputStream in = zipFile.getInputStream(entry)) {
-                    FileReference entryOutputFileRef = ioManager.resolveAbsolutePath(entryOutputPath.toString());
+                    FileReference entryOutputFileRef = localIoManager.resolveAbsolutePath(entryOutputPath.toString());
                     if (logTraceEnabled) {
                         LOGGER.trace("Extracting file {}", entryOutputFileRef);
                     }
-                    writeAndForce(entryOutputFileRef, in, writeBuf);
+                    totalSize += writeAndForce(entryOutputFileRef, in, writeBuf, localIoManager, limited);
                 }
+                numEntries++;
             }
         }
         for (Path newDir : newDirs) {
@@ -649,17 +720,25 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
     }
 
     @Override
-    public void writeAndForce(FileReference outputFile, InputStream dataStream, byte[] copyBuffer) throws IOException {
+    public long writeAndForce(FileReference outputFile, InputStream dataStream, byte[] copyBuffer,
+            IIOManager localIoManager, boolean limited) throws IOException {
+        long written;
         outputFile.getFile().createNewFile();
-        IFileHandle fHandle = ioManager.open(outputFile, IIOManager.FileReadWriteMode.READ_WRITE,
+        IFileHandle fHandle = localIoManager.open(outputFile, IIOManager.FileReadWriteMode.READ_WRITE,
                 IIOManager.FileSyncMode.METADATA_ASYNC_DATA_ASYNC);
-        WritableByteChannel outChannel = ioManager.newWritableChannel(fHandle);
+        WritableByteChannel outChannel = localIoManager.newWritableChannel(fHandle);
         try (OutputStream outputStream = Channels.newOutputStream(outChannel)) {
-            IOUtils.copyLarge(dataStream, outputStream, copyBuffer);
+            InputStream limitedStream = ByteStreams.limit(dataStream, maxFileSize);
+            written = ByteStreams.copy(limitedStream, outputStream);
+            //Check if after writing the limited stream, there's still data to be written from the entry
+            if (limited && dataStream.available() > 0) {
+                throw new IOException("Library contains file exceeding maximum configured allowable size");
+            }
             outputStream.flush();
-            ioManager.sync(fHandle, true);
+            localIoManager.sync(fHandle, true);
+            return written;
         } finally {
-            ioManager.close(fHandle);
+            localIoManager.close(fHandle);
         }
     }
 
@@ -682,11 +761,10 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
             final INetworkSecurityConfig configuration = networkSecurityManager.getConfiguration();
             KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
             try (FileInputStream trustStoreFile = new FileInputStream(configuration.getTrustStoreFile())) {
-                String ksPassword = configuration.getKeyStorePassword();
-                trustStore.load(trustStoreFile,
-                        ksPassword == null || ksPassword.isEmpty() ? null : ksPassword.toCharArray());
+                Optional<char[]> ksPassword = configuration.getKeyStorePassword();
+                trustStore.load(trustStoreFile, ksPassword.orElse(null));
             }
-            SSLContext sslcontext = NetworkSecurityManager.newSSLContext(configuration);
+            SSLContext sslcontext = NetworkSecurityManager.newSSLContext(configuration, false);
             SSLConnectionSocketFactory sslsf = new SSLConnectionSocketFactory(sslcontext, new String[] { "TLSv1.2" },
                     null, SSLConnectionSocketFactory.getDefaultHostnameVerifier());
             return HttpClients.custom().setSSLSocketFactory(sslsf).build();
@@ -694,6 +772,35 @@ public class ExternalLibraryManager implements ILibraryManager, ILifeCycleCompon
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    @Override
+    public void writeShim(FileReference outputFile, byte[] copyBuf) throws IOException {
+        InputStream is = getClass().getClassLoader().getResourceAsStream(outputFile.getFile().getName());
+        if (is == null) {
+            throw new IOException("Classpath does not contain necessary Python resources!");
+        }
+        try {
+            if (ncs.getConfiguration().isCloudDeployment()) {
+                writeAndForce(outputFile, is, copyBuf, ((ICloudIOManager) ioManager).getLocalIOManager(), true);
+            } else {
+                writeAndForce(outputFile, is, copyBuf, ioManager, true);
+            }
+        } finally {
+            is.close();
+        }
+    }
+
+    @Override
+    public IIOManager getCloudIOManager() {
+        return ioManager;
+    }
+
+    public static void writeDescriptor(ILibraryManager libraryManager, FileReference descFile, LibraryDescriptor desc,
+            boolean cloud, byte[] copyBuf) throws IOException {
+        byte[] bytes = libraryManager.serializeLibraryDescriptor(desc);
+        libraryManager.writeAndForce(descFile, new ByteArrayInputStream(bytes), copyBuf,
+                libraryManager.getCloudIOManager(), true);
     }
 
 }

@@ -24,6 +24,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.asterix.common.annotations.isTransformRecordAnnotation;
 import org.apache.asterix.common.config.GlobalConfig;
 import org.apache.asterix.common.dataflow.ICcApplicationContext;
 import org.apache.asterix.common.exceptions.CompilationException;
@@ -57,8 +58,8 @@ import org.apache.asterix.om.utils.ConstantExpressionUtil;
 import org.apache.asterix.runtime.base.UnnestingPositionWriterFactory;
 import org.apache.asterix.runtime.evaluators.functions.PointableHelper;
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalExpressionTag;
@@ -82,12 +83,12 @@ import org.apache.hyracks.algebricks.core.algebra.visitors.ILogicalExpressionVis
 import org.apache.hyracks.algebricks.core.config.AlgebricksConfig;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenContext;
 import org.apache.hyracks.algebricks.core.rewriter.base.PhysicalOptimizationConfig;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
 import org.apache.hyracks.algebricks.runtime.serializer.ResultSerializerFactoryProvider;
 import org.apache.hyracks.algebricks.runtime.writers.PrinterBasedWriterFactory;
 import org.apache.hyracks.api.application.IServiceContext;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.dataflow.value.ISerializerDeserializer;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
@@ -138,6 +139,7 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
     };
 
     private static final IOperatorSchema[] _emptySchemas = new IOperatorSchema[] {};
+
     private static final Map<FunctionIdentifier, IAObject> FUNC_ID_TO_CONSTANT = ImmutableMap
             .of(BuiltinFunctions.NUMERIC_E, new ADouble(Math.E), BuiltinFunctions.NUMERIC_PI, new ADouble(Math.PI));
     private final JobGenContext jobGenCtx;
@@ -158,7 +160,7 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
                 UnnestingPositionWriterFactory.INSTANCE, null,
                 new ExpressionRuntimeProvider(new QueryLogicalExpressionJobGen(metadataProvider.getFunctionManager())),
                 ExpressionTypeComputer.INSTANCE, null, null, null, null, GlobalConfig.DEFAULT_FRAME_SIZE, null,
-                NoOpWarningCollector.INSTANCE, 0, new PhysicalOptimizationConfig());
+                NoOpWarningCollector.INSTANCE, 0, new PhysicalOptimizationConfig(), null);
     }
 
     public void reset(IOptimizationContext context) {
@@ -170,43 +172,51 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
     public boolean transform(Mutable<ILogicalExpression> exprRef) throws AlgebricksException {
         AbstractLogicalExpression expr = (AbstractLogicalExpression) exprRef.getValue();
         Pair<Boolean, ILogicalExpression> newExpression = expr.accept(this, null);
-        if (newExpression.first) {
-            exprRef.setValue(newExpression.second);
+        if (newExpression.getLeft()) {
+            exprRef.setValue(newExpression.getRight());
         }
-        return newExpression.first;
+        return newExpression.getLeft();
     }
 
     @Override
     public Pair<Boolean, ILogicalExpression> visitConstantExpression(ConstantExpression expr, Void arg) {
-        return new Pair<>(false, expr);
+        return Pair.of(false, expr);
     }
 
     @Override
     public Pair<Boolean, ILogicalExpression> visitVariableReferenceExpression(VariableReferenceExpression expr,
             Void arg) {
-        return new Pair<>(false, expr);
+        return Pair.of(false, expr);
     }
 
     @Override
     public Pair<Boolean, ILogicalExpression> visitScalarFunctionCallExpression(ScalarFunctionCallExpression expr,
             Void arg) throws AlgebricksException {
+        FunctionIdentifier fid = expr.getFunctionIdentifier();
+
+        // Guard against O(N^2) behavior for large OR/AND trees (e.g. IN with a long list expands
+        // into O(N) OR nodes; visiting each one and iterating all siblings is O(N^2) total).
+        if ((BuiltinFunctions.OR.equals(fid) || BuiltinFunctions.AND.equals(fid))
+                && expr.getArguments().size() > optContext.getPhysicalOptimizationConfig().getMaxExpressionTreeSize()) {
+            return Pair.of(false, expr);
+        }
+
         boolean changed = constantFoldArgs(expr, arg);
         List<Mutable<ILogicalExpression>> argList = expr.getArguments();
         int argConstantCount = countConstantArgs(argList);
-        FunctionIdentifier fid = expr.getFunctionIdentifier();
         if (argConstantCount != argList.size()) {
             if (argConstantCount > 0 && (BuiltinFunctions.OR.equals(fid) || BuiltinFunctions.AND.equals(fid))) {
                 if (foldOrAndArgs(expr)) {
                     ILogicalExpression changedExpr =
                             expr.getArguments().size() == 1 ? expr.getArguments().get(0).getValue() : expr;
-                    return new Pair<>(true, changedExpr);
+                    return Pair.of(true, changedExpr);
                 }
             }
-            return new Pair<>(changed, expr);
+            return Pair.of(changed, expr);
         }
 
-        if (!expr.isFunctional() || !canConstantFold(expr)) {
-            return new Pair<>(changed, expr);
+        if (!isFoldable(expr) || !canConstantFold(expr)) {
+            return Pair.of(changed, expr);
         }
 
         try {
@@ -218,7 +228,7 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
                     int k = rt.getFieldIndex(str);
                     if (k >= 0) {
                         // wait for the ByNameToByIndex rule to apply
-                        return new Pair<>(changed, expr);
+                        return Pair.of(changed, expr);
                     }
                 }
             }
@@ -226,7 +236,7 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
             if (c != null) {
                 ConstantExpression constantExpression = new ConstantExpression(new AsterixConstantValue(c));
                 constantExpression.setSourceLocation(expr.getSourceLocation());
-                return new Pair<>(true, constantExpression);
+                return Pair.of(true, constantExpression);
             }
 
             IScalarEvaluatorFactory fact = jobGenCtx.getExpressionRuntimeProvider().createEvaluatorFactory(expr,
@@ -250,12 +260,12 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
             warningCollector.getWarnings(optContext.getWarningCollector());
             ConstantExpression constantExpression = new ConstantExpression(new AsterixConstantValue(o));
             constantExpression.setSourceLocation(expr.getSourceLocation());
-            return new Pair<>(true, constantExpression);
+            return Pair.of(true, constantExpression);
         } catch (HyracksDataException | AlgebricksException e) {
             if (AlgebricksConfig.ALGEBRICKS_LOGGER.isTraceEnabled()) {
                 AlgebricksConfig.ALGEBRICKS_LOGGER.trace("Exception caught at constant folding: " + e, e);
             }
-            return new Pair<>(false, null);
+            return Pair.of(false, null);
         }
     }
 
@@ -263,21 +273,21 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
     public Pair<Boolean, ILogicalExpression> visitAggregateFunctionCallExpression(AggregateFunctionCallExpression expr,
             Void arg) throws AlgebricksException {
         boolean changed = constantFoldArgs(expr, arg);
-        return new Pair<>(changed, expr);
+        return Pair.of(changed, expr);
     }
 
     @Override
     public Pair<Boolean, ILogicalExpression> visitStatefulFunctionCallExpression(StatefulFunctionCallExpression expr,
             Void arg) throws AlgebricksException {
         boolean changed = constantFoldArgs(expr, arg);
-        return new Pair<>(changed, expr);
+        return Pair.of(changed, expr);
     }
 
     @Override
     public Pair<Boolean, ILogicalExpression> visitUnnestingFunctionCallExpression(UnnestingFunctionCallExpression expr,
             Void arg) throws AlgebricksException {
         boolean changed = constantFoldArgs(expr, arg);
-        return new Pair<>(changed, expr);
+        return Pair.of(changed, expr);
     }
 
     private boolean constantFoldArgs(AbstractFunctionCallExpression expr, Void arg) throws AlgebricksException {
@@ -306,22 +316,22 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
             Mutable<ILogicalExpression> fieldNameExprRef = iterator.next();
             Pair<Boolean, ILogicalExpression> fieldNameExpr = fieldNameExprRef.getValue().accept(this, arg);
             boolean isDuplicate = false;
-            if (fieldNameExpr.first) {
-                String fieldName = ConstantExpressionUtil.getStringConstant(fieldNameExpr.second);
+            if (fieldNameExpr.getLeft()) {
+                String fieldName = ConstantExpressionUtil.getStringConstant(fieldNameExpr.getRight());
                 if (fieldName != null) {
                     isDuplicate = isDuplicateField(fieldName, fieldNameIdx, expr.getArguments());
                 }
                 if (isDuplicate) {
                     IWarningCollector warningCollector = optContext.getWarningCollector();
                     if (warningCollector.shouldWarn()) {
-                        warningCollector.warn(Warning.of(fieldNameExpr.second.getSourceLocation(),
+                        warningCollector.warn(Warning.of(fieldNameExpr.getRight().getSourceLocation(),
                                 ErrorCode.COMPILATION_DUPLICATE_FIELD_NAME, LogRedactionUtil.userData(fieldName)));
                     }
                     iterator.remove();
                     iterator.next();
                     iterator.remove();
                 } else {
-                    fieldNameExprRef.setValue(fieldNameExpr.second);
+                    fieldNameExprRef.setValue(fieldNameExpr.getRight());
                 }
                 changed = true;
             }
@@ -345,8 +355,8 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
 
     private boolean foldArg(Mutable<ILogicalExpression> exprArgRef, Void arg) throws AlgebricksException {
         Pair<Boolean, ILogicalExpression> newExpr = exprArgRef.getValue().accept(this, arg);
-        if (newExpr.first) {
-            exprArgRef.setValue(newExpr.second);
+        if (newExpr.getLeft()) {
+            exprArgRef.setValue(newExpr.getRight());
             return true;
         }
         return false;
@@ -362,17 +372,31 @@ public class ConstantFoldingVisitor implements ILogicalExpressionVisitor<Pair<Bo
         return n;
     }
 
+    /**
+     * Whether a call whose arguments are all constants may be evaluated here. Folding a non-functional call
+     * would fix a value that is meant to vary per evaluation, so by default only functional calls qualify.
+     */
+    protected boolean isFoldable(ScalarFunctionCallExpression expr) {
+        return expr.isFunctional();
+    }
+
     private boolean canConstantFold(ScalarFunctionCallExpression function) throws AlgebricksException {
         // skip external functions because they're not available at compile time (on CC)
         IFunctionInfo fi = function.getFunctionInfo();
         if (fi.isExternal()) {
             return false;
         }
+        // median sorts through run files, which need the task context that is null at compile time
+        FunctionIdentifier fid = function.getFunctionIdentifier();
+        if (fid.equals(BuiltinFunctions.SCALAR_SQL_MEDIAN) || fid.equals(BuiltinFunctions.SCALAR_MEDIAN)) {
+            return false;
+        }
         IAType returnType = (IAType) _emptyTypeEnv.getType(function);
         // skip all functions that would produce records/arrays/multisets (derived types) in their open format
         // this is because constant folding them will make them closed (currently)
-        if (function.getFunctionIdentifier().equals(BuiltinFunctions.OPEN_RECORD_CONSTRUCTOR)) {
-            if (returnType.getTypeTag() != ATypeTag.OBJECT || ((ARecordType) returnType).isOpen()) {
+        if (fid.equals(BuiltinFunctions.OPEN_RECORD_CONSTRUCTOR)) {
+            if (returnType.getTypeTag() != ATypeTag.OBJECT || ((ARecordType) returnType).isOpen()
+                    || function.hasAnnotation(isTransformRecordAnnotation.class)) {
                 return false;
             }
         }

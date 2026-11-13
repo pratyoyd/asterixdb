@@ -21,6 +21,7 @@ package org.apache.hyracks.util;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 
 public class Span {
 
@@ -82,7 +83,62 @@ public class Span {
         }
     };
 
-    public static final Span ELAPSED = start(0, TimeUnit.NANOSECONDS);
+    public static final Span ELAPSED = new Span() {
+        @Override
+        public void reset() {
+            // no-op
+        }
+
+        @Override
+        public long getSpanNanos() {
+            return 0;
+        }
+
+        @Override
+        public long getSpan(TimeUnit unit) {
+            return 0;
+        }
+
+        @Override
+        public boolean elapsed() {
+            return true;
+        }
+
+        @Override
+        public long elapsed(TimeUnit unit) {
+            return Long.MAX_VALUE;
+        }
+
+        @Override
+        public void sleep() {
+            // no-op: already elapsed
+        }
+
+        @Override
+        public void sleep(long sleep, TimeUnit unit) {
+            // no-op: already elapsed
+        }
+
+        @Override
+        public long remaining(TimeUnit unit) {
+            return 0;
+        }
+
+        @Override
+        public void wait(Object monitor) {
+            // no-op: already elapsed
+        }
+
+        @Override
+        public boolean await(CountDownLatch latch) {
+            return false;
+        }
+
+        @Override
+        public String toString() {
+            return "<ELAPSED>";
+        }
+    };
 
     private final long spanNanos;
     private volatile long startNanos;
@@ -107,18 +163,44 @@ public class Span {
         return unit.convert(spanNanos, TimeUnit.NANOSECONDS);
     }
 
+    /**
+     * Create and start a new Span
+     * @param span the duration of the Span
+     * @param unit the unit of the specified duration
+     * @return the started Span
+     */
     public static Span start(long span, TimeUnit unit) {
         Span s = new Span(span, unit);
         s.reset();
         return s;
     }
 
-    public static Span init(long span, TimeUnit unit) {
-        return new Span(span, unit);
+    /**
+     * Creates a span that is immediately elapsed, analogous to a do/while loop: the elapsed condition is true on the
+     * first check, triggering immediate action, after which {@link #reset()} begins the countdown for subsequent
+     * iterations. Contrast with {@link #start(long, TimeUnit)}, which is analogous to a while/do loop: the span must
+     * actually expire before the elapsed condition becomes true.
+     * <p>
+     * Typical usage: bootstrapping state that has a TTL, where the first fetch should happen immediately and
+     * subsequent refreshes should be rate-limited by the span duration.
+     * <pre>
+     *   Span refreshSpan = Span.startElapsed(ttlSeconds, TimeUnit.SECONDS);
+     *   while (running) {
+     *       if (refreshSpan.elapsed()) {
+     *           refresh();
+     *           refreshSpan.reset();
+     *       }
+     *   }
+     * </pre>
+     */
+    public static Span startElapsed(long span, TimeUnit unit) {
+        Span s = new Span(span, unit);
+        s.startNanos = System.nanoTime() - s.spanNanos;
+        return s;
     }
 
     public boolean elapsed() {
-        return elapsed(TimeUnit.NANOSECONDS) > spanNanos;
+        return elapsed(TimeUnit.NANOSECONDS) >= spanNanos;
     }
 
     public long elapsed(TimeUnit unit) {
@@ -157,6 +239,43 @@ public class Span {
 
     public boolean await(CountDownLatch latch) throws InterruptedException {
         return latch.await(remaining(TimeUnit.NANOSECONDS), TimeUnit.NANOSECONDS);
+    }
+
+    /**
+     * tryAcquireUninterruptibly will attempt to acquire the semaphore until the span has elapsed or the semaphore is
+     * acquired, disregarding any interruptions. If an interruption occurs, the thread will be re-interrupted upon
+     * method completion.
+     * @param semaphore the semaphore to acquire
+     * @return true if the semaphore was acquired, false if the span elapsed
+     */
+    public boolean tryAcquireUninterruptibly(Semaphore semaphore) {
+        return retryUninterruptibly(semaphore::tryAcquire, v -> v);
+    }
+
+    /**
+     * retryUninterruptibly will attempt to execute the action until the span has elapsed or the action has succeeded
+     * @param action the action to execute
+     * @param test the predicate to determine if the action has succeeded
+     * @return true if the action succeeded, false if the span elapsed
+     */
+    public <V> boolean retryUninterruptibly(InterruptableBiFunction<Long, TimeUnit, V> action, Predicate<V> test) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            while (!elapsed()) {
+                try {
+                    if (test.test(action.process(remaining(TimeUnit.NANOSECONDS), TimeUnit.NANOSECONDS))) {
+                        return true;
+                    }
+                } catch (InterruptedException e) { // NOSONAR- we will re-interrupt the thread during unwind
+                    interrupted = true;
+                }
+            }
+            return false;
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     public void loopUntilExhausted(ThrowingAction action) throws Exception {
@@ -201,7 +320,7 @@ public class Span {
         if (micros > 0) {
             builder.append(micros).append("us");
         }
-        if (nanos > 0 || builder.length() == 0) {
+        if (nanos > 0 || builder.isEmpty()) {
             builder.append(nanos).append("ns");
         }
         return builder.toString();

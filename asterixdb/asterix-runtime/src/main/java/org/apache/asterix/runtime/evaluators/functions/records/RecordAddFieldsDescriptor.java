@@ -51,9 +51,9 @@ import org.apache.asterix.runtime.exceptions.InvalidDataFormatException;
 import org.apache.asterix.runtime.exceptions.TypeMismatchException;
 import org.apache.asterix.runtime.functions.FunctionTypeInferers;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.dataflow.value.IBinaryComparator;
 import org.apache.hyracks.api.dataflow.value.IBinaryHashFunction;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
@@ -62,6 +62,8 @@ import org.apache.hyracks.data.std.primitive.VoidPointable;
 import org.apache.hyracks.data.std.util.ArrayBackedValueStorage;
 import org.apache.hyracks.data.std.util.BinaryEntry;
 import org.apache.hyracks.dataflow.common.data.accessors.IFrameTupleReference;
+import org.apache.hyracks.util.LogRedactionUtil;
+import org.apache.hyracks.util.string.UTF8StringUtil;
 
 @MissingNullInOutFunction
 public class RecordAddFieldsDescriptor extends AbstractScalarFunctionDynamicDescriptor {
@@ -251,7 +253,10 @@ public class RecordAddFieldsDescriptor extends AbstractScalarFunctionDynamicDesc
                                     tempValReference.set(entry.getBuf(), entry.getOffset(), entry.getLength());
                                     // If value is not equal throw conflicting duplicate field, otherwise ignore
                                     if (!PointableHelper.byteArrayEqual(valuePointable, tempValReference)) {
-                                        throw new RuntimeDataException(ErrorCode.DUPLICATE_FIELD_NAME, getIdentifier());
+                                        throw new RuntimeDataException(ErrorCode.DUPLICATE_FIELD_NAME, sourceLoc,
+                                                LogRedactionUtil
+                                                        .userData(UTF8StringUtil.toString(namePointable.getByteArray(),
+                                                                namePointable.getStartOffset() + 1)));
                                     }
                                 } else {
                                     if (pos > -1) {

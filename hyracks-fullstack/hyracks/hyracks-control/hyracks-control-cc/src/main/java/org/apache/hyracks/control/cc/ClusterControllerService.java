@@ -181,7 +181,7 @@ public class ClusterControllerService implements IControllerService {
         ccContext = new ClusterControllerContext(topology);
         sweeper = new DeadNodeSweeper();
         resultDirectoryService =
-                new ResultDirectoryService(ccConfig.getResultTTL(), ccConfig.getResultSweepThreshold());
+                new ResultDirectoryService(ccConfig.getResultTTLMillis(), ccConfig.getResultSweepThreshold());
 
         deploymentRunMap = new HashMap<>();
         stateDumpRunMap = new HashMap<>();
@@ -221,12 +221,13 @@ public class ClusterControllerService implements IControllerService {
         IIPCI ccIPCI = new ClusterControllerIPCI(this);
         clusterIPC = new IPCSystem(
                 new InetSocketAddress(ccConfig.getClusterListenAddress(), ccConfig.getClusterListenPort()),
-                networkSecurityManager.getSocketChannelFactory(), ccIPCI, new CCNCFunctions.SerializerDeserializer());
+                networkSecurityManager.getSocketChannelFactory(), ccIPCI, new CCNCFunctions.SerializerDeserializer(),
+                executor);
         IIPCI ciIPCI = new ClientInterfaceIPCI(this, jobIdFactory);
         clientIPC =
                 new IPCSystem(new InetSocketAddress(ccConfig.getClientListenAddress(), ccConfig.getClientListenPort()),
                         networkSecurityManager.getSocketChannelFactory(), ciIPCI,
-                        new JavaSerializationBasedPayloadSerializerDeserializer());
+                        new JavaSerializationBasedPayloadSerializerDeserializer(), executor);
         clusterIPC.start();
         clientIPC.start();
         startWebServers();
@@ -570,7 +571,8 @@ public class ClusterControllerService implements IControllerService {
 
     protected INetworkSecurityManager createNetworkSecurityManager(IApplicationConfig appConfig, IApplication app)
             throws Exception {
-        return new NetworkSecurityManager(NetworkSecurityConfig.of(ccConfig.isSslEnabled(), ccConfig.getKeyStorePath(),
-                ccConfig.getKeyStorePassword(), ccConfig.getTrustStorePath()));
+        return new NetworkSecurityManager(NetworkSecurityConfig.of(ccConfig.isSslEnabled(),
+                ccConfig.isSslClusterVerifyPeerIdentity(), ccConfig.isSslRmiVerifyPeerIdentity(),
+                ccConfig.getKeyStorePath(), ccConfig.getKeyStorePassword(), ccConfig.getTrustStorePath()));
     }
 }

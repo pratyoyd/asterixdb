@@ -29,6 +29,7 @@ import org.apache.asterix.external.input.record.CharArrayRecord;
 import org.apache.asterix.external.input.stream.AsterixInputStreamReader;
 import org.apache.asterix.external.util.ExternalDataUtils;
 import org.apache.asterix.external.util.IFeedLogManager;
+import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 
 public abstract class StreamRecordReader extends AbstractStreamRecordReader<char[]>
@@ -41,9 +42,12 @@ public abstract class StreamRecordReader extends AbstractStreamRecordReader<char
     protected boolean done = false;
     protected IFeedLogManager feedLogManager;
 
-    protected void configure(AsterixInputStream inputStream, Map<String, String> config) {
+    public void configure(IHyracksTaskContext ctx, AsterixInputStream inputStream, Map<String, String> config)
+            throws HyracksDataException {
         int bufferSize = ExternalDataUtils.getOrDefaultBufferSize(config);
-        this.reader = new AsterixInputStreamReader(inputStream, bufferSize);
+        boolean failOnIllegalCharacter = ExternalDataUtils.shouldFailOnIllegalCharacter(config);
+        this.reader = new AsterixInputStreamReader(inputStream, bufferSize, failOnIllegalCharacter,
+                ctx.getWarningCollector());
         record = new CharArrayRecord();
         inputBuffer = new char[bufferSize];
         setSuppliers(config, reader::getStreamName, reader::getPreviousStreamName);

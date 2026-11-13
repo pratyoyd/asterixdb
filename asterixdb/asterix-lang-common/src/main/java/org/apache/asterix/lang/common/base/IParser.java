@@ -19,7 +19,9 @@
 package org.apache.asterix.lang.common.base;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.common.functions.FunctionSignature;
@@ -59,5 +61,21 @@ public interface IParser {
      */
     default long getTotalWarningsCount() {
         return 0L;
+    }
+
+    /**
+     * The warnings raised while parsing each statement, in parse order. A parser that does not attribute its warnings
+     * to a statement returns none, and they are reported for the request as a whole.
+     */
+    default List<Set<Warning>> getWarningsPerStatement() {
+        return Collections.emptyList();
+    }
+
+    /**
+     * The text of each statement of the request, in parse order: from a statement's first token to its last, without
+     * the semicolon that ends it. A parser that does not keep the text of a statement returns none.
+     */
+    default List<String> getStatementTexts() {
+        return Collections.emptyList();
     }
 }

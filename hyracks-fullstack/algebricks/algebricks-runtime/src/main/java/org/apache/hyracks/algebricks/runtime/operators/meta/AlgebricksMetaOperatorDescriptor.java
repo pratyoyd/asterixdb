@@ -18,14 +18,19 @@
  */
 package org.apache.hyracks.algebricks.runtime.operators.meta;
 
+import static org.apache.hyracks.dataflow.std.util.ProfilingUtils.profiling;
+
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import org.apache.hyracks.algebricks.runtime.base.AlgebricksPipeline;
+import org.apache.hyracks.algebricks.runtime.base.IProfiledPushRuntime;
 import org.apache.hyracks.algebricks.runtime.base.IPushRuntimeFactory;
 import org.apache.hyracks.api.comm.IFrameWriter;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
@@ -35,9 +40,11 @@ import org.apache.hyracks.api.dataflow.value.IRecordDescriptorProvider;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.job.IOperatorDescriptorRegistry;
+import org.apache.hyracks.api.job.JobFlag;
 import org.apache.hyracks.api.job.profiling.IOperatorStats;
 import org.apache.hyracks.api.job.profiling.NoOpOperatorStats;
 import org.apache.hyracks.api.job.profiling.OperatorStats;
+import org.apache.hyracks.api.util.InvokeUtil;
 import org.apache.hyracks.dataflow.std.base.AbstractSingleActivityOperatorDescriptor;
 import org.apache.hyracks.dataflow.std.base.AbstractUnaryInputUnaryOutputIntrospectingOperatorNodePushable;
 import org.apache.hyracks.dataflow.std.base.AbstractUnaryOutputSourceOperatorNodePushable;
@@ -93,66 +100,63 @@ public class AlgebricksMetaOperatorDescriptor extends AbstractSingleActivityOper
         }
     }
 
-    private static String makeStatName(String base, String name, int pos, int input, int subPlan, int subPos) {
+    private static String makeStatName(String base, String name, String subIds) {
         StringBuilder sb = new StringBuilder();
-        sb.append(base);
-        sb.append(".");
-        sb.append(pos);
-        if (subPlan >= 0) {
-            sb.append(".");
-            sb.append(subPlan);
-            sb.append(".");
-            sb.append(subPos);
+        sb.append(base).append(subIds);
+        String[] ids = subIds.split("\\.");
+        if (ids.length >= 2) {
             sb.append(" - Subplan ");
         } else {
             sb.append(" - MicroOp ");
         }
         sb.append(name);
-        if (input >= 0) {
-            sb.append(" input [");
-            sb.append(input);
-            sb.append("] ");
-        }
         return sb.toString();
     }
 
-    private static String makeId(String base, int id, int subPlan, int subPos) {
-        return base + "." + id + (subPlan >= 0 ? "." + subPlan : "") + (subPos >= 0 ? "." + subPos : "");
-    }
-
-    private static IOperatorStats makeStatForRuntimeFact(IPushRuntimeFactory factory, String base, String baseId,
-            int pos, int subPlan, int subPos) {
-        return new OperatorStats(makeStatName(base, factory.toString(), pos, -1, subPlan, subPos),
-                makeId(baseId, pos, subPlan, subPos));
+    private static IOperatorStats makeStatForRuntimeFact(IPushRuntimeFactory factory, String base, String name,
+            String subIds) {
+        return new OperatorStats(makeStatName(base, UUID.randomUUID().toString(), subIds), name + subIds);
     }
 
     public static Map<IPushRuntimeFactory, IOperatorStats> makeMicroOpStats(AlgebricksPipeline pipe,
             IOperatorStats outerStats) {
+        return makeMicroOpStats(pipe, outerStats, "");
+    }
+
+    public static Map<IPushRuntimeFactory, IOperatorStats> makeMicroOpStats(AlgebricksPipeline pipe,
+            IOperatorStats outerStats, String subId) {
+        if (outerStats.getName().equals(NoOpOperatorStats.NOOP_NAME)) {
+            return Collections.emptyMap();
+        }
         Map<IPushRuntimeFactory, IOperatorStats> microOpStats = new HashMap<>();
         String baseName = outerStats.getName().split(" - ")[0];
         String baseId = outerStats.getOperatorId();
-        List<SubplanRuntimeFactory> subplans = new ArrayList<>();
+        List<SubplanRuntimeFactory> subPlans = new ArrayList<>();
+        traverseFactories(pipe, baseName, baseId, subId, microOpStats, subPlans);
+        for (SubplanRuntimeFactory sub : subPlans) {
+            sub.setStats(microOpStats);
+        }
+        return microOpStats;
+    }
+
+    private static void traverseFactories(AlgebricksPipeline pipe, String baseName, String baseId, String subId,
+            Map<IPushRuntimeFactory, IOperatorStats> microOpStats, List<SubplanRuntimeFactory> subPlans) {
         for (int i = 0; i < pipe.getRuntimeFactories().length; i++) {
             IPushRuntimeFactory fact = pipe.getRuntimeFactories()[i];
             //TODO: don't use instanceof
             if (fact instanceof SubplanRuntimeFactory) {
                 SubplanRuntimeFactory subplanFact = (SubplanRuntimeFactory) fact;
-                subplans.add(subplanFact);
+                subPlans.add(subplanFact);
                 List<AlgebricksPipeline> pipelines = subplanFact.getPipelines();
                 for (AlgebricksPipeline p : pipelines) {
-                    IPushRuntimeFactory[] subplanFactories = p.getRuntimeFactories();
-                    for (int j = subplanFactories.length - 1; j > 0; j--) {
-                        microOpStats.put(subplanFactories[j], makeStatForRuntimeFact(subplanFactories[j], baseName,
-                                baseId, i, pipelines.indexOf(p), j));
-                    }
+                    traverseFactories(p, baseName, baseId, subId + "." + i + "." + pipelines.indexOf(p), microOpStats,
+                            subPlans);
                 }
+            } else {
+                microOpStats.put(fact, makeStatForRuntimeFact(fact, baseName, baseId, subId + "." + i));
             }
-            microOpStats.put(fact, makeStatForRuntimeFact(fact, baseName, baseId, i, -1, -1));
         }
-        for (SubplanRuntimeFactory sub : subplans) {
-            sub.setStats(microOpStats);
-        }
-        return microOpStats;
+
     }
 
     private class SourcePushRuntime extends AbstractUnaryOutputSourceOperatorNodePushable {
@@ -170,25 +174,21 @@ public class AlgebricksMetaOperatorDescriptor extends AbstractSingleActivityOper
             PipelineAssembler pa =
                     new PipelineAssembler(pipeline, inputArity, outputArity, null, pipelineOutputRecordDescriptor);
             startOfPipeline = pa.assemblePipeline(writer, ctx, new HashMap<>());
-            HyracksDataException exception = null;
+            Exception exception = null;
             try {
                 startOfPipeline.open();
             } catch (Exception e) {
-                startOfPipeline.fail();
-                exception = HyracksDataException.create(e);
+                exception = e;
             } finally {
-                try {
-                    startOfPipeline.close();
-                } catch (Exception e) {
-                    if (exception == null) {
-                        exception = HyracksDataException.create(e);
-                    } else {
-                        exception.addSuppressed(e);
-                    }
+                if (exception != null) {
+                    exception = InvokeUtil.tryUninterruptibleWithCleanups(exception, startOfPipeline::fail,
+                            startOfPipeline::close);
+                } else {
+                    exception = InvokeUtil.runUninterruptible(exception, startOfPipeline::close);
                 }
             }
             if (exception != null) {
-                throw exception;
+                throw HyracksDataException.create(exception);
             }
         }
 
@@ -207,6 +207,7 @@ public class AlgebricksMetaOperatorDescriptor extends AbstractSingleActivityOper
             private boolean opened = false;
             private IOperatorStats parentStats = NoOpOperatorStats.INSTANCE;
             private Map<IPushRuntimeFactory, IOperatorStats> microOpStats = new HashMap<>();
+            private List<IProfiledPushRuntime> profiledPushRuntimes = Collections.emptyList();
 
             public void open() throws HyracksDataException {
                 if (startOfPipeline == null) {
@@ -214,9 +215,12 @@ public class AlgebricksMetaOperatorDescriptor extends AbstractSingleActivityOper
                             outputArity > 0 ? AlgebricksMetaOperatorDescriptor.this.outRecDescs[0] : null;
                     RecordDescriptor pipelineInputRecordDescriptor = recordDescProvider
                             .getInputRecordDescriptor(AlgebricksMetaOperatorDescriptor.this.getActivityId(), 0);
-                    PipelineAssembler pa = new PipelineAssembler(pipeline, inputArity, outputArity,
+                    PipelineAssembler assembler = new PipelineAssembler(pipeline, inputArity, outputArity,
                             pipelineInputRecordDescriptor, pipelineOutputRecordDescriptor);
-                    startOfPipeline = pa.assemblePipeline(writer, ctx, microOpStats);
+                    startOfPipeline = assembler.assemblePipeline(writer, ctx, microOpStats);
+                    if (ctx.getJobFlags().contains(JobFlag.PROFILE_RUNTIME)) {
+                        profiledPushRuntimes = assembler.getProfiledPushRuntimes();
+                    }
                 }
                 opened = true;
                 startOfPipeline.open();
@@ -249,6 +253,9 @@ public class AlgebricksMetaOperatorDescriptor extends AbstractSingleActivityOper
             @Override
             public void deinitialize() throws HyracksDataException {
                 super.deinitialize();
+                if (profiling(ctx)) {
+                    profiledPushRuntimes.forEach(IProfiledPushRuntime::computeTimings);
+                }
             }
 
             @Override

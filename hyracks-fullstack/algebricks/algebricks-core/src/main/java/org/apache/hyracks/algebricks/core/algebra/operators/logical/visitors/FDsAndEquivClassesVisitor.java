@@ -28,9 +28,9 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.common.utils.ListSet;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.EquivalenceClass;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -233,7 +233,7 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
         List<LogicalVariable> premiseGby = new LinkedList<LogicalVariable>();
         List<Pair<LogicalVariable, Mutable<ILogicalExpression>>> gByList = op.getGroupByList();
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : gByList) {
-            premiseGby.add(p.first);
+            premiseGby.add(p.getLeft());
         }
 
         List<Pair<LogicalVariable, Mutable<ILogicalExpression>>> decorList = op.getDecorList();
@@ -248,7 +248,7 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
 
         Set<LogicalVariable> gbySet = new HashSet<LogicalVariable>();
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : gByList) {
-            ILogicalExpression expr = p.second.getValue();
+            ILogicalExpression expr = p.getRight().getValue();
             if (expr.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                 VariableReferenceExpression v = (VariableReferenceExpression) expr;
                 gbySet.add(v.getVariableReference());
@@ -261,7 +261,7 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
         List<Pair<LogicalVariable, Mutable<ILogicalExpression>>> newGbyList = new ArrayList<>();
         boolean changed = false;
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : gByList) {
-            ILogicalExpression expr = p.second.getValue();
+            ILogicalExpression expr = p.getRight().getValue();
             if (expr.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                 VariableReferenceExpression varRef = (VariableReferenceExpression) expr;
                 LogicalVariable v2 = varRef.getVariableReference();
@@ -454,6 +454,18 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
 
     @Override
     public Void visitIntersectOperator(IntersectOperator op, IOptimizationContext ctx) throws AlgebricksException {
+        setEmptyFDsEqClasses(op, ctx);
+        return null;
+    }
+
+    @Override
+    public Void visitKMeansStageOperator(KMeansStageOperator op, IOptimizationContext ctx) throws AlgebricksException {
+        setEmptyFDsEqClasses(op, ctx);
+        return null;
+    }
+
+    @Override
+    public Void visitClusterByOperator(ClusterByOperator op, IOptimizationContext ctx) throws AlgebricksException {
         setEmptyFDsEqClasses(op, ctx);
         return null;
     }
@@ -721,11 +733,11 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
 
     private LogicalVariable getNewGbyVar(GroupByOperator g, LogicalVariable v) {
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : g.getGroupByList()) {
-            ILogicalExpression e = p.second.getValue();
+            ILogicalExpression e = p.getRight().getValue();
             if (e.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                 LogicalVariable v2 = ((VariableReferenceExpression) e).getVariableReference();
                 if (v2 == v) {
-                    return p.first;
+                    return p.getLeft();
                 }
             }
         }
@@ -734,11 +746,11 @@ public class FDsAndEquivClassesVisitor implements ILogicalOperatorVisitor<Void, 
 
     private LogicalVariable getNewDecorVar(GroupByOperator g, LogicalVariable v) {
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : g.getDecorList()) {
-            ILogicalExpression e = p.second.getValue();
+            ILogicalExpression e = p.getRight().getValue();
             if (e.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                 LogicalVariable v2 = ((VariableReferenceExpression) e).getVariableReference();
                 if (v2 == v) {
-                    return (p.first != null) ? p.first : v2;
+                    return (p.getLeft() != null) ? p.getLeft() : v2;
                 }
             }
         }

@@ -1,0 +1,516 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.asterix.external.input.record.reader.iceberg;
+
+import java.io.IOException;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.asterix.common.exceptions.CompilationException;
+import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.external.api.IRawRecord;
+import org.apache.asterix.external.api.IRecordReader;
+import org.apache.asterix.external.dataflow.AbstractFeedDataFlowController;
+import org.apache.asterix.external.input.record.GenericRecord;
+import org.apache.asterix.external.util.ExternalDataConstants;
+import org.apache.asterix.external.util.ExternalDataUtils;
+import org.apache.asterix.external.util.IFeedLogManager;
+import org.apache.asterix.external.util.iceberg.IcebergConstants;
+import org.apache.asterix.external.util.iceberg.IcebergUtils;
+import org.apache.asterix.external.util.iceberg.VariantProjectionPlan;
+import org.apache.asterix.om.types.ARecordType;
+import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.exceptions.IWarningCollector;
+import org.apache.hyracks.api.exceptions.Warning;
+import org.apache.hyracks.api.util.CleanupUtils;
+import org.apache.hyracks.api.util.ExceptionUtils;
+import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.data.DeleteLoader;
+import org.apache.iceberg.data.GenericDeleteFilter;
+import org.apache.iceberg.data.Record;
+import org.apache.iceberg.data.parquet.GenericParquetReaders;
+import org.apache.iceberg.deletes.PositionDeleteIndex;
+import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.parquet.Parquet;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+/**
+ * Iceberg record reader.
+ * The reader returns records in Iceberg Record format.
+ */
+public class IcebergFileRecordReader implements IRecordReader<Record> {
+
+    private static final Logger LOGGER = LogManager.getLogger();
+
+    private final List<FileScanTask> fileScanTasks;
+    private final Schema projectedSchema;
+    private final Map<String, String> originalConfiguration;
+    private final IRawRecord<Record> record;
+
+    private Map<String, String> catalogProperties;
+    private final IcebergFileIoDescriptor fileIoDescriptor;
+    private final IcebergDeleteCache deleteCache;
+    private Map<String, String> fileIoProperties;
+    private boolean tableInitialized;
+    private int nextTaskIndex = 0;
+    private Catalog catalog;
+    private FileIO tableFileIo;
+    // tableFileIo, or a view of it that asks storage for each file's length when the collection says not to trust the
+    // manifest's
+    private FileIO readFileIo;
+    private Schema schemaAtSnapshot;
+    private CloseableIterable<Record> iterable;
+    private Iterator<Record> recordsIterator;
+
+    // Variant sub-path projection pushdown plan (reading shredded). Computed once here; consumed by the read path to
+    // clip each file's shredded typed_value. Empty when the flag is off or nothing is narrowable, in which case the
+    // reader behaves exactly as before.
+    private final VariantProjectionPlan variantProjectionPlan;
+    // Whether a task carrying deletes may still take the pruned read. Separate from the plan's own flag because this
+    // is the only one of the variant pushdowns whose failure mode is a wrong answer rather than extra IO.
+    private final boolean variantProjectionPushdownWithDeletes;
+    private final IWarningCollector warningCollector;
+
+    /**
+     * @param schemaAtSnapshot the table schema at the pinned snapshot, and {@code fileIoDescriptor} the table's FileIO,
+     *        both as the compiler loaded them. When both are given the reader opens the data files directly and never
+     *        contacts the catalog; when either is {@code null} it loads the table from the catalog itself.
+     * @param deleteCache the scan's delete files already loaded on this node, shared with the scan's other readers;
+     *        {@code null} loads every delete file for each data file it applies to
+     */
+    public IcebergFileRecordReader(List<FileScanTask> fileScanTasks, Schema projectedSchema, Schema schemaAtSnapshot,
+            IcebergFileIoDescriptor fileIoDescriptor, IcebergDeleteCache deleteCache, Map<String, String> configuration,
+            IWarningCollector warningCollector) throws HyracksDataException {
+        this.fileScanTasks = fileScanTasks;
+        this.projectedSchema = projectedSchema;
+        this.schemaAtSnapshot = schemaAtSnapshot;
+        this.fileIoDescriptor = fileIoDescriptor;
+        this.deleteCache = deleteCache;
+        this.originalConfiguration = configuration;
+        this.warningCollector = warningCollector;
+        this.record = new GenericRecord<>();
+        this.variantProjectionPlan = buildVariantProjectionPlan();
+        this.variantProjectionPushdownWithDeletes = Boolean.parseBoolean(configuration.getOrDefault(
+                ExternalDataConstants.IcebergOptions.VARIANT_PROJECTION_PUSHDOWN_WITH_DELETES, Boolean.toString(
+                        ExternalDataConstants.IcebergOptions.DEFAULT_VARIANT_PROJECTION_PUSHDOWN_WITH_DELETES)));
+    }
+
+    // Best-effort: any problem decoding the requested-fields type just disables pushdown for this scan (empty plan),
+    // never fails the reader — it is only an optimization.
+    private VariantProjectionPlan buildVariantProjectionPlan() {
+        try {
+            boolean enabled = Boolean.parseBoolean(originalConfiguration.getOrDefault(
+                    ExternalDataConstants.IcebergOptions.VARIANT_PROJECTION_PUSHDOWN,
+                    Boolean.toString(ExternalDataConstants.IcebergOptions.DEFAULT_VARIANT_PROJECTION_PUSHDOWN)));
+            if (!enabled) {
+                return VariantProjectionPlan.none();
+            }
+            ARecordType projectedType = ExternalDataUtils
+                    .getExpectedType(originalConfiguration.get(ExternalDataConstants.KEY_REQUESTED_FIELDS));
+            return VariantProjectionPlan.from(projectedSchema, projectedType, true);
+        } catch (Exception e) {
+            warnProjectionNotPushed(e);
+            return VariantProjectionPlan.none();
+        }
+    }
+
+    /**
+     * Reports that variant projection pushdown was skipped because something went wrong, rather than because there was
+     * nothing to prune.
+     * <p>
+     * Raised as a warning, not just a log line, because the failure is otherwise invisible: results stay correct and
+     * only the volume read changes, so a pushdown that silently stopped working looks like ordinary slowness. The
+     * message deliberately carries <em>no</em> file name or exception text, so every occurrence is the identical
+     * warning and the collector folds repeats into a count instead of emitting one per file. The detail that varies
+     * goes to the debug log instead.
+     * <p>
+     * Cost is bounded: the two callers run once per scan task and once per reader, never per record.
+     */
+    // Package-private so a test can execute the warn path itself: the two callers are defensive catches that
+    // nothing reachable makes throw, so this line would otherwise never run under test.
+    void warnProjectionNotPushed(Exception cause) {
+        LOGGER.debug("variant projection pushdown skipped", cause);
+        if (warningCollector != null && warningCollector.shouldWarn()) {
+            warningCollector.warn(Warning.of(null, ErrorCode.ICEBERG_VARIANT_PROJECTION_NOT_PUSHED));
+        }
+    }
+
+    private void initializeTable() throws CompilationException {
+        if (fileScanTasks.isEmpty()) {
+            return;
+        }
+        if (fileIoDescriptor != null && schemaAtSnapshot != null) {
+            fileIoProperties = fileIoDescriptor.newProperties();
+            tableFileIo = fileIoDescriptor.open(fileIoProperties);
+            return;
+        }
+
+        String namespace = IcebergUtils.getNamespace(originalConfiguration);
+        String tableName = originalConfiguration.get(IcebergConstants.ICEBERG_TABLE_NAME_PROPERTY_KEY);
+        catalogProperties = IcebergUtils.filterCatalogProperties(originalConfiguration);
+        catalog = IcebergUtils.initializeCatalog(catalogProperties, namespace);
+        Namespace parsedNamespace = IcebergUtils.parseNamespace(namespace);
+        TableIdentifier tableIdentifier = TableIdentifier.of(parsedNamespace, tableName);
+        Table table = IcebergUtils.loadExistingTable(catalog, tableIdentifier, tableName);
+        tableFileIo = table.io();
+
+        // we always have a snapshot id since we pin it at compile time
+        long snapshotId = getSnapshotId(originalConfiguration);
+        Snapshot snapshot = table.snapshot(snapshotId);
+        if (snapshot == null) {
+            // Snapshot might have been expired/GC'd between compile and runtime
+            throw CompilationException.create(ErrorCode.ICEBERG_SNAPSHOT_ID_NOT_FOUND, snapshotId, table.name());
+        }
+
+        this.schemaAtSnapshot = table.schemas().get(snapshot.schemaId());
+        if (schemaAtSnapshot == null) {
+            throw CompilationException.create(ErrorCode.EXTERNAL_SOURCE_ERROR,
+                    "Missing schemaId=" + snapshot.schemaId() + " for snapshotId=" + snapshotId);
+        }
+    }
+
+    @Override
+    public boolean hasNext() throws Exception {
+        // Loaded here rather than in the constructor: readers are constructed inside GenericAdapterFactory's
+        // synchronized createAdapter, which every partition on a node shares, so loading the table there (catalog
+        // clients, namespace check, metadata reads) would run each partition's remote calls one after another.
+        if (!tableInitialized) {
+            tableInitialized = true;
+            initializeTable();
+            if (tableFileIo != null) {
+                readFileIo = readFileIo(tableFileIo, originalConfiguration);
+            }
+        }
+
+        // iterator has more records
+        if (recordsIterator != null && recordsIterator.hasNext()) {
+            return true;
+        }
+
+        // go to next task
+        // if a file is empty, we will go to the next task
+        while (nextTaskIndex < fileScanTasks.size()) {
+
+            // close previous iterable
+            if (iterable != null) {
+                iterable.close();
+                iterable = null;
+            }
+
+            // Load next task
+            setNextRecordsIterator();
+
+            // if the new iterator has rows → good
+            if (recordsIterator != null && recordsIterator.hasNext()) {
+                return true;
+            }
+
+            // else: this task is empty → continue the loop to the next task
+        }
+
+        // no more tasks & no more rows
+        return false;
+    }
+
+    @Override
+    public IRawRecord<Record> next() throws IOException, InterruptedException {
+        Record icebergRecord = recordsIterator.next();
+        record.set(icebergRecord);
+        return record;
+    }
+
+    @Override
+    public boolean stop() {
+        return false;
+    }
+
+    @Override
+    public void close() throws IOException {
+        Throwable throwable = CleanupUtils.closeSilently(iterable, null);
+        throwable = CleanupUtils.closeSilently(tableFileIo, throwable);
+        try {
+            if (catalog != null) {
+                IcebergUtils.closeAndCleanup(catalog, catalogProperties);
+            }
+            if (fileIoProperties != null) {
+                IcebergUtils.closeAndCleanup(null, fileIoProperties);
+            }
+        } catch (Exception ex) {
+            throwable = ExceptionUtils.suppress(throwable, ex);
+        }
+        if (throwable != null) {
+            throw HyracksDataException.create(throwable);
+        }
+    }
+
+    @Override
+    public void setController(AbstractFeedDataFlowController controller) {
+        // no-op
+    }
+
+    @Override
+    public void setFeedLogManager(IFeedLogManager feedLogManager) throws HyracksDataException {
+        // no-op
+    }
+
+    @Override
+    public boolean handleException(Throwable th) {
+        return false;
+    }
+
+    private void setNextRecordsIterator() {
+        FileScanTask task = fileScanTasks.get(nextTaskIndex++);
+        // the manifest records the length, and not passing it costs a storage request per file to find it out
+        InputFile inFile = readFileIo.newInputFile(task.file().location(), task.file().fileSizeInBytes());
+
+        CloseableIterable<Record> prunedRead = null;
+        try {
+            prunedRead = openPrunedReadIfEligible(readFileIo, inFile, task, schemaAtSnapshot, projectedSchema,
+                    variantProjectionPlan, variantProjectionPushdownWithDeletes, deleteCache);
+            if (prunedRead != null) {
+                iterable = prunedRead;
+                recordsIterator = prunedRead.iterator();
+                return;
+            }
+        } catch (Exception e) {
+            // Pruning is only an optimization: anything at all going wrong degrades to the proven path below.
+            CleanupUtils.closeSilently(prunedRead, null);
+            iterable = null;
+            recordsIterator = null;
+            warnProjectionNotPushed(e);
+        }
+
+        iterable = openStandardRead(readFileIo, inFile, task, schemaAtSnapshot, projectedSchema, deleteCache);
+        recordsIterator = iterable.iterator();
+    }
+
+    /**
+     * Iceberg's standard read of one task over its split range, with the task's deletes applied when it has any.
+     * <p>
+     * Both branches read only the row groups whose midpoint falls in {@code [start, start + length)}, so the splits of
+     * one file partition its row groups between them. With position deletes the rows are matched by their absolute
+     * position in the file, which Iceberg's Parquet reader takes from the footer's row-index offsets rather than by
+     * counting the rows it has read, so a split that starts mid-file still drops exactly the deleted rows.
+     * <p>
+     * Static and package-private so a test can drive the exact call the reader makes over generated split tasks.
+     *
+     * @return the rows of the task; closing it closes the underlying file read
+     */
+    static CloseableIterable<Record> openStandardRead(FileIO io, InputFile inFile, FileScanTask task,
+            Schema schemaAtSnapshot, Schema projectedSchema) {
+        return openStandardRead(io, inFile, task, schemaAtSnapshot, projectedSchema, null);
+    }
+
+    static CloseableIterable<Record> openStandardRead(FileIO io, InputFile inFile, FileScanTask task,
+            Schema schemaAtSnapshot, Schema projectedSchema, IcebergDeleteCache deleteCache) {
+        int deletesCount = (task.deletes() == null) ? 0 : task.deletes().size();
+        if (deletesCount == 0) {
+            // No deletes: read only projected schema
+            return Parquet.read(inFile).project(projectedSchema).filter(task.residual())
+                    .split(task.start(), task.length())
+                    .createReaderFunc(fs -> GenericParquetReaders.buildReader(projectedSchema, fs)).build();
+        }
+
+        // Has deletes: read required schema, then apply delete filter
+        GenericDeleteFilter deleteFilter = newDeleteFilter(io, task, schemaAtSnapshot, projectedSchema, deleteCache);
+
+        Schema requiredSchema = deleteFilter.requiredSchema();
+        CloseableIterable<Record> rows =
+                Parquet.read(inFile).project(requiredSchema).filter(task.residual()).split(task.start(), task.length())
+                        .createReaderFunc(fs -> GenericParquetReaders.buildReader(requiredSchema, fs)).build();
+        return deleteFilter.filter(rows);
+    }
+
+    /**
+     * Whether this task may take the variant-pruned read path.
+     * <p>
+     * A task with no deletes qualifies whenever the plan narrows something. A task that <em>does</em> carry deletes
+     * qualifies only while {@code pushdownWithDeletes} is on, which is the
+     * {@code variantProjectionPushdownWithDeletes} flag: turning it off restores the previous behaviour, where any
+     * delete file sent the whole task down the standard delete-aware read, while leaving pruning untouched on every
+     * delete-free file.
+     * <p>
+     * Deletes are per-task, not per-table, so the paths genuinely interleave within one scan: deletion vectors are
+     * file-scoped, so a table with vectors on some files still has delete-free files alongside them. Equality deletes
+     * attach to every file of a partition, so with the flag off they disable pruning across the whole scan.
+     * <p>
+     * Answering {@code true} is permission to <em>try</em>, not a guarantee: the per-file clip may turn out to be a
+     * no-op, and a position-delete file whose row groups do not record their first row index is declined at open time.
+     * Extracted from the read path so routing is assertable on its own — nothing downstream reveals which branch a
+     * file took.
+     */
+    static boolean shouldTryPrunedVariantRead(VariantProjectionPlan plan, List<DeleteFile> deletes,
+            boolean pushdownWithDeletes) {
+        if (plan.isEmpty()) {
+            return false;
+        }
+        return deletes == null || deletes.isEmpty() || pushdownWithDeletes;
+    }
+
+    /**
+     * The one routing decision for a task: the variant-pruned read when — and only when — it is allowed and pays.
+     * <p>
+     * Returns the pruned read to install, or {@code null} when the task must take the standard read: the plan narrows
+     * nothing, the task carries deletes while {@code variantProjectionPushdownWithDeletes} is off, or the per-file
+     * clip turns out to be a no-op. With deletes present and allowed, the read is
+     * {@link #openPrunedDeleteAwareRead the delete-aware composition}; otherwise it is the plain pruned reader.
+     * <p>
+     * Package-private and static, like {@link #shouldTryPrunedVariantRead} and {@link #openPrunedDeleteAwareRead},
+     * because this is the decision the flag is supposed to control, and the test that proves the flag works has to
+     * drive <em>this</em> method — flag on must yield the pruned read, flag off must yield {@code null} and therefore
+     * the full-width standard read — rather than a re-assembled copy of it. Every decline happens before a row is
+     * produced; the caller's fallback is always the proven path with nothing emitted.
+     */
+    static CloseableIterable<Record> openPrunedReadIfEligible(FileIO io, InputFile inFile, FileScanTask task,
+            Schema tableSchema, Schema projectedSchema, VariantProjectionPlan plan, boolean pushdownWithDeletes)
+            throws IOException {
+        return openPrunedReadIfEligible(io, inFile, task, tableSchema, projectedSchema, plan, pushdownWithDeletes,
+                null);
+    }
+
+    static CloseableIterable<Record> openPrunedReadIfEligible(FileIO io, InputFile inFile, FileScanTask task,
+            Schema tableSchema, Schema projectedSchema, VariantProjectionPlan plan, boolean pushdownWithDeletes,
+            IcebergDeleteCache deleteCache) throws IOException {
+        if (!shouldTryPrunedVariantRead(plan, task.deletes(), pushdownWithDeletes)) {
+            return null;
+        }
+        boolean hasDeletes = task.deletes() != null && !task.deletes().isEmpty();
+        if (hasDeletes) {
+            return openPrunedDeleteAwareRead(io, inFile, task, tableSchema, projectedSchema, plan, deleteCache);
+        }
+        VariantProjectedParquetReader prunedReader = VariantProjectedParquetReader.open(inFile, projectedSchema,
+                task.residual(), task.start(), task.length(), true, plan);
+        if (!prunedReader.canPrune()) {
+            // Nothing to gain on this file; prefer the standard path over the replicated read logic.
+            prunedReader.close();
+            return null;
+        }
+        return prunedReader;
+    }
+
+    /**
+     * Builds the pruned, delete-aware read for one task, or returns {@code null} when this file must take the standard
+     * delete path.
+     * <p>
+     * Package-private and static for the same reason {@link #shouldTryPrunedVariantRead} is: it is the composition
+     * itself, and a test that reassembled these calls by hand would be asserting its own copy rather than the shipped
+     * one. Given a task planned by Iceberg, a test can drive exactly what the reader drives.
+     * <p>
+     * Returning {@code null} rather than throwing keeps the fail-safe honest: every decline is made before a row is
+     * produced, so the caller can still fall back to the proven path with nothing emitted.
+     */
+    static CloseableIterable<Record> openPrunedDeleteAwareRead(FileIO io, InputFile inFile, FileScanTask task,
+            Schema tableSchema, Schema projectedSchema, VariantProjectionPlan plan) throws IOException {
+        return openPrunedDeleteAwareRead(io, inFile, task, tableSchema, projectedSchema, plan, null);
+    }
+
+    static CloseableIterable<Record> openPrunedDeleteAwareRead(FileIO io, InputFile inFile, FileScanTask task,
+            Schema tableSchema, Schema projectedSchema, VariantProjectionPlan plan, IcebergDeleteCache deleteCache)
+            throws IOException {
+        PositionlessGenericDeleteFilter deleteFilter =
+                new PositionlessGenericDeleteFilter(io, task, tableSchema, projectedSchema, deleteCache);
+
+        // Open first, load deletes second. Both the clip being a no-op and a missing row-index offset are decided at
+        // open time, and either sends this task to the standard delete path, which loads its own copy of every
+        // delete file. Loading here before knowing would pay that IO twice on exactly the files that gain nothing.
+        VariantProjectedParquetReader prunedReader =
+                VariantProjectedParquetReader.open(inFile, deleteFilter.requiredSchema(), task.residual(), task.start(),
+                        task.length(), true, plan, deleteFilter.hasPosDeletes());
+        if (!prunedReader.canPrune()) {
+            // Nothing to gain on this file, or row positions are unavailable for a position-delete file.
+            prunedReader.close();
+            return null;
+        }
+
+        try {
+            if (deleteFilter.hasPosDeletes()) {
+                PositionDeleteIndex deletedPositions = deleteFilter.deletedRowPositions();
+                if (deletedPositions == null) {
+                    // Position deletes were reported but no bitmap came back: do not guess, take the proven path.
+                    prunedReader.close();
+                    return null;
+                }
+                prunedReader.withDeletedPositions(deletedPositions);
+            }
+            // CloseableIterable.filter adds the reader as a closeable of the wrapper, so closing the returned iterable
+            // closes the reader underneath it. eqDeletedRowFilter() loads the equality set right here, after the
+            // decision to prune has been made — and before any row is produced.
+            return deleteFilter.hasEqDeletes()
+                    ? CloseableIterable.filter(prunedReader, deleteFilter.eqDeletedRowFilter()) : prunedReader;
+        } catch (RuntimeException | IOException e) {
+            // A delete file that cannot be loaded must not leak the open reader; the caller falls back and the
+            // standard path reports whatever is wrong with the delete file itself.
+            CleanupUtils.closeSilently(prunedReader, null);
+            throw e;
+        }
+    }
+
+    /**
+     * Iceberg's delete filter, opening delete files with the length their manifest records and loading them through
+     * {@code deleteCache} when one is given.
+     */
+    static GenericDeleteFilter newDeleteFilter(FileIO io, FileScanTask task, Schema tableSchema, Schema requestedSchema,
+            IcebergDeleteCache deleteCache) {
+        return new GenericDeleteFilter(io, task, tableSchema, requestedSchema) {
+            @Override
+            protected InputFile loadInputFile(DeleteFile deleteFile) {
+                return io.newInputFile(deleteFile.location(), deleteFile.fileSizeInBytes());
+            }
+
+            @Override
+            protected DeleteLoader newDeleteLoader() {
+                return deleteCache != null ? deleteCache.newLoader(this::loadInputFile)
+                        : new FixedKeySafeDeleteLoader(this::loadInputFile);
+            }
+        };
+    }
+
+    /**
+     * @return {@code io}, or a view of it that opens every data and delete file without the length its manifest
+     *         records when the collection's {@code useManifestFileSizes} is off
+     */
+    static FileIO readFileIo(FileIO io, Map<String, String> configuration) {
+        return useManifestFileSizes(configuration) ? io : new StorageLengthFileIO(io);
+    }
+
+    static boolean useManifestFileSizes(Map<String, String> configuration) {
+        return Boolean
+                .parseBoolean(configuration.getOrDefault(ExternalDataConstants.IcebergOptions.USE_MANIFEST_FILE_SIZES,
+                        Boolean.toString(ExternalDataConstants.IcebergOptions.DEFAULT_USE_MANIFEST_FILE_SIZES)));
+    }
+
+    private long getSnapshotId(Map<String, String> configuration) {
+        String snapshotStr = configuration.get(IcebergConstants.ICEBERG_SNAPSHOT_ID_PROPERTY_KEY);
+        if (snapshotStr != null) {
+            return Long.parseLong(snapshotStr);
+        }
+        throw new IllegalStateException("Snapshot must've been pinned during compilation phase");
+    }
+}

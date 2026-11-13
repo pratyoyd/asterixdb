@@ -44,8 +44,8 @@ import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.utils.ConstantExpressionUtil;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -64,7 +64,6 @@ import org.apache.hyracks.algebricks.core.algebra.operators.logical.AssignOperat
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.DataSourceScanOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.IntersectOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.SelectOperator;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.SplitOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.UnnestMapOperator;
 import org.apache.hyracks.algebricks.core.algebra.util.OperatorPropertiesUtil;
 import org.apache.hyracks.algebricks.core.rewriter.base.IAlgebraicRewriteRule;
@@ -97,11 +96,14 @@ public class IntroduceLSMComponentFilterRule implements IAlgebraicRewriteRule {
         if (dataset != null && dataset.getDatasetType() == DatasetType.INTERNAL) {
             filterSourceIndicator = DatasetUtil.getFilterSourceIndicator(dataset);
             filterFieldName = DatasetUtil.getFilterField(dataset);
-            IAType filterSourceType = filterSourceIndicator == null || filterSourceIndicator == 0
-                    ? mp.findType(dataset.getItemTypeDatabaseName(), dataset.getItemTypeDataverseName(),
-                            dataset.getItemTypeName())
-                    : mp.findType(dataset.getMetaItemTypeDatabaseName(), dataset.getMetaItemTypeDataverseName(),
-                            dataset.getMetaItemTypeName());
+            IAType dataType = mp.findType(dataset.getItemTypeDatabaseName(), dataset.getItemTypeDataverseName(),
+                    dataset.getItemTypeName());
+            dataType = mp.findTypeForDatasetWithoutType(dataType, dataset);
+            IAType metaItemType = mp.findType(dataset.getMetaItemTypeDatabaseName(),
+                    dataset.getMetaItemTypeDataverseName(), dataset.getMetaItemTypeName());
+            IAType filterSourceType =
+                    filterSourceIndicator == null || filterSourceIndicator == 0 ? dataType : metaItemType;
+            filterSourceType = mp.findTypeForDatasetWithoutType(filterSourceType, dataset);
 
             if (filterSourceType.getTypeTag() == ATypeTag.OBJECT) {
                 itemType = (ARecordType) filterSourceType;
@@ -261,15 +263,15 @@ public class IntroduceLSMComponentFilterRule implements IAlgebraicRewriteRule {
             IOptimizationContext context, boolean isIndexOnlyPlan) throws AlgebricksException {
         for (UnnestMapOperator primaryOp : primaryUnnestMapOps) {
             Mutable<ILogicalOperator> assignOrOrderOrIntersect = primaryOp.getInputs().get(0);
-            Mutable<ILogicalOperator> intersectOrSortOrSplit = assignOrOrderOrIntersect;
+            Mutable<ILogicalOperator> intersectOrSort = assignOrOrderOrIntersect;
 
             if (assignOrOrderOrIntersect.getValue().getOperatorTag() == LogicalOperatorTag.ASSIGN) {
-                intersectOrSortOrSplit = assignOrOrderOrIntersect.getValue().getInputs().get(0);
+                intersectOrSort = assignOrOrderOrIntersect.getValue().getInputs().get(0);
             }
 
-            switch (intersectOrSortOrSplit.getValue().getOperatorTag()) {
+            switch (intersectOrSort.getValue().getOperatorTag()) {
                 case INTERSECT:
-                    IntersectOperator intersect = (IntersectOperator) (intersectOrSortOrSplit.getValue());
+                    IntersectOperator intersect = (IntersectOperator) (intersectOrSort.getValue());
                     List<List<LogicalVariable>> filterVars = new ArrayList<>(intersect.getInputs().size());
                     for (Mutable<ILogicalOperator> mutableOp : intersect.getInputs()) {
                         ILogicalOperator child = mutableOp.getValue();
@@ -291,31 +293,14 @@ public class IntroduceLSMComponentFilterRule implements IAlgebraicRewriteRule {
                         }
                         IntersectOperator intersectWithFilter =
                                 createIntersectWithFilter(outputFilterVars, filterVars, intersect);
-                        intersectOrSortOrSplit.setValue(intersectWithFilter);
+                        intersectOrSort.setValue(intersectWithFilter);
                         context.computeAndSetTypeEnvironmentForOperator(intersectWithFilter);
                         setPrimaryFilterVar(primaryOp, outputFilterVars.get(0), outputFilterVars.get(1), context);
                     }
                     break;
-                case SPLIT:
-                    if (!isIndexOnlyPlan) {
-                        throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE,
-                                intersectOrSortOrSplit.getValue().getOperatorTag().toString());
-                    }
-                    SplitOperator split = (SplitOperator) (intersectOrSortOrSplit.getValue());
-                    for (Mutable<ILogicalOperator> childOp : split.getInputs()) {
-                        ILogicalOperator child = childOp.getValue();
-                        while (!child.getOperatorTag().equals(LogicalOperatorTag.UNNEST_MAP)) {
-                            child = child.getInputs().get(0).getValue();
-                        }
-                        UnnestMapOperator unnestMap = (UnnestMapOperator) child;
-                        propagateFilterInSecondaryUnnsetMap(unnestMap, filterType, context);
-                        setPrimaryFilterVar(primaryOp, unnestMap.getPropagateIndexMinFilterVar(),
-                                unnestMap.getPropagateIndexMaxFilterVar(), context);
-                    }
-                    break;
                 case ORDER:
                 case DISTINCT:
-                    ILogicalOperator child = intersectOrSortOrSplit.getValue().getInputs().get(0).getValue();
+                    ILogicalOperator child = intersectOrSort.getValue().getInputs().get(0).getValue();
                     if (child.getOperatorTag().equals(LogicalOperatorTag.UNNEST_MAP)) {
                         UnnestMapOperator secondaryMap = (UnnestMapOperator) child;
 
@@ -330,7 +315,7 @@ public class IntroduceLSMComponentFilterRule implements IAlgebraicRewriteRule {
 
                 default:
                     throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE,
-                            intersectOrSortOrSplit.getValue().getOperatorTag().toString());
+                            intersectOrSort.getValue().getOperatorTag().toString());
             }
         }
     }
@@ -528,7 +513,7 @@ public class IntroduceLSMComponentFilterRule implements IAlgebraicRewriteRule {
                     if (fieldNamePairs == null) {
                         return false;
                     }
-                    List<String> fieldName = fieldNamePairs.second;
+                    List<String> fieldName = fieldNamePairs.getRight();
                     // Since we validated the filter source in getFieldNameFromSubAssignTree, we can safely set the
                     // fieldSource to be filterSourceIndicator
                     optFuncExpr.setFieldName(funcVarIndex, fieldName, filterSourceIndicator);
@@ -596,6 +581,8 @@ public class IntroduceLSMComponentFilterRule implements IAlgebraicRewriteRule {
                     IAType recordItemType = ((MetadataProvider) context.getMetadataProvider()).findType(
                             dataset.getItemTypeDatabaseName(), dataset.getItemTypeDataverseName(),
                             dataset.getItemTypeName());
+                    recordItemType = ((MetadataProvider) context.getMetadataProvider())
+                            .findTypeForDatasetWithoutType(recordItemType, dataset);
                     ARecordType recordType = (ARecordType) recordItemType;
                     ARecordType metaRecType = (ARecordType) metaItemType;
                     int numSecondaryKeys = KeyFieldTypeUtil.getNumSecondaryKeys(index, recordType, metaRecType);
@@ -704,8 +691,8 @@ public class IntroduceLSMComponentFilterRule implements IAlgebraicRewriteRule {
                             filterSourceType, filterSourceIndicator, numOfPKeys);
                     if (lowerInfo != null) {
                         // propagate filterSourceType in case the filter value comes from a nested attribute.
-                        filterSourceType = lowerInfo.first;
-                        returnList = lowerInfo.second;
+                        filterSourceType = lowerInfo.getLeft();
+                        returnList = lowerInfo.getRight();
                     }
                 }
             }
@@ -716,7 +703,7 @@ public class IntroduceLSMComponentFilterRule implements IAlgebraicRewriteRule {
                     return null;
                 }
                 returnList.add(fieldName);
-                return new Pair<>(filterSourceType, returnList);
+                return Pair.of(filterSourceType, returnList);
             } else if (funcIdent == BuiltinFunctions.FIELD_ACCESS_BY_INDEX) {
                 Integer fieldIndex = ConstantExpressionUtil.getIntArgument(funcExpr, 1);
                 if (fieldIndex == null) {
@@ -727,7 +714,7 @@ public class IntroduceLSMComponentFilterRule implements IAlgebraicRewriteRule {
                 if (subType.getTypeTag() == ATypeTag.OBJECT) {
                     filterSourceType = (ARecordType) subType;
                 }
-                return new Pair<>(filterSourceType, returnList);
+                return Pair.of(filterSourceType, returnList);
             }
 
         }

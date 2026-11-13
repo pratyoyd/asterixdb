@@ -25,11 +25,12 @@ import org.apache.asterix.dataflow.data.nontagged.serde.AGeometrySerializerDeser
 import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.functions.IFunctionDescriptorFactory;
 import org.apache.asterix.om.types.ATypeTag;
+import org.apache.asterix.runtime.evaluators.functions.PointableHelper;
 import org.apache.asterix.runtime.exceptions.InvalidDataFormatException;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IPointable;
 import org.apache.hyracks.data.std.primitive.VoidPointable;
@@ -129,6 +130,11 @@ public class STMakeEnvelopeDescriptorSRID extends AbstractGetValDescriptor {
             eval4.evaluate(tuple, inputArg4);
             byte[] data4 = inputArg4.getByteArray();
             int offset4 = inputArg4.getStartOffset();
+
+            if (PointableHelper.checkAndSetMissingOrNull(result, inputArg0, inputArg1, inputArg2, inputArg3,
+                    inputArg4)) {
+                return;
+            }
 
             try {
                 double xmin = getVal(data0, offset0);

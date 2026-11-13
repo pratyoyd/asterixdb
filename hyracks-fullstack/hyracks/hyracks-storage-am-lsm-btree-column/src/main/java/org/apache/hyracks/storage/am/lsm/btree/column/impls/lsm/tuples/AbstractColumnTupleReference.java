@@ -18,8 +18,6 @@
  */
 package org.apache.hyracks.storage.am.lsm.btree.column.impls.lsm.tuples;
 
-import static org.apache.hyracks.storage.am.lsm.btree.column.impls.btree.AbstractColumnBTreeLeafFrame.HEADER_SIZE;
-
 import java.nio.ByteBuffer;
 
 import org.apache.hyracks.api.exceptions.HyracksDataException;
@@ -29,6 +27,7 @@ import org.apache.hyracks.storage.am.lsm.btree.column.api.IColumnReadMultiPageOp
 import org.apache.hyracks.storage.am.lsm.btree.column.api.IColumnTupleIterator;
 import org.apache.hyracks.storage.am.lsm.btree.column.api.projection.IColumnProjectionInfo;
 import org.apache.hyracks.storage.am.lsm.btree.column.impls.btree.ColumnBTreeReadLeafFrame;
+import org.apache.hyracks.storage.am.lsm.btree.column.impls.btree.IColumnPageZeroReader;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -39,23 +38,24 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
     private static final Logger LOGGER = LogManager.getLogger();
     private static final String UNSUPPORTED_OPERATION_MSG = "Operation is not supported for column tuples";
     private final int componentIndex;
-    private final ColumnBTreeReadLeafFrame frame;
+    protected final ColumnBTreeReadLeafFrame frame;
+    protected final IColumnBufferProvider pageZeroSegmentBufferProvider;
     private final IColumnBufferProvider[] primaryKeyBufferProviders;
     private final IColumnBufferProvider[] filterBufferProviders;
     private final IColumnBufferProvider[] buffersProviders;
     private final int numberOfPrimaryKeys;
-    private int endIndex;
+    protected int endIndex;
     protected int tupleIndex;
-    protected int antimatterGap;
+    private boolean readColumnPages;
 
     // For logging
     private final LongSet pinnedPages;
     private int totalNumberOfMegaLeafNodes;
     private int numOfSkippedMegaLeafNodes;
     private int maxNumberOfPinnedPages;
+    // PLAQUE physical page skip
     private boolean skipPrimaryKeysOnFilteredPages;
     private boolean pagePhysicallySkipped;
-    private boolean startNewPageCalledInNewPage;
 
     /**
      * Column tuple reference
@@ -78,6 +78,7 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
         pinnedPages = new LongOpenHashSet();
         int numberOfFilteredColumns = info.getNumberOfFilteredColumns();
         filterBufferProviders = new IColumnBufferProvider[numberOfFilteredColumns];
+        pageZeroSegmentBufferProvider = new ColumnMultiPageZeroBufferProvider(multiPageOp, pinnedPages);
         for (int i = 0; i < numberOfFilteredColumns; i++) {
             int columnIndex = info.getFilteredColumnIndex(i);
             if (columnIndex < 0) {
@@ -108,26 +109,20 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
      * When set to true, primary key decompression is skipped for pages rejected by the range filter.
      * Only safe for single-component scans where no merge reconciliation is needed.
      */
+    @Override
     public void setSkipPrimaryKeysOnFilteredPages(boolean skip) {
         this.skipPrimaryKeysOnFilteredPages = skip;
     }
 
     @Override
-    public final void newPage() throws HyracksDataException {
+    public void newPage() throws HyracksDataException {
         tupleIndex = 0;
-        antimatterGap = 0;
         pagePhysicallySkipped = false;
-        ByteBuffer pageZero = frame.getBuffer();
-        pageZero.clear();
-        pageZero.position(HEADER_SIZE);
-
         int numberOfTuples = frame.getTupleCount();
-
-        startNewPageCalledInNewPage = false;
         if (skipPrimaryKeysOnFilteredPages && numberOfTuples > 0) {
-            // Check page filter BEFORE decompressing primary keys
-            boolean readColumnPages = startNewPage(pageZero, frame.getNumberOfColumns(), numberOfTuples);
-            startNewPageCalledInNewPage = true;
+            // PLAQUE physical page skip: check the page filter BEFORE decompressing primary keys
+            resetPageZeroSegments();
+            readColumnPages = startNewPage(numberOfTuples);
             if (!readColumnPages) {
                 // Page filtered out — skip PK decompression entirely
                 pagePhysicallySkipped = true;
@@ -137,8 +132,39 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
                 return;
             }
             // Page passes filter — continue with PK decompression
-            // Note: startNewPage already advanced pageZero past the filter section
+            readPrimaryKeyPages();
+            return;
         }
+        readPrimaryKeyPages();
+        // Evaluated here, from page zero alone, so the cursor can skip fetching the columns of a filtered-out leaf
+        readColumnPages = startNewPage(numberOfTuples);
+    }
+
+    /**
+     * @return true if the last page was physically skipped (PKs not decompressed)
+     */
+    @Override
+    public boolean isPagePhysicallySkipped() {
+        return pagePhysicallySkipped;
+    }
+
+    @Override
+    public boolean isColumnReadRequired() {
+        return readColumnPages;
+    }
+
+    /**
+     * (Re)initializes the primary-key readers from the start of the page. This rewinds the
+     * sequential definition-level decoders to position 0, so a subsequent
+     * {@link #setPrimaryKeysAt(int, int)} reads levels from an absolute origin.
+     */
+    private void readPrimaryKeyPages() throws HyracksDataException {
+        ByteBuffer pageZero = frame.getBuffer();
+        // should not be needed, as it just been reset in step above
+        pageZero.clear();
+        pageZero.position(frame.getHeaderSize());
+
+        int numberOfTuples = frame.getTupleCount();
 
         //Start primary keys
         for (int i = 0; i < numberOfPrimaryKeys; i++) {
@@ -146,21 +172,23 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
             provider.reset(frame);
             startPrimaryKey(provider, i, numberOfTuples);
         }
+
+        resetPageZeroSegments();
     }
 
-    /**
-     * @return true if the last page was physically skipped (PKs not decompressed)
-     */
-    public boolean isPagePhysicallySkipped() {
-        return pagePhysicallySkipped;
+    private void resetPageZeroSegments() throws HyracksDataException {
+        // if the pageZero segments > 1, reset the page zero segment buffer provider
+        if (frame.getPageZeroSegmentCount() > 1) {
+            IColumnPageZeroReader pageZeroReader = frame.getColumnPageZeroReader();
+            pageZeroSegmentBufferProvider.reset(frame);
+            pageZeroReader.resetStream(pageZeroSegmentBufferProvider);
+        }
     }
 
     @Override
     public final void reset(int startIndex, int endIndex) throws HyracksDataException {
         tupleIndex = startIndex;
-        antimatterGap = 0;
         this.endIndex = endIndex;
-        ByteBuffer pageZero = frame.getBuffer();
         int numberOfTuples = frame.getTupleCount();
         if (pagePhysicallySkipped) {
             // Page was already filtered and skipped in newPage() — nothing to do
@@ -170,14 +198,6 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
             return;
         }
 
-        //Start new page and check whether we should skip reading non-key columns or not
-        boolean readColumnPages;
-        if (startNewPageCalledInNewPage) {
-            // startNewPage was already called in newPage() and returned true (page passes filter)
-            readColumnPages = true;
-        } else {
-            readColumnPages = startNewPage(pageZero, frame.getNumberOfColumns(), numberOfTuples);
-        }
         //Release previous pinned pages if any
         unpinColumnsPages();
 
@@ -217,7 +237,7 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
                  * skipCount from calling setPrimaryKeysAt(startIndex, startIndex) is a negative value. For that reason,
                  * non-key column should not skip any value.
                  */
-                skip(Math.max(skipCount, 0));
+                initSkip(tupleIndex, Math.max(skipCount, 0));
             } else {
                 skipMegaLeafNode();
                 numOfSkippedMegaLeafNodes++;
@@ -225,6 +245,40 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
         }
 
         totalNumberOfMegaLeafNodes++;
+    }
+
+    /**
+     * Begins a forward-only PK-only sampling pass over the current page WITHOUT loading column mega-pages.
+     * Rewinds the PK readers' (sequential) definition-level decoders to the start of the page and arms a
+     * sentinel so that the first {@link #seekForwardPKOnly(int)} reads from absolute index 0.
+     * <p>
+     * Sampling probes several tuple indices on the same page (one collected sample, but multiple probes due
+     * to antimatter / collision / newer-component rejections). Because the level decoder is sequential and
+     * cannot seek backwards, the caller must feed indices to {@link #seekForwardPKOnly(int)} in ascending
+     * order; this method establishes the monotonic starting point.
+     */
+    public void startSamplingPage() throws HyracksDataException {
+        unpinColumnsPages();
+        readPrimaryKeyPages();
+        // Sentinel: the first seekForwardPKOnly(idx) computes skipCount = idx - (-1) - 1 = idx, reading
+        // levels [0, idx] from the freshly-rewound decoder.
+        tupleIndex = -1;
+    }
+
+    /**
+     * Forward-only PK positioning for sampling. {@code startIndex} MUST be {@code >=} the previous probe's
+     * index on the same page (the caller sorts its draws ascending). Advances the sequential PK level
+     * decoders forward to {@code startIndex} without rewinding, so a whole page is scanned in a single pass.
+     * <p>
+     * After this call, {@code isAntimatter()}, {@code getFieldStart(i)}, {@code getFieldLength(i)} and
+     * {@code getFieldData(i)} are valid for primary-key fields. Non-key field access is undefined.
+     *
+     * @param startIndex the tuple index to position at (monotonically non-decreasing within a page)
+     */
+    public void seekForwardPKOnly(int startIndex) throws HyracksDataException {
+        int skipCount = startIndex - tupleIndex - 1;
+        tupleIndex = startIndex;
+        setPrimaryKeysAt(startIndex, skipCount);
     }
 
     protected abstract void skipMegaLeafNode();
@@ -256,13 +310,12 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
          * For values, we need to do 6 skips, as next will be called later by the assembler
          * -- setting the position at 12 as well.
          */
-        skip(skipCount);
+        initSkip(tupleIndex, skipCount);
     }
 
     protected abstract int setPrimaryKeysAt(int index, int skipCount) throws HyracksDataException;
 
-    protected abstract boolean startNewPage(ByteBuffer pageZero, int numberOfColumns, int numberOfTuples)
-            throws HyracksDataException;
+    protected abstract boolean startNewPage(int numberOfTuples) throws HyracksDataException;
 
     protected abstract void startPrimaryKey(IColumnBufferProvider bufferProvider, int ordinal, int numberOfTuples)
             throws HyracksDataException;
@@ -316,22 +369,25 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
             buffersProviders[i].releaseAll();
         }
 
+        // release pageZero segment buffer provider
+        pageZeroSegmentBufferProvider.releaseAll();
+
         maxNumberOfPinnedPages = Math.max(maxNumberOfPinnedPages, pinnedPages.size());
         pinnedPages.clear();
     }
 
     @Override
     public final void close() {
-        if (!LOGGER.isDebugEnabled()) {
+        if (!LOGGER.isTraceEnabled()) {
             return;
         }
 
         if (numOfSkippedMegaLeafNodes > 0) {
-            LOGGER.debug("Filtered {} disk mega-leaf nodes out of {} in total", numOfSkippedMegaLeafNodes,
+            LOGGER.trace("Filtered {} disk mega-leaf nodes out of {} in total", numOfSkippedMegaLeafNodes,
                     totalNumberOfMegaLeafNodes);
         }
 
-        LOGGER.debug("Max number of pinned pages is {}", maxNumberOfPinnedPages + 1);
+        LOGGER.trace("Max number of pinned pages is {}", maxNumberOfPinnedPages + 1);
     }
 
     /* *************************************************************
@@ -357,15 +413,5 @@ public abstract class AbstractColumnTupleReference implements IColumnTupleIterat
     @Override
     public final void resetByTupleIndex(ITreeIndexFrame frame, int tupleIndex) {
         throw new UnsupportedOperationException(UNSUPPORTED_OPERATION_MSG);
-    }
-
-    @Override
-    public int getAntimatterGap() {
-        return antimatterGap;
-    }
-
-    @Override
-    public void resetAntimatterGap() {
-        antimatterGap = 0;
     }
 }

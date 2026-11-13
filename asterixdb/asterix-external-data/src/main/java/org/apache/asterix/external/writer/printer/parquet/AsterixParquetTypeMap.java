@@ -26,6 +26,14 @@ import org.apache.parquet.schema.PrimitiveType;
 
 public class AsterixParquetTypeMap {
 
+    public static final Map<ATypeTag, Integer> HIERARCHIAL_TYPES = Map.ofEntries(Map.entry(ATypeTag.TINYINT, 1),
+            Map.entry(ATypeTag.SMALLINT, 1), Map.entry(ATypeTag.INTEGER, 1), Map.entry(ATypeTag.BIGINT, 2),
+            Map.entry(ATypeTag.FLOAT, 3), Map.entry(ATypeTag.DOUBLE, 4));
+
+    public static ATypeTag maxHierarchicalType(ATypeTag a, ATypeTag b) {
+        return HIERARCHIAL_TYPES.get(a) > HIERARCHIAL_TYPES.get(b) ? a : b;
+    }
+
     public static final Map<ATypeTag, PrimitiveType.PrimitiveTypeName> PRIMITIVE_TYPE_NAME_MAP =
             Map.ofEntries(Map.entry(ATypeTag.BOOLEAN, PrimitiveType.PrimitiveTypeName.BOOLEAN),
                     Map.entry(ATypeTag.STRING, PrimitiveType.PrimitiveTypeName.BINARY),
@@ -38,15 +46,16 @@ public class AsterixParquetTypeMap {
                     Map.entry(ATypeTag.DATE, PrimitiveType.PrimitiveTypeName.INT32),
                     Map.entry(ATypeTag.TIME, PrimitiveType.PrimitiveTypeName.INT32),
                     Map.entry(ATypeTag.DATETIME, PrimitiveType.PrimitiveTypeName.INT64),
+                    Map.entry(ATypeTag.DURATION, PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY),
                     Map.entry(ATypeTag.UUID, PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY));
 
-    public static final Map<ATypeTag, LogicalTypeAnnotation> LOGICAL_TYPE_ANNOTATION_MAP =
-            Map.ofEntries(Map.entry(ATypeTag.STRING, LogicalTypeAnnotation.stringType()),
-                    Map.entry(ATypeTag.UUID, LogicalTypeAnnotation.uuidType()),
-                    Map.entry(ATypeTag.DATE, LogicalTypeAnnotation.dateType()),
-                    Map.entry(ATypeTag.TIME,
-                            LogicalTypeAnnotation.timeType(true, LogicalTypeAnnotation.TimeUnit.MILLIS)),
-                    Map.entry(ATypeTag.DATETIME,
-                            LogicalTypeAnnotation.timestampType(true, LogicalTypeAnnotation.TimeUnit.MILLIS)));
+    public static final Map<ATypeTag, LogicalTypeAnnotation> LOGICAL_TYPE_ANNOTATION_MAP = Map.ofEntries(
+            Map.entry(ATypeTag.STRING, LogicalTypeAnnotation.stringType()),
+            Map.entry(ATypeTag.UUID, LogicalTypeAnnotation.uuidType()),
+            Map.entry(ATypeTag.DATE, LogicalTypeAnnotation.dateType()),
+            Map.entry(ATypeTag.TIME, LogicalTypeAnnotation.timeType(true, LogicalTypeAnnotation.TimeUnit.MILLIS)),
+            Map.entry(ATypeTag.DATETIME,
+                    LogicalTypeAnnotation.timestampType(true, LogicalTypeAnnotation.TimeUnit.MILLIS)),
+            Map.entry(ATypeTag.DURATION, LogicalTypeAnnotation.intervalType()));
 
 }

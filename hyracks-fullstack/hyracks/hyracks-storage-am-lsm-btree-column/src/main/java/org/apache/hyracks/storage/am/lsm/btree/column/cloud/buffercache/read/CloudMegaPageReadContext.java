@@ -29,6 +29,7 @@ import java.util.List;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.util.ExceptionUtils;
 import org.apache.hyracks.cloud.buffercache.context.BufferCacheCloudReadContextUtil;
+import org.apache.hyracks.cloud.buffercache.context.CloudCacheStats;
 import org.apache.hyracks.cloud.buffercache.page.CloudCachedPage;
 import org.apache.hyracks.cloud.io.ICloudIOManager;
 import org.apache.hyracks.cloud.io.stream.CloudInputStream;
@@ -116,6 +117,7 @@ public final class CloudMegaPageReadContext implements IBufferCacheReadContext {
         boolean empty = BufferCacheCloudReadContextUtil.isEmpty(header);
         int pageId = BufferedFileHandle.getPageId(cPage.getDiskPageId());
         boolean cloudOnly = columnRanges.isCloudOnly(pageId);
+        CloudCacheStats.pageRead(!empty && !cloudOnly, header.getBuffer().limit());
         if (empty || cloudOnly) {
             boolean evictable = columnRanges.isEvictable(pageId);
             /*
@@ -129,6 +131,10 @@ public final class CloudMegaPageReadContext implements IBufferCacheReadContext {
              * Note: 'empty' can be false while 'cloudOnly is true'. We cannot read from disk as the page can be
              * evicted at any moment. In other words, the sweeper told us that it is going to evict this page; hence
              * 'cloudOnly' is true.
+             *
+             * Only MERGE is exempted from persisting: an EXISTENCE probe reads a component that stays, and the
+             * only pages it pins through this context are page-zero segments, which every later query needs
+             * anyway -- so it persists them exactly as a QUERY would.
              */
             boolean persist = empty && !cloudOnly && !evictable && operation != MERGE && drive.isUnpressured();
             readFromStream(ioManager, fileHandle, header, cPage, persist, threadStats);
@@ -181,7 +187,7 @@ public final class CloudMegaPageReadContext implements IBufferCacheReadContext {
         if (persist) {
             long offset = cPage.getCompressedPageOffset();
             ICloudIOManager cloudIOManager = (ICloudIOManager) ioManager;
-            BufferCacheCloudReadContextUtil.persist(cloudIOManager, fileHandle.getFileHandle(), buffer, offset);
+            BufferCacheCloudReadContextUtil.persist(cloudIOManager, fileHandle, buffer, offset);
             threadStats.cloudPagePersist();
         }
     }
@@ -248,8 +254,8 @@ public final class CloudMegaPageReadContext implements IBufferCacheReadContext {
                 pageCounter++;
             } catch (Throwable th) {
                 LOGGER.log(getLevel(th),
-                        "Error while pinning page number {} with number of pages {}. stream: {}, columnRanges:\n {}", i,
-                        numberOfPages, gapStream, columnRanges, th);
+                        "Error while pinning page number {} having pageZeroId {} with number of pages {}. stream: {}, columnRanges:\n {}",
+                        i, pageZeroId, numberOfPages, gapStream, columnRanges, th);
                 throw th;
             }
         }

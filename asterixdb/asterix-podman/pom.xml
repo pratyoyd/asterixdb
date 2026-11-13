@@ -55,7 +55,6 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
-            <version>1.17.1</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -79,12 +78,24 @@
                <artifactId>apache-rat-plugin</artifactId>
                <configuration>
                    <excludes combine.children="append">
-                       <exclude>src/test/resources/setup.sh</exclude>
+                       <exclude>src/test/resources/setup-data.sh</exclude>
                        <exclude>src/test/resources/passwd</exclude>
                        <exclude>src/test/resources/socktest/Containerfile</exclude>
-                       <exclude>src/test/resources/testenv.conf</exclude>
+                       <exclude>src/test/resources/udf-sandbox/Containerfile</exclude>
+                       <exclude>src/test/resources/udf-sandbox/setup-python.sh</exclude>
                    </excludes>
                </configuration>
+           </plugin>
+           <plugin>
+               <groupId>org.apache.maven.plugins</groupId>
+               <artifactId>maven-surefire-plugin</artifactId>
+               <configuration>
+                   <failIfNoTests>false</failIfNoTests>
+               </configuration>
+           </plugin>
+           <plugin>
+               <groupId>org.apache.maven.plugins</groupId>
+               <artifactId>maven-failsafe-plugin</artifactId>
            </plugin>
        </plugins>
    </build>
@@ -101,7 +112,7 @@
                     <plugin>
                         <groupId>nl.lexemmens</groupId>
                         <artifactId>podman-maven-plugin</artifactId>
-                        <version>1.8.0</version>
+                        <version>1.19.0</version>
                         <executions>
                             <execution>
                                 <goals>
@@ -116,9 +127,17 @@
                                 <image>
                                     <name>asterixdb/socktest</name>
                                     <build>
-                                        <pull>false</pull>
+                                        <pullPolicy>FALSE</pullPolicy>
                                         <createLatestTag>true</createLatestTag>
                                         <containerFileDir>src/test/resources/socktest</containerFileDir>
+                                    </build>
+                                </image>
+                                <image>
+                                    <name>asterixdb/udf-sandbox</name>
+                                    <build>
+                                        <pullPolicy>FALSE</pullPolicy>
+                                        <createLatestTag>true</createLatestTag>
+                                        <containerFileDir>src/test/resources/udf-sandbox</containerFileDir>
                                     </build>
                                 </image>
                             </images>
@@ -141,6 +160,77 @@
                                             <directory>../asterix-server/target</directory>
                                             <includes>
                                                 <include>asterix-server*.deb</include>
+                                                <include>asterix-server-*-binary-assembly.tar.bz2</include>
+                                            </includes>
+                                        </resource>
+                                        <resource>
+                                            <directory>../asterix-server/src/deb</directory>
+                                            <includes>
+                                                <include>udf_listener.py</include>
+                                            </includes>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>podman.img</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>nl.lexemmens</groupId>
+                        <artifactId>podman-maven-plugin</artifactId>
+                        <version>1.19.0</version>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <skipAuth>true</skipAuth>
+                            <images>
+                                <image>
+                                    <name>apache/asterixdb</name>
+                                    <build>
+                                        <pullPolicy>TRUE</pullPolicy>
+                                        <createLatestTag>true</createLatestTag>
+                                        <containerFileDir>src/main/resources</containerFileDir>
+                                    </build>
+                                </image>
+                            </images>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <artifactId>maven-resources-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>copy-external-data-resources</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>target/</outputDirectory>
+                                    <overwrite>true</overwrite>
+                                    <resources>
+                                        <resource>
+                                            <directory>../asterix-server/target</directory>
+                                            <includes>
+                                                <include>asterix-server-*-binary-assembly.tar.bz2/</include>
+                                            </includes>
+                                        </resource>
+                                        <resource>
+                                            <directory>src/main/resources</directory>
+                                            <includes>
+                                                <include>entrypoint.sh</include>
+                                                <include>cc.conf</include>
                                             </includes>
                                         </resource>
                                     </resources>

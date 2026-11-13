@@ -35,6 +35,7 @@ import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.common.functions.FunctionSignature;
 import org.apache.asterix.common.metadata.DataverseName;
 import org.apache.asterix.common.metadata.MetadataConstants;
+import org.apache.asterix.external.util.iceberg.IcebergUtils;
 import org.apache.asterix.lang.common.base.Expression;
 import org.apache.asterix.lang.common.base.Literal;
 import org.apache.asterix.lang.common.clause.LetClause;
@@ -42,7 +43,6 @@ import org.apache.asterix.lang.common.clause.LimitClause;
 import org.apache.asterix.lang.common.clause.OrderbyClause;
 import org.apache.asterix.lang.common.clause.OrderbyClause.NullOrderModifier;
 import org.apache.asterix.lang.common.clause.OrderbyClause.OrderModifier;
-import org.apache.asterix.lang.common.clause.UpdateClause;
 import org.apache.asterix.lang.common.clause.WhereClause;
 import org.apache.asterix.lang.common.expression.CallExpr;
 import org.apache.asterix.lang.common.expression.FieldAccessor;
@@ -110,17 +110,21 @@ import org.apache.asterix.lang.common.statement.SetStatement;
 import org.apache.asterix.lang.common.statement.StartFeedStatement;
 import org.apache.asterix.lang.common.statement.StopFeedStatement;
 import org.apache.asterix.lang.common.statement.SynonymDropStatement;
+import org.apache.asterix.lang.common.statement.TruncateDatasetStatement;
 import org.apache.asterix.lang.common.statement.TypeDecl;
 import org.apache.asterix.lang.common.statement.TypeDropStatement;
 import org.apache.asterix.lang.common.statement.UpdateStatement;
 import org.apache.asterix.lang.common.statement.ViewDecl;
 import org.apache.asterix.lang.common.statement.ViewDropStatement;
+import org.apache.asterix.lang.common.statement.catalog.CatalogCreateStatement;
+import org.apache.asterix.lang.common.statement.catalog.CatalogDropStatement;
+import org.apache.asterix.lang.common.statement.catalog.IcebergCatalogCreateStatement;
 import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.struct.OperatorType;
 import org.apache.asterix.lang.common.struct.QuantifiedPair;
 import org.apache.asterix.lang.common.struct.UnaryExprType;
 import org.apache.asterix.lang.common.visitor.base.ILangVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IExpressionAnnotation;
 
 public abstract class FormatPrintVisitor implements ILangVisitor<Void, Integer> {
@@ -408,12 +412,12 @@ public abstract class FormatPrintVisitor implements ILangVisitor<Void, Integer> 
 
     @Override
     public Void visit(TypeReferenceExpression t, Integer arg) throws CompilationException {
-        if (t.getIdent().first != null && t.getIdent().first != null) {
+        if (t.getIdent().getLeft() != null && t.getIdent().getLeft() != null) {
             //TODO(DB): include database
-            out.print(generateDataverseName(t.getIdent().first.getDataverseName()));
+            out.print(generateDataverseName(t.getIdent().getLeft().getDataverseName()));
             out.print('.');
         }
-        out.print(normalize(t.getIdent().second.getValue()));
+        out.print(normalize(t.getIdent().getRight().getValue()));
         return null;
     }
 
@@ -639,6 +643,14 @@ public abstract class FormatPrintVisitor implements ILangVisitor<Void, Integer> 
     }
 
     @Override
+    public Void visit(TruncateDatasetStatement del, Integer step) throws CompilationException {
+        out.println(skip(step) + "truncate " + datasetSymbol
+                + generateFullName(del.getDataverseName(), del.getDatasetName()) + generateIfExists(del.getIfExists())
+                + SEMICOLON);
+        return null;
+    }
+
+    @Override
     public Void visit(InsertStatement insert, Integer step) throws CompilationException {
         out.print(skip(step) + "insert into " + datasetSymbol
                 + generateFullName(insert.getDataverseName(), insert.getDatasetName()));
@@ -665,52 +677,14 @@ public abstract class FormatPrintVisitor implements ILangVisitor<Void, Integer> 
 
     @Override
     public Void visit(UpdateStatement update, Integer step) throws CompilationException {
-        out.println(skip(step) + "update ");
-        update.getVariableExpr().accept(this, step + 2);
-        out.print(" in ");
-        update.getTarget().accept(this, step + 2);
-        out.println();
-        out.print(skip(step) + "where ");
-        update.getCondition().accept(this, step + 2);
-        out.println();
-        out.print("(");
-        for (UpdateClause updateClause : update.getUpdateClauses()) {
-            updateClause.accept(this, step + 4);
-            out.println();
+        out.print(skip(step) + "update " + datasetSymbol
+                + generateFullName(update.getDataverseName(), update.getDatasetName()));
+        if (update.getVar() != null) {
+            out.print("as ");
+            update.getVar().accept(this, step);
         }
-        out.print(")");
+        update.getQuery().accept(this, step + 2);
         out.println(SEMICOLON);
-        return null;
-    }
-
-    @Override
-    public Void visit(UpdateClause del, Integer step) throws CompilationException {
-        if (del.hasSet()) {
-            out.println(skip(step) + "set ");
-            del.getTarget().accept(this, step + 2);
-            out.print("=");
-            del.getTarget().accept(this, step + 2);
-        } else if (del.hasInsert()) {
-            del.getInsertStatement().accept(this, step + 2);
-        } else if (del.hasDelete()) {
-            del.getDeleteStatement().accept(this, step + 2);
-        } else if (del.hasUpdate()) {
-            del.getUpdateStatement().accept(this, step + 2);
-        } else if (del.hasIfElse()) {
-            out.println();
-            out.print(skip(step) + "if (");
-            del.getCondition().accept(this, step);
-            out.print(")");
-            out.println();
-            out.print(skip(step) + "then ");
-            del.getIfBranch().accept(this, step);
-            if (del.hasElse()) {
-                out.println();
-                out.print(skip(step) + "else");
-                del.getElseBranch().accept(this, step);
-            }
-            out.println();
-        }
         return null;
     }
 
@@ -739,15 +713,15 @@ public abstract class FormatPrintVisitor implements ILangVisitor<Void, Integer> 
                     }
                 }
 
-                if (projectList.get(0).first != null) {
+                if (projectList.get(0).getLeft() != null) {
                     innerIndex = 0;
                     out.print(" select ");
                     for (Pair<List<String>, IndexedTypeExpression> project : projectList) {
-                        printNestField(project.first);
-                        if (project.second != null) {
+                        printNestField(project.getLeft());
+                        if (project.getRight() != null) {
                             out.print(":");
-                            project.second.getType().accept(this, step);
-                            if (project.second.isUnknownable()) {
+                            project.getRight().getType().accept(this, step);
+                            if (project.getRight().isUnknownable()) {
                                 out.print('?');
                             }
                         }
@@ -758,8 +732,8 @@ public abstract class FormatPrintVisitor implements ILangVisitor<Void, Integer> 
                 }
                 out.print(")");
             } else {
-                printNestField(projectList.get(0).first);
-                IndexedTypeExpression typeExpr = projectList.get(0).second;
+                printNestField(projectList.get(0).getLeft());
+                IndexedTypeExpression typeExpr = projectList.get(0).getRight();
                 if (typeExpr != null) {
                     out.print(":");
                     typeExpr.getType().accept(this, step);
@@ -969,7 +943,7 @@ public abstract class FormatPrintVisitor implements ILangVisitor<Void, Integer> 
                 cfs.getFunctionSignature().getName()));
         out.print("(");
         printDelimitedStrings(
-                cfs.getParameters().stream().map(v -> v.getFirst().getValue()).collect(Collectors.toList()), COMMA);
+                cfs.getParameters().stream().map(v -> v.getLeft().getValue()).collect(Collectors.toList()), COMMA);
         out.println(") {");
         out.println(cfs.getFunctionBody());
         out.println("}" + SEMICOLON);
@@ -1092,6 +1066,31 @@ public abstract class FormatPrintVisitor implements ILangVisitor<Void, Integer> 
     @Override
     public Void visit(ViewDecl vd, Integer arg) throws CompilationException {
         // this statement is internal
+        return null;
+    }
+
+    @Override
+    public Void visit(CatalogCreateStatement ccs, Integer step) throws CompilationException {
+        out.print(skip(step) + "create catalog " + ccs.getCatalogName());
+        out.print(generateIfNotExists(ccs.getIfNotExists()));
+        out.print(" type " + ccs.getCatalogType().toLowerCase());
+
+        if (IcebergUtils.isIcebergCatalog(ccs.getCatalogType())) {
+            IcebergCatalogCreateStatement iceberg = (IcebergCatalogCreateStatement) ccs;
+            out.print(" source " + iceberg.getSource().toString().toLowerCase());
+            if (iceberg.getWithObjectNode() != null) {
+                out.print(" with ");
+                out.print(iceberg.getWithObjectNode().toString());
+            }
+            out.println(SEMICOLON);
+        }
+        return null;
+    }
+
+    @Override
+    public Void visit(CatalogDropStatement cds, Integer step) throws CompilationException {
+        out.print(skip(step) + "drop catalog " + cds.getCatalogName());
+        out.println(generateIfExists(cds.getIfExists()) + SEMICOLON);
         return null;
     }
 

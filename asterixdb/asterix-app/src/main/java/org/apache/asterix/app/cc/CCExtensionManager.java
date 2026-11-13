@@ -46,7 +46,7 @@ import org.apache.asterix.runtime.functions.FunctionCollection;
 import org.apache.asterix.runtime.functions.FunctionManager;
 import org.apache.asterix.translator.IStatementExecutorFactory;
 import org.apache.asterix.utils.ExtensionUtil;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.core.algebra.metadata.IMetadataProvider;
 import org.apache.hyracks.api.application.ICCServiceContext;
 import org.apache.hyracks.api.client.IHyracksClientConnection;
@@ -64,6 +64,7 @@ public class CCExtensionManager implements ICCExtensionManager {
     private final IGlobalRecoveryExtension globalRecoveryExtension;
     private final Function<ICcApplicationContext, IMetadataProvider<?, ?>> metadataProviderFactory;
     private IStatementExecutorFactory statementExecutorFactory;
+    private boolean hasExtensions = false;
 
     /**
      * Initialize {@link org.apache.asterix.app.cc.CCExtensionManager} from configuration
@@ -85,6 +86,7 @@ public class CCExtensionManager implements ICCExtensionManager {
         IGlobalRecoveryExtension gre = null;
         IMetadataExtension mpfe = null;
         if (list != null) {
+            hasExtensions = !list.isEmpty();
             Set<ExtensionId> extensionIds = new HashSet<>();
             for (AsterixExtension extensionConf : list) {
                 IExtension extension = (IExtension) Class.forName(extensionConf.getClassName()).newInstance();
@@ -114,9 +116,9 @@ public class CCExtensionManager implements ICCExtensionManager {
         }
         this.statementExecutorExtension = see;
         this.sqlppCompilationProvider =
-                sqlppcp == null ? new SqlppCompilationProvider(namespaceResolver) : sqlppcp.second;
+                sqlppcp == null ? new SqlppCompilationProvider(namespaceResolver) : sqlppcp.getRight();
         this.functionManager =
-                fm == null ? new FunctionManager(FunctionCollection.createDefaultFunctionCollection()) : fm.second;
+                fm == null ? new FunctionManager(FunctionCollection.createDefaultFunctionCollection()) : fm.getRight();
         this.globalRecoveryExtension = gre;
         this.metadataProviderFactory = mpfe != null ? mpfe.getMetadataProviderFactory() : null;
     }
@@ -161,5 +163,10 @@ public class CCExtensionManager implements ICCExtensionManager {
     @Override
     public Function<ICcApplicationContext, IMetadataProvider<?, ?>> getMetadataProviderFactory() {
         return metadataProviderFactory;
+    }
+
+    @Override
+    public boolean hasExtensions() {
+        return hasExtensions;
     }
 }

@@ -24,7 +24,8 @@ import java.util.Collections;
 import java.util.List;
 
 import org.apache.commons.lang3.mutable.Mutable;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -32,8 +33,10 @@ import org.apache.hyracks.algebricks.core.algebra.base.LogicalExpressionTag;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.base.OperatorAnnotations;
 import org.apache.hyracks.algebricks.core.algebra.base.PhysicalOperatorTag;
+import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
 import org.apache.hyracks.algebricks.core.algebra.expressions.VariableReferenceExpression;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.IOperatorSchema;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator.IOrder;
 import org.apache.hyracks.algebricks.core.algebra.properties.ILocalStructuralProperty;
@@ -47,7 +50,14 @@ import org.apache.hyracks.algebricks.core.algebra.properties.OrderColumn;
 import org.apache.hyracks.algebricks.core.algebra.properties.OrderedPartitionedProperty;
 import org.apache.hyracks.algebricks.core.algebra.properties.PhysicalRequirements;
 import org.apache.hyracks.algebricks.core.algebra.properties.StructuralPropertiesVector;
+import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenContext;
+import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenHelper;
 import org.apache.hyracks.algebricks.core.rewriter.base.PhysicalOptimizationConfig;
+import org.apache.hyracks.algebricks.data.IBinaryComparatorFactoryProvider;
+import org.apache.hyracks.algebricks.data.INormalizedKeyComputerFactoryProvider;
+import org.apache.hyracks.api.dataflow.value.IBinaryComparatorFactory;
+import org.apache.hyracks.api.dataflow.value.INormalizedKeyComputerFactory;
+import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
 import org.apache.hyracks.dataflow.common.data.partition.range.RangeMap;
 
 public abstract class AbstractStableSortPOperator extends AbstractPhysicalOperator {
@@ -86,15 +96,19 @@ public abstract class AbstractStableSortPOperator extends AbstractPhysicalOperat
             StructuralPropertiesVector[] requiredProp = new StructuralPropertiesVector[1];
             IPartitioningProperty partitioning;
             INodeDomain targetNodeDomain = ctx.getComputationNodeDomain();
-            String fullParallelAnnotation = getFullParallelAnnotation(sortOp, targetNodeDomain, ctx);
-            if (fullParallelAnnotation != null) {
+            boolean parallel = sortOp.getPhysicalOperator().getOperatorTag() == PhysicalOperatorTag.STABLE_SORT
+                    && targetNodeDomain.cardinality() != null && targetNodeDomain.cardinality() > 1;
+
+            RangeMap rm = (RangeMap) sortOp.getAnnotations().get(OperatorAnnotations.USE_STATIC_RANGE);
+
+            if (parallel && rm != null) {
                 // partitioning requirement: input data is re-partitioned on sort columns (global ordering)
-                RangeMap rangeMap = getRangeMap(sortOp, fullParallelAnnotation);
-                partitioning = new OrderedPartitionedProperty(Arrays.asList(sortColumns), targetNodeDomain, rangeMap);
+                partitioning = new OrderedPartitionedProperty(Arrays.asList(sortColumns), targetNodeDomain, rm);
             } else {
                 // partitioning requirement: input data is unpartitioned (i.e. must be merged at one site)
                 partitioning = IPartitioningProperty.UNPARTITIONED;
             }
+
             // local requirement: each partition must be locally ordered
             requiredProp[0] = new StructuralPropertiesVector(partitioning, Collections.singletonList(orderProp));
             return new PhysicalRequirements(requiredProp, IPartitioningRequirementsCoordinator.NO_COORDINATION);
@@ -106,11 +120,11 @@ public abstract class AbstractStableSortPOperator extends AbstractPhysicalOperat
     public void computeLocalProperties(OrderOperator ord) {
         List<OrderColumn> orderColumns = new ArrayList<>();
         for (Pair<IOrder, Mutable<ILogicalExpression>> p : ord.getOrderExpressions()) {
-            ILogicalExpression expr = p.second.getValue();
+            ILogicalExpression expr = p.getRight().getValue();
             if (expr.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                 VariableReferenceExpression varRef = (VariableReferenceExpression) expr;
                 LogicalVariable var = varRef.getVariableReference();
-                orderColumns.add(new OrderColumn(var, p.first.getKind()));
+                orderColumns.add(new OrderColumn(var, p.getLeft().getKind()));
             } else {
                 throw new IllegalStateException();
             }
@@ -121,6 +135,56 @@ public abstract class AbstractStableSortPOperator extends AbstractPhysicalOperat
 
     public ILocalStructuralProperty getOrderProperty() {
         return orderProp;
+    }
+
+    protected static class SortSetupData {
+        protected final int[] sortFields;
+        protected final IBinaryComparatorFactory[] comps;
+        protected final INormalizedKeyComputerFactory nkcf;
+        protected final RecordDescriptor recDescriptor;
+        protected final int maxNumberOfFrames;
+
+        protected SortSetupData(int[] sortFields, IBinaryComparatorFactory[] comps, INormalizedKeyComputerFactory nkcf,
+                RecordDescriptor recDescriptor, int maxNumberOfFrames) {
+            this.sortFields = sortFields;
+            this.comps = comps;
+            this.nkcf = nkcf;
+            this.recDescriptor = recDescriptor;
+            this.maxNumberOfFrames = maxNumberOfFrames;
+        }
+    }
+
+    protected static SortSetupData setupSortOperator(JobGenContext context, ILogicalOperator op,
+            IOperatorSchema opSchema, OrderColumn[] sortColumns, LocalMemoryRequirements memReq)
+            throws AlgebricksException {
+
+        RecordDescriptor recDescriptor =
+                JobGenHelper.mkRecordDescriptor(context.getTypeEnvironment(op), opSchema, context);
+        int n = sortColumns.length;
+        int[] sortFields = new int[n];
+        IBinaryComparatorFactory[] comps = new IBinaryComparatorFactory[n];
+
+        INormalizedKeyComputerFactoryProvider nkcfProvider = context.getNormalizedKeyComputerFactoryProvider();
+        INormalizedKeyComputerFactory nkcf = null;
+        IVariableTypeEnvironment env = context.getTypeEnvironment(op);
+
+        for (int i = 0; i < n; i++) {
+            OrderColumn oc = sortColumns[i];
+            LogicalVariable var = oc.getColumn();
+            sortFields[i] = opSchema.findVariable(var);
+            Object type = env.getVarType(var);
+            OrderOperator.IOrder.OrderKind order = oc.getOrder();
+
+            if (i == 0 && nkcfProvider != null && type != null) {
+                nkcf = nkcfProvider.getNormalizedKeyComputerFactory(type, order == OrderOperator.IOrder.OrderKind.ASC);
+            }
+
+            IBinaryComparatorFactoryProvider bcfp = context.getBinaryComparatorFactoryProvider();
+            comps[i] = bcfp.getBinaryComparatorFactory(type, oc.getOrder() == OrderOperator.IOrder.OrderKind.ASC);
+        }
+
+        int maxNumberOfFrames = memReq.getMemoryBudgetInFrames();
+        return new SortSetupData(sortFields, comps, nkcf, recDescriptor, maxNumberOfFrames);
     }
 
     @Override
@@ -136,52 +200,12 @@ public abstract class AbstractStableSortPOperator extends AbstractPhysicalOperat
     public Pair<int[], int[]> getInputOutputDependencyLabels(ILogicalOperator op) {
         int[] inputDependencyLabels = new int[] { 0 };
         int[] outputDependencyLabels = new int[] { 1 };
-        return new Pair<int[], int[]>(inputDependencyLabels, outputDependencyLabels);
+        return Pair.of(inputDependencyLabels, outputDependencyLabels);
     }
 
     @Override
     public boolean expensiveThanMaterialization() {
         return true;
-    }
-
-    /**
-     * When a non-null value is returned, the sort operator requires ORDERED_PARTITION (applicable to both static and
-     *  dynamic range versions).
-     * Conditions:
-     * 1. Execution mode == partitioned
-     * 2. Dynamic range map that was not disabled by some checks, or a static range map
-     * 3. User didn't disable it
-     * 4. User didn't provide static range map
-     * 5. Physical sort operator is not in-memory
-     * 6. There are at least two partitions in the cluster
-     * @param sortOp the sort operator
-     * @param clusterDomain the partitions specification of the cluster
-     * @param ctx optimization context
-     * @return annotation name (non-null) if the sort operator should be full parallel sort, {@code null} otherwise.
-     */
-    private String getFullParallelAnnotation(AbstractLogicalOperator sortOp, INodeDomain clusterDomain,
-            IOptimizationContext ctx) {
-        if (sortOp.getPhysicalOperator().getOperatorTag() == PhysicalOperatorTag.STABLE_SORT
-                && clusterDomain.cardinality() != null && clusterDomain.cardinality() > 1
-                && ctx.getPhysicalOptimizationConfig().getSortParallel()) {
-            if (sortOp.getAnnotations().containsKey(OperatorAnnotations.USE_STATIC_RANGE)) {
-                return OperatorAnnotations.USE_STATIC_RANGE;
-            } else if (sortOp.getAnnotations().get(OperatorAnnotations.USE_DYNAMIC_RANGE) != Boolean.FALSE) {
-                return OperatorAnnotations.USE_DYNAMIC_RANGE;
-            }
-        }
-        return null;
-    }
-
-    private RangeMap getRangeMap(ILogicalOperator sortOp, String fullParallelAnnotation) {
-        switch (fullParallelAnnotation) {
-            case OperatorAnnotations.USE_STATIC_RANGE:
-                return (RangeMap) sortOp.getAnnotations().get(fullParallelAnnotation);
-            case OperatorAnnotations.USE_DYNAMIC_RANGE:
-                return null;
-            default:
-                throw new IllegalStateException(fullParallelAnnotation);
-        }
     }
 
     @Override

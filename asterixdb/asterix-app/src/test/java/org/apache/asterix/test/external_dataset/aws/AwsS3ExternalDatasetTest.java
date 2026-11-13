@@ -62,19 +62,18 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hyracks.control.nc.NodeControllerService;
 import org.apache.iceberg.DataFile;
-import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.Tables;
-import org.apache.iceberg.data.GenericAppenderFactory;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
-import org.apache.iceberg.hadoop.HadoopInputFile;
+import org.apache.iceberg.encryption.EncryptedFiles;
+import org.apache.iceberg.formats.FormatModelRegistry;
 import org.apache.iceberg.hadoop.HadoopTables;
-import org.apache.iceberg.io.FileAppender;
+import org.apache.iceberg.io.DataWriter;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
@@ -98,6 +97,8 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
@@ -225,14 +226,15 @@ public class AwsS3ExternalDatasetTest {
         FileFormat fileFormat = FileFormat.fromFileName(filename);
         Preconditions.checkNotNull(fileFormat, "Cannot determine format for file: %s", filename);
 
-        FileAppender<Record> fileAppender = new GenericAppenderFactory(AwsS3ExternalDatasetTest.SCHEMA)
-                .newAppender(fromPath(path, CONF), fileFormat);
-        try (FileAppender<Record> appender = fileAppender) {
-            appender.addAll(records);
+        DataWriter<Record> writer = FormatModelRegistry
+                .<Record, Object> dataWriteBuilder(fileFormat, Record.class,
+                        EncryptedFiles.plainAsEncryptedOutput(fromPath(path, CONF)))
+                .schema(AwsS3ExternalDatasetTest.SCHEMA).spec(PartitionSpec.unpartitioned()).build();
+        try (DataWriter<Record> w = writer) {
+            w.write(records);
         }
 
-        return DataFiles.builder(PartitionSpec.unpartitioned()).withInputFile(HadoopInputFile.fromPath(path, CONF))
-                .withMetrics(fileAppender.metrics()).build();
+        return writer.toDataFile();
     }
 
     private static void prepareIcebergConfiguration() {
@@ -245,6 +247,10 @@ public class AwsS3ExternalDatasetTest {
         CONF.set("fs.s3a.change.detection.version.required", "false");
         CONF.set(S3Constants.HADOOP_ACCESS_KEY_ID, TestConstants.S3_ACCESS_KEY_ID_DEFAULT);
         CONF.set(S3Constants.HADOOP_SECRET_ACCESS_KEY, TestConstants.S3_SECRET_ACCESS_KEY_DEFAULT);
+        // The analytics-accelerator stream factory (default in Hadoop 3.4+) performs a HeadObject during stream
+        // initialization to retrieve ETag, which the S3 mock does not return; this causes a NullPointerException.
+        // Use the classic (non-analytics) input stream type to avoid this.
+        CONF.set(S3Constants.HADOOP_INPUT_STREAM_TYPE, S3Constants.HADOOP_INPUT_STREAM_TYPE_VAL_CLASSIC);
     }
 
     public static void prepareIcebergTableContainer() {
@@ -266,7 +272,9 @@ public class AwsS3ExternalDatasetTest {
 
         // create the table
         Table table = tables.create(SCHEMA, PartitionSpec.unpartitioned(),
-                ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT, FileFormat.PARQUET.name()), ICEBERG_TABLE_PATH);
+                ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT, FileFormat.PARQUET.name(),
+                        TableProperties.FORMAT_VERSION, "1"),
+                ICEBERG_TABLE_PATH);
 
         // load test data
         try {
@@ -293,8 +301,9 @@ public class AwsS3ExternalDatasetTest {
         }
 
         // create a table with mix of parquet and avro data files
-        Table mixedDataFormats = tables.create(SCHEMA, PartitionSpec.unpartitioned(),
-                ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT, FileFormat.PARQUET.name()),
+        Table mixedDataFormats = tables.create(SCHEMA,
+                PartitionSpec.unpartitioned(), ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT,
+                        FileFormat.PARQUET.name(), TableProperties.FORMAT_VERSION, "1"),
                 ICEBERG_TABLE_PATH_MIXED_DATA_FORMAT);
 
         // load test data
@@ -310,14 +319,13 @@ public class AwsS3ExternalDatasetTest {
         }
 
         // empty table
-        tables.create(SCHEMA, PartitionSpec.unpartitioned(),
-                ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT, FileFormat.PARQUET.name()),
-                ICEBERG_TABLE_PATH_EMPTY);
+        tables.create(SCHEMA, PartitionSpec.unpartitioned(), ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT,
+                FileFormat.PARQUET.name(), TableProperties.FORMAT_VERSION, "1"), ICEBERG_TABLE_PATH_EMPTY);
 
         // multiple data files
-
-        Table multipleDataFiles = tables.create(SCHEMA, PartitionSpec.unpartitioned(),
-                ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT, FileFormat.PARQUET.name()),
+        Table multipleDataFiles = tables.create(SCHEMA,
+                PartitionSpec.unpartitioned(), ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT,
+                        FileFormat.PARQUET.name(), TableProperties.FORMAT_VERSION, "1"),
                 ICEBERG_TABLE_PATH_MULTIPLE_DATA_FILES);
 
         // load test data
@@ -333,8 +341,9 @@ public class AwsS3ExternalDatasetTest {
         }
 
         // modify data
-        Table modifiedData = tables.create(SCHEMA, PartitionSpec.unpartitioned(),
-                ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT, FileFormat.PARQUET.name()),
+        Table modifiedData = tables.create(SCHEMA,
+                PartitionSpec.unpartitioned(), ImmutableMap.of(TableProperties.DEFAULT_FILE_FORMAT,
+                        FileFormat.PARQUET.name(), TableProperties.FORMAT_VERSION, "1"),
                 ICEBERG_TABLE_PATH_MODIFIED_DATA);
 
         // load test data
@@ -405,7 +414,12 @@ public class AwsS3ExternalDatasetTest {
         S3ClientBuilder builder = S3Client.builder();
         URI endpoint = URI.create(MOCK_SERVER_HOSTNAME); // endpoint pointing to S3 mock server
         builder.region(Region.of(MOCK_SERVER_REGION)).credentialsProvider(AnonymousCredentialsProvider.create())
-                .endpointOverride(endpoint);
+                .endpointOverride(endpoint)
+                // AWS SDK 2.43+ sends CRC64NVME checksums by default; the S3 mock does not support them.
+                .requestChecksumCalculation(
+                        software.amazon.awssdk.core.checksums.RequestChecksumCalculation.WHEN_REQUIRED)
+                .responseChecksumValidation(
+                        software.amazon.awssdk.core.checksums.ResponseChecksumValidation.WHEN_REQUIRED);
         client = builder.build();
         client.createBucket(CreateBucketRequest.builder().bucket(PLAYGROUND_CONTAINER).build());
         client.createBucket(CreateBucketRequest.builder().bucket(DYNAMIC_PREFIX_AT_START_CONTAINER).build());
@@ -480,13 +494,16 @@ public class AwsS3ExternalDatasetTest {
                 String statement, boolean isDmlRecoveryTest, ProcessBuilder pb, TestCase.CompilationUnit cUnit,
                 MutableInt queryCount, List<TestFileContext> expectedResultFileCtxs, File testFile, String actualPath)
                 throws Exception {
+            statement = applyExternalDatasetSubstitution(statement, cUnit.getPlaceholder());
             String[] lines;
+            String lastLine;
+            String[] command;
             switch (ctx.getType()) {
                 case "container":
                     // <bucket> <def> <sub-path:new_fname:src_file1,sub-path:new_fname:src_file2,sub-path:src_file3>
                     lines = TestExecutor.stripAllComments(statement).trim().split("\n");
-                    String lastLine = lines[lines.length - 1];
-                    String[] command = lastLine.trim().split(" ");
+                    lastLine = lines[lines.length - 1];
+                    command = lastLine.trim().split(" ");
                     int length = command.length;
                     if (length == 1) {
                         createBucket(command[0]);
@@ -506,6 +523,10 @@ public class AwsS3ExternalDatasetTest {
     private static void createBucket(String bucketName) {
         LOGGER.info("Dropping bucket " + bucketName);
         try {
+            // the bucket has to be emptied first, a bucket with content cannot be deleted
+            client.listObjectsV2Paginator(ListObjectsV2Request.builder().bucket(bucketName).build()).contents()
+                    .forEach(object -> client
+                            .deleteObject(DeleteObjectRequest.builder().bucket(bucketName).key(object.key()).build()));
             client.deleteBucket(DELETE_BUCKET_BUILDER.bucket(bucketName).build());
         } catch (NoSuchBucketException e) {
             // ignore

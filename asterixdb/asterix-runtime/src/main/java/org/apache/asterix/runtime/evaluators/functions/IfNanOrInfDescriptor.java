@@ -26,9 +26,9 @@ import org.apache.asterix.om.functions.IFunctionDescriptorFactory;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.runtime.evaluators.base.AbstractScalarFunctionDynamicDescriptor;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IPointable;
 import org.apache.hyracks.data.std.primitive.DoublePointable;
@@ -58,7 +58,7 @@ public class IfNanOrInfDescriptor extends AbstractScalarFunctionDynamicDescripto
 
             @Override
             public IScalarEvaluator createScalarEvaluator(final IEvaluatorContext ctx) throws HyracksDataException {
-                return new AbstractIfInfOrNanEval(ctx, args, true) {
+                return new AbstractIfInfOrNanEval(ctx, args) {
                     @Override
                     protected boolean skipDouble(double d) {
                         return Double.isInfinite(d) || Double.isNaN(d);
@@ -88,16 +88,13 @@ public class IfNanOrInfDescriptor extends AbstractScalarFunctionDynamicDescripto
         private final IScalarEvaluator[] argEvals;
 
         private final IPointable argPtr;
-        private final boolean skipMissing;
 
-        AbstractIfInfOrNanEval(IEvaluatorContext ctx, IScalarEvaluatorFactory[] args, boolean skipMissing)
-                throws HyracksDataException {
+        AbstractIfInfOrNanEval(IEvaluatorContext ctx, IScalarEvaluatorFactory[] args) throws HyracksDataException {
             argEvals = new IScalarEvaluator[args.length];
             for (int i = 0; i < argEvals.length; i++) {
                 argEvals[i] = args[i].createScalarEvaluator(ctx);
             }
             argPtr = new VoidPointable();
-            this.skipMissing = skipMissing;
         }
 
         @Override
@@ -106,7 +103,7 @@ public class IfNanOrInfDescriptor extends AbstractScalarFunctionDynamicDescripto
                 argEvals[i].evaluate(tuple, argPtr);
                 ATypeTag argTypeTag = PointableHelper.getTypeTag(argPtr);
                 if (argTypeTag == null) {
-                    throw new RuntimeDataException(ErrorCode.INVALID_FORMAT, getIdentifier(), i);
+                    throw new RuntimeDataException(ErrorCode.INVALID_FORMAT, "number", getIdentifier().getName());
                 }
                 switch (argTypeTag) {
                     case DOUBLE:
@@ -124,9 +121,7 @@ public class IfNanOrInfDescriptor extends AbstractScalarFunctionDynamicDescripto
                         result.set(argPtr);
                         return;
                     case MISSING:
-                        if (skipMissing) {
-                            continue;
-                        }
+                        continue;
                     case BIGINT:
                     case INTEGER:
                     case SMALLINT:

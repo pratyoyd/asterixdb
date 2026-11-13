@@ -47,6 +47,7 @@ import org.apache.asterix.common.metadata.DataverseName;
 import org.apache.asterix.common.metadata.DependencyFullyQualifiedName;
 import org.apache.asterix.common.metadata.IDataset;
 import org.apache.asterix.common.metadata.MetadataUtil;
+import org.apache.asterix.common.storage.IndexCompletionMode;
 import org.apache.asterix.common.transactions.IRecoveryManager.ResourceType;
 import org.apache.asterix.common.utils.JobUtils;
 import org.apache.asterix.common.utils.JobUtils.ProgressState;
@@ -69,6 +70,7 @@ import org.apache.asterix.metadata.utils.IndexUtil;
 import org.apache.asterix.metadata.utils.InvertedIndexResourceFactoryProvider;
 import org.apache.asterix.metadata.utils.RTreeResourceFactoryProvider;
 import org.apache.asterix.metadata.utils.TypeUtil;
+import org.apache.asterix.metadata.utils.VTreeResourceFactoryProvider;
 import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.IAType;
@@ -143,6 +145,8 @@ public class Dataset implements IMetadataEntity<Dataset>, IDataset {
             RTreeResourceFactoryProvider.INSTANCE;
     private static final InvertedIndexResourceFactoryProvider invertedIndexResourceFactoryProvider =
             InvertedIndexResourceFactoryProvider.INSTANCE;
+    private static final VTreeResourceFactoryProvider vTreeResourceFactoryProvider =
+            VTreeResourceFactoryProvider.INSTANCE;
     /*
      * Members
      */
@@ -457,6 +461,18 @@ public class Dataset implements IMetadataEntity<Dataset>, IDataset {
     public IResourceFactory getResourceFactory(MetadataProvider mdProvider, Index index, ARecordType recordType,
             ARecordType metaType, ILSMMergePolicyFactory mergePolicyFactory, Map<String, String> mergePolicyProperties)
             throws AlgebricksException {
+        return getResourceFactory(mdProvider, index, recordType, metaType, mergePolicyFactory, mergePolicyProperties,
+                IndexCompletionMode.ON_CREATE);
+    }
+
+    /**
+     * @param completionMode whether the index this factory creates is to be marked pending-creation until it is
+     *                     loaded (ASTERIXDB-3839)
+     * @see #getResourceFactory(MetadataProvider, Index, ARecordType, ARecordType, ILSMMergePolicyFactory, Map)
+     */
+    public IResourceFactory getResourceFactory(MetadataProvider mdProvider, Index index, ARecordType recordType,
+            ARecordType metaType, ILSMMergePolicyFactory mergePolicyFactory, Map<String, String> mergePolicyProperties,
+            IndexCompletionMode completionMode) throws AlgebricksException {
         ITypeTraits[] filterTypeTraits = DatasetUtil.computeFilterTypeTraits(this, recordType, metaType);
         IBinaryComparatorFactory[] filterCmpFactories = DatasetUtil.computeFilterBinaryComparatorFactories(this,
                 recordType, metaType, mdProvider.getStorageComponentProvider().getComparatorFactoryProvider());
@@ -488,11 +504,15 @@ public class Dataset implements IMetadataEntity<Dataset>, IDataset {
                 resourceFactory = BTreeResourceFactoryProvider.INSTANCE.getResourceFactory(mdProvider, this, index,
                         recordType, metaType, mergePolicyFactory, mergePolicyProperties, null, null);
                 break;
+            case VTREE:
+                resourceFactory = vTreeResourceFactoryProvider.getResourceFactory(mdProvider, this, index, recordType,
+                        metaType, mergePolicyFactory, mergePolicyProperties, filterTypeTraits, filterCmpFactories);
+                break;
             default:
                 throw new CompilationException(ErrorCode.COMPILATION_UNKNOWN_INDEX_TYPE,
                         index.getIndexType().toString());
         }
-        return new DatasetLocalResourceFactory(datasetId, resourceFactory);
+        return new DatasetLocalResourceFactory(datasetId, resourceFactory, completionMode);
     }
 
     /**
@@ -766,7 +786,7 @@ public class Dataset implements IMetadataEntity<Dataset>, IDataset {
         }
         ARecordType itemType = (ARecordType) metadataProvider.findType(this);
         ARecordType metaType = (ARecordType) metadataProvider.findMetaType(this);
-        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, metaType, this);
+        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, this);
 
         // Set the serde/traits for primary keys
         for (int i = 0; i < numPrimaryKeys; i++) {
@@ -830,7 +850,7 @@ public class Dataset implements IMetadataEntity<Dataset>, IDataset {
             throws AlgebricksException {
         ARecordType recordType = (ARecordType) metadataProvider.findType(this);
         ARecordType metaType = (ARecordType) metadataProvider.findMetaType(this);
-        recordType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(recordType, metaType, this);
+        recordType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(recordType, this);
 
         List<List<String>> partitioningKeys = getPrimaryKeys();
         int numPrimaryKeys = partitioningKeys.size();

@@ -44,6 +44,11 @@ public class OptimizationConfUtil {
     public static final int MIN_FRAME_LIMIT_FOR_JOIN = AbstractJoinPOperator.MIN_FRAME_LIMIT_FOR_JOIN;
     public static final int MIN_FRAME_LIMIT_FOR_WINDOW = WindowPOperator.MIN_FRAME_LIMIT_FOR_WINDOW;
     public static final int MIN_FRAME_LIMIT_FOR_TEXT_SEARCH = 5; // see InvertedIndexPOperator
+    // Declared here rather than on the POperator because asterix-common cannot see asterix-algebra. A CLUSTER BY
+    // stage needs a frame for the block it scores, frames for the sort runs its merges spill through (the merger
+    // uses framesLimit - 1 as its merge width), and one to write out. Four is the same floor external group-by
+    // enforces, and for the same reason.
+    public static final int MIN_FRAME_LIMIT_FOR_CLUSTER_BY = 4;
 
     private OptimizationConfUtil() {
     }
@@ -51,8 +56,8 @@ public class OptimizationConfUtil {
     public static PhysicalOptimizationConfig createPhysicalOptimizationConf(CompilerProperties compilerProperties,
             Map<String, Object> querySpecificConfig, Set<String> parameterNames, SourceLocation sourceLoc)
             throws AlgebricksException {
-        int frameSize = compilerProperties.getFrameSize();
-        int sortFrameLimit = getSortNumFrames(compilerProperties, querySpecificConfig, sourceLoc);
+        int frameSize = getFrameSize(compilerProperties, querySpecificConfig, sourceLoc);
+        int sortFrameLimit = getSortNumFrames(compilerProperties, querySpecificConfig, sourceLoc, frameSize);
         int groupFrameLimit = getFrameLimit(CompilerProperties.COMPILER_GROUPMEMORY_KEY,
                 (String) querySpecificConfig.get(CompilerProperties.COMPILER_GROUPMEMORY_KEY),
                 compilerProperties.getGroupMemorySize(), frameSize, MIN_FRAME_LIMIT_FOR_GROUP_BY, sourceLoc);
@@ -62,56 +67,76 @@ public class OptimizationConfUtil {
         int windowFrameLimit = getFrameLimit(CompilerProperties.COMPILER_WINDOWMEMORY_KEY,
                 (String) querySpecificConfig.get(CompilerProperties.COMPILER_WINDOWMEMORY_KEY),
                 compilerProperties.getWindowMemorySize(), frameSize, MIN_FRAME_LIMIT_FOR_WINDOW, sourceLoc);
-        int textSearchFrameLimit = getTextSearchNumFrames(compilerProperties, querySpecificConfig, sourceLoc);
+        int textSearchFrameLimit =
+                getTextSearchNumFrames(compilerProperties, frameSize, querySpecificConfig, sourceLoc);
+        int clusterByFrameLimit = getFrameLimit(CompilerProperties.COMPILER_CLUSTERBYMEMORY_KEY,
+                (String) querySpecificConfig.get(CompilerProperties.COMPILER_CLUSTERBYMEMORY_KEY),
+                compilerProperties.getClusterByMemorySize(), frameSize, MIN_FRAME_LIMIT_FOR_CLUSTER_BY, sourceLoc);
         int sortNumSamples = getSortSamples(compilerProperties, querySpecificConfig, sourceLoc);
         boolean fullParallelSort = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_SORT_PARALLEL_KEY,
-                compilerProperties.getSortParallel());
+                compilerProperties.getSortParallel(), sourceLoc);
         boolean indexOnly = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_INDEXONLY_KEY,
-                compilerProperties.isIndexOnly());
+                compilerProperties.isIndexOnly(), sourceLoc);
+        boolean rewriteOrToJoin = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_REWRITE_DISJUNCTION_KEY,
+                compilerProperties.rewriteDisjunctionToJoin(), sourceLoc);
+        boolean countDistinctToHash =
+                getBoolean(querySpecificConfig, CompilerProperties.COMPILER_AGGREGATE_DISTINCT_HASH_KEY,
+                        compilerProperties.isAggregateDistinctHash(), sourceLoc);
         boolean sanityCheck = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_INTERNAL_SANITYCHECK_KEY,
-                compilerProperties.isSanityCheck());
-        boolean externalFieldPushdown = getBoolean(querySpecificConfig,
-                CompilerProperties.COMPILER_EXTERNAL_FIELD_PUSHDOWN_KEY, compilerProperties.isFieldAccessPushdown());
+                compilerProperties.isSanityCheck(), sourceLoc);
+        boolean externalFieldPushdown =
+                getBoolean(querySpecificConfig, CompilerProperties.COMPILER_EXTERNAL_FIELD_PUSHDOWN_KEY,
+                        compilerProperties.isFieldAccessPushdown(), sourceLoc);
         boolean subplanMerge = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_SUBPLAN_MERGE_KEY,
-                compilerProperties.getSubplanMerge());
-        boolean subplanNestedPushdown = getBoolean(querySpecificConfig,
-                CompilerProperties.COMPILER_SUBPLAN_NESTEDPUSHDOWN_KEY, compilerProperties.getSubplanNestedPushdown());
-        boolean minMemoryAllocation = getBoolean(querySpecificConfig,
-                CompilerProperties.COMPILER_MIN_MEMORY_ALLOCATION_KEY, compilerProperties.getMinMemoryAllocation());
+                compilerProperties.getSubplanMerge(), sourceLoc);
+        boolean subplanNestedPushdown =
+                getBoolean(querySpecificConfig, CompilerProperties.COMPILER_SUBPLAN_NESTEDPUSHDOWN_KEY,
+                        compilerProperties.getSubplanNestedPushdown(), sourceLoc);
+        boolean minMemoryAllocation =
+                getBoolean(querySpecificConfig, CompilerProperties.COMPILER_MIN_MEMORY_ALLOCATION_KEY,
+                        compilerProperties.getMinMemoryAllocation(), sourceLoc);
         boolean arrayIndex = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_ARRAYINDEX_KEY,
-                compilerProperties.isArrayIndex());
+                compilerProperties.isArrayIndex(), sourceLoc);
         int externalScanBufferSize = getExternalScanBufferSize(
                 (String) querySpecificConfig.get(CompilerProperties.COMPILER_EXTERNALSCANMEMORY_KEY),
                 compilerProperties.getExternalScanMemorySize(), sourceLoc);
         boolean batchLookup = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_BATCH_LOOKUP_KEY,
-                compilerProperties.isBatchLookup());
-        boolean cbo =
-                getBoolean(querySpecificConfig, CompilerProperties.COMPILER_CBO_KEY, compilerProperties.getCBOMode());
+                compilerProperties.isBatchLookup(), sourceLoc);
+        boolean cbo = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_CBO_KEY,
+                compilerProperties.getCBOMode(), sourceLoc);
         boolean cboTest = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_CBO_TEST_KEY,
-                compilerProperties.getCBOTestMode());
+                compilerProperties.getCBOTestMode(), sourceLoc);
+        int cboMaxJoins = getCBOMaxJoins(compilerProperties, querySpecificConfig, sourceLoc);
         boolean forceJoinOrder = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_FORCE_JOIN_ORDER_KEY,
-                compilerProperties.getForceJoinOrderMode());
+                compilerProperties.getForceJoinOrderMode(), sourceLoc);
         String queryPlanShape = getString(querySpecificConfig, CompilerProperties.COMPILER_QUERY_PLAN_SHAPE_KEY,
                 compilerProperties.getQueryPlanShapeMode());
         boolean columnFilter = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_COLUMN_FILTER_KEY,
-                compilerProperties.isColumnFilter());
+                compilerProperties.isColumnFilter(), sourceLoc);
         int maxVariableOccurrencesForInlining =
                 getMaxVariableOccurrencesForInlining(compilerProperties, querySpecificConfig, sourceLoc);
-        boolean orderFields = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_ORDERFIELDS_KEY,
-                compilerProperties.isOrderedFields());
+        int maxExpressionTreeSize = getMaxExpressionTreeSize(compilerProperties, querySpecificConfig, sourceLoc);
+        int commonExpressionLimitSize =
+                getCommonExpressionLimitSize(compilerProperties, querySpecificConfig, sourceLoc);
+        boolean orderFields = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_ORDERED_FIELDS_KEY,
+                compilerProperties.isOrderedFields(), sourceLoc);
+        boolean useFileSplits = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_PARQUET_FILESPLITS_KEY,
+                compilerProperties.isParquetFileSplitsEnabled(), sourceLoc);
+        int hdfsSplitParallelism = getHdfsSplitParellelism(compilerProperties, querySpecificConfig, sourceLoc);
         boolean IsInteractiveMode =
-                (getBoolean(querySpecificConfig, CompilerProperties.COMPILER_INTERACTIVE_MODE, false));
-        boolean IsBlockingMode = (getBoolean(querySpecificConfig, CompilerProperties.COMPILER_BLOCKING_MODE, false));
-        boolean plaqueEnabled = getBoolean(querySpecificConfig,
-                CompilerProperties.COMPILER_PLAQUE_ENABLED_KEY, false);
-        boolean plaquePropagation = getBoolean(querySpecificConfig,
-                CompilerProperties.COMPILER_PLAQUE_PROPAGATION_KEY, true);
-        int plaquePropagationInterval = getInt(querySpecificConfig,
-                CompilerProperties.COMPILER_PLAQUE_PROPAGATION_INTERVAL_KEY, 5000);
+                getBoolean(querySpecificConfig, CompilerProperties.COMPILER_INTERACTIVE_MODE, false, sourceLoc);
+        boolean IsBlockingMode =
+                getBoolean(querySpecificConfig, CompilerProperties.COMPILER_BLOCKING_MODE, false, sourceLoc);
+        boolean plaqueEnabled =
+                getBoolean(querySpecificConfig, CompilerProperties.COMPILER_PLAQUE_ENABLED_KEY, false, sourceLoc);
+        boolean plaquePropagation =
+                getBoolean(querySpecificConfig, CompilerProperties.COMPILER_PLAQUE_PROPAGATION_KEY, true, sourceLoc);
+        int plaquePropagationInterval =
+                getInt(querySpecificConfig, CompilerProperties.COMPILER_PLAQUE_PROPAGATION_INTERVAL_KEY, 5000);
         boolean plaquePushThroughJoin = getBoolean(querySpecificConfig,
-                CompilerProperties.COMPILER_PLAQUE_PUSH_THROUGH_JOIN_KEY, true);
-        int plaqueEagerBatchSize = getInt(querySpecificConfig,
-                CompilerProperties.COMPILER_PLAQUE_EAGER_BATCH_SIZE_KEY, 32);
+                CompilerProperties.COMPILER_PLAQUE_PUSH_THROUGH_JOIN_KEY, true, sourceLoc);
+        int plaqueEagerBatchSize =
+                getInt(querySpecificConfig, CompilerProperties.COMPILER_PLAQUE_EAGER_BATCH_SIZE_KEY, 32);
 
         PhysicalOptimizationConfig physOptConf = new PhysicalOptimizationConfig();
         physOptConf.setFrameSize(frameSize);
@@ -120,9 +145,14 @@ public class OptimizationConfUtil {
         physOptConf.setMaxFramesForJoin(joinFrameLimit);
         physOptConf.setMaxFramesForWindow(windowFrameLimit);
         physOptConf.setMaxFramesForTextSearch(textSearchFrameLimit);
+        physOptConf.setMaxFramesForClusterBy(clusterByFrameLimit);
         physOptConf.setSortParallel(fullParallelSort);
         physOptConf.setSortSamples(sortNumSamples);
         physOptConf.setIndexOnly(indexOnly);
+        physOptConf.setRewriteOrToJoin(rewriteOrToJoin);
+        physOptConf.setCountDistinctToHash(countDistinctToHash);
+        physOptConf.setParquetFileSplit(useFileSplits);
+        physOptConf.setHdfsSplitParallelism(hdfsSplitParallelism);
         physOptConf.setSanityCheckEnabled(sanityCheck);
         physOptConf.setExternalFieldPushdown(externalFieldPushdown);
         physOptConf.setSubplanMerge(subplanMerge);
@@ -133,6 +163,7 @@ public class OptimizationConfUtil {
         physOptConf.setBatchLookup(batchLookup);
         physOptConf.setCBOMode(cbo);
         physOptConf.setCBOTestMode(cboTest);
+        physOptConf.setCBOMaxJoins(cboMaxJoins);
         physOptConf.setForceJoinOrderMode(forceJoinOrder);
         physOptConf.setQueryPlanShapeMode(queryPlanShape);
         physOptConf.setColumnFilter(columnFilter);
@@ -141,6 +172,8 @@ public class OptimizationConfUtil {
         physOptConf.setMinGroupFrames(compilerProperties.getMinGroupMemoryFrames());
         physOptConf.setMinWindowFrames(compilerProperties.getMinWindowMemoryFrames());
         physOptConf.setMaxVariableOccurrencesForInlining(maxVariableOccurrencesForInlining);
+        physOptConf.setMaxExpressionTreeSize(maxExpressionTreeSize);
+        physOptConf.setCommonExpressionLimit(commonExpressionLimitSize);
         physOptConf.setOrderFields(orderFields);
         physOptConf.setInteractiveMode(IsInteractiveMode);
         physOptConf.setBlockingMode(IsBlockingMode);
@@ -163,39 +196,53 @@ public class OptimizationConfUtil {
         return physOptConf;
     }
 
+    private static int getFrameSize(CompilerProperties compilerProperties, Map<String, Object> querySpecificConfig,
+            SourceLocation sourceLoc) throws AlgebricksException {
+        String queryFrameSize = (String) querySpecificConfig.get(CompilerProperties.COMPILER_FRAMESIZE_KEY);
+        if (queryFrameSize == null) {
+            return compilerProperties.getFrameSize();
+        }
+        @SuppressWarnings("unchecked")
+        IOptionType<Integer> type = CompilerProperties.Option.COMPILER_FRAMESIZE.type();
+        try {
+            return type.parse(queryFrameSize);
+        } catch (IllegalArgumentException e) {
+            throw AsterixException.create(ErrorCode.COMPILATION_ERROR, e, sourceLoc, e.getMessage());
+        }
+    }
+
     private static int getExternalScanBufferSize(String externalScanMemorySizeParameter,
             int compilerExternalScanMemorySize, SourceLocation sourceLoc) throws AsterixException {
-        IOptionType<Integer> intByteParser = OptionTypes.INTEGER_BYTE_UNIT;
+        @SuppressWarnings("unchecked")
+        IOptionType<Integer> intByteParser = CompilerProperties.Option.COMPILER_EXTERNALSCANMEMORY.type();
         try {
             return externalScanMemorySizeParameter != null ? intByteParser.parse(externalScanMemorySizeParameter)
                     : compilerExternalScanMemorySize;
         } catch (IllegalArgumentException e) {
-            throw AsterixException.create(ErrorCode.COMPILATION_ERROR, sourceLoc, e.getMessage());
+            throw AsterixException.create(ErrorCode.COMPILATION_ERROR, e, sourceLoc, e.getMessage());
         }
     }
 
     public static int getSortNumFrames(CompilerProperties compilerProperties, Map<String, Object> querySpecificConfig,
-            SourceLocation sourceLoc) throws AlgebricksException {
+            SourceLocation sourceLoc, int frameSize) throws AlgebricksException {
         return getFrameLimit(CompilerProperties.COMPILER_SORTMEMORY_KEY,
                 (String) querySpecificConfig.get(CompilerProperties.COMPILER_SORTMEMORY_KEY),
-                compilerProperties.getSortMemorySize(), compilerProperties.getFrameSize(), MIN_FRAME_LIMIT_FOR_SORT,
-                sourceLoc);
+                compilerProperties.getSortMemorySize(), frameSize, MIN_FRAME_LIMIT_FOR_SORT, sourceLoc);
     }
 
     public static int getGroupByNumFrames(CompilerProperties compilerProperties,
-            Map<String, Object> querySpecificConfig, SourceLocation sourceLoc) throws AlgebricksException {
+            Map<String, Object> querySpecificConfig, SourceLocation sourceLoc, int frameSize)
+            throws AlgebricksException {
         return getFrameLimit(CompilerProperties.COMPILER_GROUPMEMORY_KEY,
                 (String) querySpecificConfig.get(CompilerProperties.COMPILER_GROUPMEMORY_KEY),
-                compilerProperties.getGroupMemorySize(), compilerProperties.getFrameSize(),
-                MIN_FRAME_LIMIT_FOR_GROUP_BY, sourceLoc);
+                compilerProperties.getGroupMemorySize(), frameSize, MIN_FRAME_LIMIT_FOR_GROUP_BY, sourceLoc);
     }
 
-    public static int getTextSearchNumFrames(CompilerProperties compilerProperties,
+    public static int getTextSearchNumFrames(CompilerProperties compilerProperties, int frameSize,
             Map<String, Object> querySpecificConfig, SourceLocation sourceLoc) throws AlgebricksException {
         return getFrameLimit(CompilerProperties.COMPILER_TEXTSEARCHMEMORY_KEY,
                 (String) querySpecificConfig.get(CompilerProperties.COMPILER_TEXTSEARCHMEMORY_KEY),
-                compilerProperties.getTextSearchMemorySize(), compilerProperties.getFrameSize(),
-                MIN_FRAME_LIMIT_FOR_TEXT_SEARCH, sourceLoc);
+                compilerProperties.getTextSearchMemorySize(), frameSize, MIN_FRAME_LIMIT_FOR_TEXT_SEARCH, sourceLoc);
     }
 
     @SuppressWarnings("squid:S1166") // Either log or rethrow this exception
@@ -206,12 +253,12 @@ public class OptimizationConfUtil {
         try {
             memBudget = parameter == null ? memBudgetInConfiguration : longBytePropertyInterpreter.parse(parameter);
         } catch (IllegalArgumentException e) {
-            throw AsterixException.create(ErrorCode.COMPILATION_ERROR, sourceLoc, e.getMessage());
+            throw AsterixException.create(ErrorCode.COMPILATION_ERROR, e, sourceLoc, e.getMessage());
         }
         int frameLimit = (int) (memBudget / frameSize);
         if (frameLimit < minFrameLimit) {
-            throw AsterixException.create(ErrorCode.COMPILATION_BAD_QUERY_PARAMETER_VALUE, sourceLoc, parameterName,
-                    frameSize * minFrameLimit, "bytes");
+            throw AsterixException.create(ErrorCode.INVALID_FRAME_BASED_MEMORY_BUDGET, sourceLoc, parameterName,
+                    memBudget, frameSize, minFrameLimit, frameSize * minFrameLimit, "bytes");
         }
         // sets the frame limit to the minimum frame limit if the calculated frame limit is too small.
         return Math.max(frameLimit, minFrameLimit);
@@ -225,15 +272,20 @@ public class OptimizationConfUtil {
             return valueInQuery == null ? compilerProperties.getSortSamples()
                     : OptionTypes.POSITIVE_INTEGER.parse(valueInQuery);
         } catch (IllegalArgumentException e) {
-            throw AsterixException.create(ErrorCode.COMPILATION_BAD_QUERY_PARAMETER_VALUE, sourceLoc,
+            throw AsterixException.create(ErrorCode.COMPILATION_BAD_QUERY_PARAMETER_VALUE, e, sourceLoc,
                     CompilerProperties.COMPILER_SORT_SAMPLES_KEY, 1, "samples");
         }
     }
 
-    private static boolean getBoolean(Map<String, Object> queryConfig, String queryConfigKey, boolean defaultValue) {
+    private static boolean getBoolean(Map<String, Object> queryConfig, String queryConfigKey, boolean defaultValue,
+            SourceLocation sourceLoc) throws AsterixException {
         String valueInQuery = (String) queryConfig.get(queryConfigKey);
         if (valueInQuery != null) {
-            return OptionTypes.BOOLEAN.parse(valueInQuery);
+            try {
+                return OptionTypes.BOOLEAN.parse(valueInQuery);
+            } catch (IllegalArgumentException e) {
+                throw AsterixException.create(ErrorCode.COMPILATION_ERROR, e, sourceLoc, e.getMessage());
+            }
         }
         return defaultValue;
     }
@@ -265,4 +317,55 @@ public class OptimizationConfUtil {
             throw AsterixException.create(ErrorCode.COMPILATION_ERROR, sourceLoc, e.getMessage());
         }
     }
+
+    private static int getMaxExpressionTreeSize(CompilerProperties compilerProperties,
+            Map<String, Object> querySpecificConfig, SourceLocation sourceLoc) throws AsterixException {
+        String valueInQuery =
+                (String) querySpecificConfig.get(CompilerProperties.COMPILER_OPTIMIZE_EXPRESSION_MAX_ARGS_KEY);
+        try {
+            return valueInQuery == null ? compilerProperties.getMaxExpressionTreeSize()
+                    : OptionTypes.POSITIVE_INTEGER.parse(valueInQuery);
+        } catch (IllegalArgumentException e) {
+            throw AsterixException.create(ErrorCode.COMPILATION_ERROR, sourceLoc, e.getMessage());
+        }
+    }
+
+    private static int getCommonExpressionLimitSize(CompilerProperties compilerProperties,
+            Map<String, Object> querySpecificConfig, SourceLocation sourceLoc) throws AsterixException {
+        String valueInQuery =
+                (String) querySpecificConfig.get(CompilerProperties.COMPILER_EXTRACT_COMMON_EXPRESSION_LIMIT_KEY);
+        try {
+            return valueInQuery == null ? compilerProperties.getMaxExpressionTreeSize()
+                    : OptionTypes.POSITIVE_INTEGER.parse(valueInQuery);
+        } catch (IllegalArgumentException e) {
+            throw AsterixException.create(ErrorCode.COMPILATION_ERROR, sourceLoc, e.getMessage());
+        }
+    }
+
+    private static int getCBOMaxJoins(CompilerProperties compilerProperties, Map<String, Object> querySpecificConfig,
+            SourceLocation sourceLoc) throws AsterixException {
+        String valueInQuery = (String) querySpecificConfig.get(CompilerProperties.COMPILER_CBO_MAXJOINS_KEY);
+        if (valueInQuery == null) {
+            return compilerProperties.getCBOMaxJoins();
+        }
+        @SuppressWarnings("unchecked")
+        IOptionType<Integer> type = CompilerProperties.Option.COMPILER_CBO_MAXJOINS.type();
+        try {
+            return type.parse(valueInQuery);
+        } catch (IllegalArgumentException e) {
+            throw AsterixException.create(ErrorCode.COMPILATION_ERROR, e, sourceLoc, e.getMessage());
+        }
+    }
+
+    private static int getHdfsSplitParellelism(CompilerProperties compilerProperties,
+            Map<String, Object> querySpecificConfig, SourceLocation sourceLoc) throws AsterixException {
+        String valueInQuery = (String) querySpecificConfig.get(CompilerProperties.COMPILER_HDFS_SPLIT_PARALLELISM_KEY);
+        try {
+            return valueInQuery == null ? compilerProperties.getHdfsSplitParallelism()
+                    : OptionTypes.POSITIVE_INTEGER.parse(valueInQuery);
+        } catch (IllegalArgumentException e) {
+            throw AsterixException.create(ErrorCode.COMPILATION_ERROR, sourceLoc, e.getMessage());
+        }
+    }
+
 }

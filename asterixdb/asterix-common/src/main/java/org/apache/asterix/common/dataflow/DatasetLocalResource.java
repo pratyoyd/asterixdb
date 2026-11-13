@@ -18,12 +18,14 @@
  */
 package org.apache.asterix.common.dataflow;
 
+import org.apache.asterix.common.storage.IndexCompletionMode;
 import org.apache.hyracks.api.application.INCServiceContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.IJsonSerializable;
 import org.apache.hyracks.api.io.IPersistedResourceRegistry;
 import org.apache.hyracks.storage.common.IIndex;
 import org.apache.hyracks.storage.common.IResource;
+import org.apache.hyracks.storage.common.IResourceWrapper;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -31,7 +33,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 /**
  * A local resource with a dataset id and an assigned partition
  */
-public class DatasetLocalResource implements IResource {
+public class DatasetLocalResource implements IResource, IResourceWrapper {
 
     private static final long serialVersionUID = 1L;
     /**
@@ -43,11 +45,18 @@ public class DatasetLocalResource implements IResource {
      */
     private int partition;
     private final IResource resource;
+    /** When the creation of this index completes; a creation-time instruction, never persisted. */
+    private final transient IndexCompletionMode completionMode;
 
     public DatasetLocalResource(int datasetId, int partition, IResource resource) {
+        this(datasetId, partition, resource, IndexCompletionMode.ON_CREATE);
+    }
+
+    public DatasetLocalResource(int datasetId, int partition, IResource resource, IndexCompletionMode completionMode) {
         this.datasetId = datasetId;
         this.partition = partition;
         this.resource = resource;
+        this.completionMode = completionMode;
     }
 
     public int getPartition() {
@@ -72,6 +81,11 @@ public class DatasetLocalResource implements IResource {
         this.partition = partition;
     }
 
+    public IndexCompletionMode getCompletionMode() {
+        return completionMode;
+    }
+
+    @Override
     public IResource getResource() {
         return resource;
     }

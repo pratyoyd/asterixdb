@@ -46,7 +46,9 @@ import org.apache.hyracks.api.exceptions.HyracksException;
 import org.apache.hyracks.api.job.ActivityCluster;
 import org.apache.hyracks.api.job.ActivityClusterGraph;
 import org.apache.hyracks.api.job.DeployedJobSpecId;
+import org.apache.hyracks.api.job.HyracksJobProperty;
 import org.apache.hyracks.api.job.JobId;
+import org.apache.hyracks.api.job.JobKind;
 import org.apache.hyracks.api.job.JobStatus;
 import org.apache.hyracks.api.partitions.PartitionId;
 import org.apache.hyracks.api.util.JavaSerializationUtils;
@@ -66,6 +68,7 @@ import org.apache.hyracks.control.common.job.PartitionState;
 import org.apache.hyracks.control.common.job.TaskAttemptDescriptor;
 import org.apache.hyracks.control.common.work.IResultCallback;
 import org.apache.hyracks.control.common.work.NoOpCallback;
+import org.apache.hyracks.ipc.exceptions.IPCException;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -515,11 +518,17 @@ public class JobExecutor {
                     if (LOGGER.isTraceEnabled()) {
                         LOGGER.trace("Starting: " + taskDescriptors + " at " + entry.getKey());
                     }
+                    JobKind jobKind = (JobKind) jobRun.getJobSpecification().getProperty(HyracksJobProperty.JOB_KIND);
                     byte[] jagBytes = changed ? acgBytes : null;
-                    node.getNodeController().startTasks(deploymentId, jobId, jagBytes, taskDescriptors,
-                            connectorPolicies, jobRun.getFlags(),
-                            ccs.createOrGetJobParameterByteStore(jobId).getParameterMap(), deployedJobSpecId,
-                            jobRun.getStartTime(), jobRun.getStartTimeZoneId());
+                    try {
+                        node.getNodeController().startTasks(deploymentId, jobId, jagBytes, taskDescriptors,
+                                connectorPolicies, jobRun.getFlags(),
+                                ccs.createOrGetJobParameterByteStore(jobId).getParameterMap(), deployedJobSpecId,
+                                jobRun.getStartTime(), jobRun.getStartTimeZoneId(), jobKind);
+                    } catch (IPCException e) {
+                        // the node is still registered until its heartbeats lapse, so jobs keep landing on it
+                        throw HyracksException.create(ErrorCode.NODE_UNREACHABLE, e, nodeId);
+                    }
                 }
             }
         } catch (Exception e) {

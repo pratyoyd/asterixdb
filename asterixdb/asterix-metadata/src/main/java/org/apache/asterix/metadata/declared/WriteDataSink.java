@@ -28,14 +28,18 @@ import org.apache.hyracks.api.exceptions.SourceLocation;
 public class WriteDataSink implements IExternalWriteDataSink {
     private final String adapterName;
     private final Map<String, String> configuration;
-    private ARecordType itemType;
-    private SourceLocation sourceLoc;
+    private final ARecordType itemType;
+    private final Map<String, String> formatConfigs;
+    private final ARecordType parquetSchema;
+    private final SourceLocation sourceLoc;
 
     public WriteDataSink(String adapterName, Map<String, String> configuration, ARecordType itemType,
-            SourceLocation sourceLoc) {
+            ARecordType parquetSchema, Map<String, String> formatConfigs, SourceLocation sourceLoc) {
         this.adapterName = adapterName;
         this.configuration = configuration;
         this.itemType = itemType;
+        this.parquetSchema = parquetSchema;
+        this.formatConfigs = formatConfigs;
         this.sourceLoc = sourceLoc;
     }
 
@@ -43,12 +47,19 @@ public class WriteDataSink implements IExternalWriteDataSink {
         this.adapterName = writeDataSink.getAdapterName();
         this.configuration = new HashMap<>(writeDataSink.configuration);
         this.itemType = writeDataSink.itemType;
+        this.parquetSchema = writeDataSink.parquetSchema;
+        this.formatConfigs = writeDataSink.getFormatConfigs();
         this.sourceLoc = writeDataSink.sourceLoc;
     }
 
     @Override
     public ARecordType getItemType() {
         return itemType;
+    }
+
+    @Override
+    public ARecordType getParquetSchema() {
+        return parquetSchema;
     }
 
     @Override
@@ -64,6 +75,10 @@ public class WriteDataSink implements IExternalWriteDataSink {
     @Override
     public final Map<String, String> getConfiguration() {
         return configuration;
+    }
+
+    public Map<String, String> getFormatConfigs() {
+        return formatConfigs;
     }
 
     @Override

@@ -32,6 +32,7 @@ public class PhysicalOptimizationConfig {
 
     private static final String FRAMESIZE = "FRAMESIZE";
     private static final String MAX_FRAMES_EXTERNAL_SORT = "MAX_FRAMES_EXTERNAL_SORT";
+    private static final String MAX_FRAMES_FOR_CLUSTER_BY = "MAX_FRAMES_FOR_CLUSTER_BY";
     private static final String MAX_FRAMES_EXTERNAL_GROUP_BY = "MAX_FRAMES_EXTERNAL_GROUP_BY";
     private static final String MAX_FRAMES_FOR_JOIN_LEFT_INPUT = "MAX_FRAMES_FOR_JOIN_LEFT_INPUT";
     private static final String MAX_FRAMES_FOR_JOIN = "MAX_FRAMES_FOR_JOIN";
@@ -45,6 +46,9 @@ public class PhysicalOptimizationConfig {
     private static final String SORT_PARALLEL = "SORT_PARALLEL";
     private static final String SORT_SAMPLES = "SORT_SAMPLES";
     private static final String INDEX_ONLY = "INDEX_ONLY";
+    private static final String REWRITE_OR_TO_JOIN = "REWRITE_OR_TO_JOIN";
+    private static final String ENABLE_PARQUET_FILE_SPLIT = "ENABLE_PARQUET_FILE_SPLIT";
+    private static final String HDFS_SPLIT_PARALLELISM = "HDFS_SPLIT_PARALLELISM";
     private static final String SANITY_CHECK = "SANITY_CHECK";
     private static final String EXTERNAL_FIELD_PUSHDOWN = "EXTERNAL_FIELD_PUSHDOWN";
     private static final String SUBPLAN_MERGE = "SUBPLAN_MERGE";
@@ -55,6 +59,7 @@ public class PhysicalOptimizationConfig {
     private static final String BATCH_LOOKUP = "BATCH_LOOKUP";
     private static final String CBO = "CBO";
     private static final String CBO_TEST = "CBO_TEST";
+    private static final String CBO_MAX_JOINS = "CBO_MAX_JOINS";
     private static final String FORCE_JOIN_ORDER = "FORCE_JOIN_ORDER";
     private static final String QUERY_PLAN_SHAPE = "QUERY_PLAN_SHAPE";
     private static final String COLUMN_FILTER = "COLUMN_FILTER";
@@ -63,9 +68,13 @@ public class PhysicalOptimizationConfig {
     private static final String MIN_GROUP_FRAMES = "MIN_GROUP_FRAMES";
     private static final String MIN_WINDOW_FRAMES = "MIN_WINDOW_FRAMES";
     private static final String MAX_VARIABLE_OCCURRENCES_INLINING = "MAX_VARIABLE_OCCURRENCES_INLINING";
+    private static final String MAX_EXPRESSION_TREE_SIZE = "MAX_EXPRESSION_TREE_SIZE";
+    private static final String COMMON_EXPRESSION_LIMIT = "EXTRACT_COMMON_EXPRESSION_LIMIT";
+
+    private static final String ORDER_FIELDS = "ORDERED_FIELDS";
+    private static final String COUNT_DISTINCT_TO_HASH = "COUNT_DISTINCT_TO_HASH";
     private static final String INTERACTIVEMODE = "INTERACTIVEMODE";
     private static final String BLOCKINGMODE = "BLOCKINGMODE";
-    private static final String ORDER_FIELDS = "ORDER_FIELDS";
     private static final String PLAQUE_ENABLED = "PLAQUE_ENABLED";
     private static final String PLAQUE_PROPAGATION = "PLAQUE_PROPAGATION";
     private static final String PLAQUE_PROPAGATION_INTERVAL = "PLAQUE_PROPAGATION_INTERVAL";
@@ -139,6 +148,19 @@ public class PhysicalOptimizationConfig {
 
     public void setMaxFramesExternalGroupBy(int frameLimit) {
         setInt(MAX_FRAMES_EXTERNAL_GROUP_BY, frameLimit);
+    }
+
+    /**
+     * The budget for one CLUSTER BY k-means operator instance in a partition. It bounds the block of vectors
+     * held while scoring, and the sort runs the merges spill through; the default matches group-by/window.
+     */
+    public int getMaxFramesForClusterBy() {
+        int frameSize = getFrameSize();
+        return getInt(MAX_FRAMES_FOR_CLUSTER_BY, (int) (((long) 32 * MB) / frameSize));
+    }
+
+    public void setMaxFramesForClusterBy(int frameLimit) {
+        setInt(MAX_FRAMES_FOR_CLUSTER_BY, frameLimit);
     }
 
     public int getMaxFramesExternalSort() {
@@ -268,8 +290,36 @@ public class PhysicalOptimizationConfig {
         setBoolean(INDEX_ONLY, indexOnly);
     }
 
+    public void setRewriteOrToJoin(boolean rewriteDisjunction) {
+        setBoolean(REWRITE_OR_TO_JOIN, rewriteDisjunction);
+    }
+
+    public boolean rewriteOrToJoin() {
+        return getBoolean(REWRITE_OR_TO_JOIN, AlgebricksConfig.REWRITE_DISJUNCTION_DEFAULT);
+    }
+
+    public void setCountDistinctToHash(boolean countDistinctToHash) {
+        setBoolean(COUNT_DISTINCT_TO_HASH, countDistinctToHash);
+    }
+
+    public boolean isCountDistinctToHash() {
+        return getBoolean(COUNT_DISTINCT_TO_HASH, AlgebricksConfig.AGGREGATE_DISTINCT_HASH_DEFAULT);
+    }
+
     public boolean isIndexOnly() {
         return getBoolean(INDEX_ONLY, AlgebricksConfig.INDEX_ONLY_DEFAULT);
+    }
+
+    public void setParquetFileSplit(boolean parquetFileSplit) {
+        setBoolean(ENABLE_PARQUET_FILE_SPLIT, parquetFileSplit);
+    }
+
+    public void setHdfsSplitParallelism(int hdfsSplitParallelism) {
+        setInt(HDFS_SPLIT_PARALLELISM, hdfsSplitParallelism);
+    }
+
+    public int getHdfsSplitParallelism() {
+        return getInt(HDFS_SPLIT_PARALLELISM, AlgebricksConfig.HDFS_SPLIT_PARALLEL_DEFAULT);
     }
 
     public void setSanityCheckEnabled(boolean sanityCheck) {
@@ -354,6 +404,14 @@ public class PhysicalOptimizationConfig {
         setBoolean(CBO_TEST, cboTest);
     }
 
+    public int getCBOMaxJoins() {
+        return getInt(CBO_MAX_JOINS, AlgebricksConfig.CBO_MAX_JOINS_DEFAULT);
+    }
+
+    public void setCBOMaxJoins(int cboMaxJoins) {
+        setInt(CBO_MAX_JOINS, cboMaxJoins);
+    }
+
     public void setForceJoinOrderMode(boolean forceJoinOrder) {
         setBoolean(FORCE_JOIN_ORDER, forceJoinOrder);
     }
@@ -406,6 +464,22 @@ public class PhysicalOptimizationConfig {
 
     public void setMaxVariableOccurrencesForInlining(int maxVariableOccurrencesForInlining) {
         setInt(MAX_VARIABLE_OCCURRENCES_INLINING, maxVariableOccurrencesForInlining);
+    }
+
+    public int getMaxExpressionTreeSize() {
+        return getInt(MAX_EXPRESSION_TREE_SIZE, AlgebricksConfig.MAX_EXPRESSION_TREE_SIZE_DEFAULT);
+    }
+
+    public void setMaxExpressionTreeSize(int maxExpressionTreeSize) {
+        setInt(MAX_EXPRESSION_TREE_SIZE, maxExpressionTreeSize);
+    }
+
+    public int getCommonExpressionLimit() {
+        return getInt(COMMON_EXPRESSION_LIMIT, AlgebricksConfig.COMMON_EXPRESSION_LIMIT_DEFAULT);
+    }
+
+    public void setCommonExpressionLimit(int commonExpressionLimit) {
+        setInt(COMMON_EXPRESSION_LIMIT, commonExpressionLimit);
     }
 
     private void setInt(String property, int value) {

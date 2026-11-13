@@ -20,6 +20,7 @@ package org.apache.hyracks.dataflow.std.group.preclustered;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import static org.apache.hyracks.dataflow.std.util.ProfilingUtils.profiling;
 import java.nio.ByteBuffer;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -32,6 +33,8 @@ import org.apache.hyracks.api.dataflow.value.IBinaryComparator;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
 import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.job.profiling.IOperatorStats;
+import org.apache.hyracks.api.job.profiling.NoOpOperatorStats;
 import org.apache.hyracks.data.std.util.ArrayBackedValueStorage;
 import org.apache.hyracks.dataflow.common.comm.io.ArrayTupleBuilder;
 import org.apache.hyracks.dataflow.common.comm.io.FrameTupleAccessor;
@@ -44,6 +47,7 @@ import org.apache.hyracks.dataflow.common.data.accessors.PointableTupleReference
 import org.apache.hyracks.dataflow.std.group.AggregateState;
 import org.apache.hyracks.dataflow.std.group.IAggregatorDescriptor;
 import org.apache.hyracks.dataflow.std.group.IAggregatorDescriptorFactory;
+import org.apache.hyracks.dataflow.std.group.IProfiledAggregatorDescriptor;
 
 public class PreclusteredGroupWriter implements IFrameWriter {
     private final int[] groupFields;
@@ -64,6 +68,7 @@ public class PreclusteredGroupWriter implements IFrameWriter {
     private int groupCounter = 0;
     private boolean isInteractive = false;
     private boolean isGlobal = false;
+    private final boolean profiling;
 
     public PreclusteredGroupWriter(IHyracksTaskContext ctx, int[] groupFields, IBinaryComparator[] comparators,
             IAggregatorDescriptorFactory aggregatorFactory, RecordDescriptor inRecordDesc,
@@ -76,6 +81,15 @@ public class PreclusteredGroupWriter implements IFrameWriter {
             IAggregatorDescriptorFactory aggregatorFactory, RecordDescriptor inRecordDesc,
             RecordDescriptor outRecordDesc, IFrameWriter writer, boolean outputPartial, boolean groupAll,
             int framesLimit) throws HyracksDataException {
+        this(ctx, groupFields, comparators, aggregatorFactory, inRecordDesc, outRecordDesc, writer, outputPartial,
+                groupAll, framesLimit, NoOpOperatorStats.INSTANCE);
+
+    }
+
+    public PreclusteredGroupWriter(IHyracksTaskContext ctx, int[] groupFields, IBinaryComparator[] comparators,
+            IAggregatorDescriptorFactory aggregatorFactory, RecordDescriptor inRecordDesc,
+            RecordDescriptor outRecordDesc, IFrameWriter writer, boolean outputPartial, boolean groupAll,
+            int framesLimit, IOperatorStats stats) throws HyracksDataException {
         this.groupFields = groupFields;
         this.comparators = comparators;
 
@@ -87,13 +101,22 @@ public class PreclusteredGroupWriter implements IFrameWriter {
 
         // Deducts input/output frames.
         this.memoryLimit = framesLimit <= 0 ? -1 : ((long) (framesLimit - 2)) * ctx.getInitialFrameSize();
-        this.aggregator = aggregatorFactory.createAggregator(ctx, inRecordDesc, outRecordDesc, groupFields, groupFields,
-                writer, this.memoryLimit);
+        if (profiling(ctx)) {
+            IProfiledAggregatorDescriptor profAgg = aggregatorFactory.createProfiledAggregator(ctx, inRecordDesc,
+                    outRecordDesc, groupFields, groupFields, writer, this.memoryLimit, stats);
+            this.profiling = true;
+            this.aggregator = profAgg;
+        } else {
+            this.profiling = false;
+            this.aggregator = aggregatorFactory.createAggregator(ctx, inRecordDesc, outRecordDesc, groupFields,
+                    groupFields, writer, this.memoryLimit);
+        }
+
         this.aggregateState = aggregator.createAggregateStates();
         inFrameAccessor = new FrameTupleAccessor(inRecordDesc);
         groupFieldsRef = new PermutingFrameTupleReference(groupFields);
         groupFieldsPrevCopy = PointableTupleReference.create(groupFields.length, ArrayBackedValueStorage::new);
-        VSizeFrame outFrame = new VSizeFrame(ctx);
+        VSizeFrame outFrame = ctx.allocateVSizeFrame();
         FrameTupleAppender appender = new FrameTupleAppender();
         appender.reset(outFrame, true);
         appenderWrapper = new FrameTupleAppenderWrapper(appender, writer);
@@ -107,33 +130,19 @@ public class PreclusteredGroupWriter implements IFrameWriter {
             IAggregatorDescriptorFactory aggregatorFactory, RecordDescriptor inRecordDesc,
             RecordDescriptor outRecordDesc, IFrameWriter writer, boolean outputPartial, boolean groupAll,
             int framesLimit, boolean isInteractive, boolean isGlobal) throws HyracksDataException {
-        this.groupFields = groupFields;
-        this.comparators = comparators;
+        this(ctx, groupFields, comparators, aggregatorFactory, inRecordDesc, outRecordDesc, writer, outputPartial,
+                groupAll, framesLimit, isInteractive, isGlobal, NoOpOperatorStats.INSTANCE);
+    }
+
+    public PreclusteredGroupWriter(IHyracksTaskContext ctx, int[] groupFields, IBinaryComparator[] comparators,
+            IAggregatorDescriptorFactory aggregatorFactory, RecordDescriptor inRecordDesc,
+            RecordDescriptor outRecordDesc, IFrameWriter writer, boolean outputPartial, boolean groupAll,
+            int framesLimit, boolean isInteractive, boolean isGlobal, IOperatorStats stats)
+            throws HyracksDataException {
+        this(ctx, groupFields, comparators, aggregatorFactory, inRecordDesc, outRecordDesc, writer, outputPartial,
+                groupAll, framesLimit, stats);
         this.isInteractive = isInteractive;
         this.isGlobal = isGlobal;
-
-        if (framesLimit >= 0 && framesLimit <= 2) {
-            throw HyracksDataException.create(ErrorCode.ILLEGAL_MEMORY_BUDGET, "GROUP BY",
-                    Long.toString(((long) (framesLimit)) * ctx.getInitialFrameSize()),
-                    Long.toString(2L * ctx.getInitialFrameSize()));
-        }
-
-        // Deducts input/output frames.
-        this.memoryLimit = framesLimit <= 0 ? -1 : ((long) (framesLimit - 2)) * ctx.getInitialFrameSize();
-        this.aggregator = aggregatorFactory.createAggregator(ctx, inRecordDesc, outRecordDesc, groupFields, groupFields,
-                writer, this.memoryLimit);
-        this.aggregateState = aggregator.createAggregateStates();
-        inFrameAccessor = new FrameTupleAccessor(inRecordDesc);
-        groupFieldsRef = new PermutingFrameTupleReference(groupFields);
-        groupFieldsPrevCopy = PointableTupleReference.create(groupFields.length, ArrayBackedValueStorage::new);
-        VSizeFrame outFrame = new VSizeFrame(ctx);
-        FrameTupleAppender appender = new FrameTupleAppender();
-        appender.reset(outFrame, true);
-        appenderWrapper = new FrameTupleAppenderWrapper(appender, writer);
-
-        tupleBuilder = new ArrayTupleBuilder(outRecordDesc.getFields().length);
-        this.outputPartial = outputPartial;
-        this.groupAll = groupAll;
     }
 
     @Override
@@ -303,4 +312,9 @@ public class PreclusteredGroupWriter implements IFrameWriter {
         return Integer.toHexString(Arrays.hashCode(data)); // short hash, dev-safe
     }
 
+    public void computeTimings() {
+        if (profiling) {
+            ((IProfiledAggregatorDescriptor) aggregator).computeTimings();
+        }
+    }
 }

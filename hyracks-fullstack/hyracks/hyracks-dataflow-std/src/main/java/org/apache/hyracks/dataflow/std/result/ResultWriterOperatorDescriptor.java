@@ -31,7 +31,6 @@ import java.time.format.DateTimeFormatter;
 
 import org.apache.hyracks.api.comm.IFrame;
 import org.apache.hyracks.api.comm.IFrameWriter;
-import org.apache.hyracks.api.comm.VSizeFrame;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.dataflow.IOperatorNodePushable;
 import org.apache.hyracks.api.dataflow.value.IRecordDescriptorProvider;
@@ -45,6 +44,7 @@ import org.apache.hyracks.api.job.IOperatorDescriptorRegistry;
 import org.apache.hyracks.api.result.IResultMetadata;
 import org.apache.hyracks.api.result.IResultPartitionManager;
 import org.apache.hyracks.api.result.ResultSetId;
+import org.apache.hyracks.control.nc.result.ResultPartitionWriter;
 import org.apache.hyracks.dataflow.common.comm.io.FrameOutputStream;
 import org.apache.hyracks.dataflow.common.comm.io.FrameTupleAccessor;
 import org.apache.hyracks.dataflow.std.base.AbstractSingleActivityOperatorDescriptor;
@@ -92,7 +92,7 @@ public class ResultWriterOperatorDescriptor extends AbstractSingleActivityOperat
             throws HyracksDataException {
         final IResultPartitionManager resultPartitionManager = ctx.getResultPartitionManager();
 
-        final IFrame frame = new VSizeFrame(ctx);
+        final IFrame frame = ctx.allocateVSizeFrame();
 
         final FrameOutputStream frameOutputStream = new FrameOutputStream(ctx.getInitialFrameSize());
         frameOutputStream.reset(frame, true);
@@ -100,7 +100,7 @@ public class ResultWriterOperatorDescriptor extends AbstractSingleActivityOperat
 
         final RecordDescriptor outRecordDesc = recordDescProvider.getInputRecordDescriptor(getActivityId(), 0);
         final IResultSerializer resultSerializer =
-                resultSerializerFactory.createResultSerializer(outRecordDesc, printStream);
+                resultSerializerFactory.createResultSerializer(ctx, outRecordDesc, printStream);
 
         final FrameTupleAccessor frameTupleAccessor = new FrameTupleAccessor(outRecordDesc);
 
@@ -255,6 +255,7 @@ public class ResultWriterOperatorDescriptor extends AbstractSingleActivityOperat
 
                         // Attempt to append tuple, flush if needed
 
+                        ((ResultPartitionWriter) resultPartitionWriter).incrementResultCount();
                         // Reset the output stream per tuple
                         frameOutputStream.reset();
                     }

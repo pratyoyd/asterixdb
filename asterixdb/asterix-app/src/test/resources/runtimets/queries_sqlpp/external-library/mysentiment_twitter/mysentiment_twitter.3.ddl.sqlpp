@@ -20,3 +20,7 @@
 
 create function sentiment(s)
   as "sentiment", "TweetSent.sentiment" at testlib;
+
+create function sentimentBatch(s)
+  as "sentiment", "TweetSent.sentiment_batch" at testlib
+  with {"batched": true};

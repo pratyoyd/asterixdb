@@ -29,6 +29,7 @@ import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.common.functions.FunctionConstants;
 import org.apache.asterix.common.metadata.DataverseName;
 import org.apache.asterix.common.metadata.MetadataUtil;
+import org.apache.asterix.common.utils.IdentifierUtil;
 import org.apache.asterix.lang.common.util.FunctionUtil;
 import org.apache.asterix.metadata.declared.FunctionDataSource;
 import org.apache.asterix.metadata.declared.MetadataProvider;
@@ -47,9 +48,9 @@ import org.apache.asterix.om.types.AUnionType;
 import org.apache.asterix.om.types.IAType;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksAbsolutePartitionConstraint;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -80,7 +81,10 @@ public class QueryIndexRewriter extends FunctionRewriter implements IResultTypeC
     @Override
     public IAType computeType(ILogicalExpression expression, IVariableTypeEnvironment env, IMetadataProvider<?, ?> mp)
             throws AlgebricksException {
-        return computeRecType((AbstractFunctionCallExpression) expression, (MetadataProvider) mp, null, null, null);
+        AbstractFunctionCallExpression f = (AbstractFunctionCallExpression) expression;
+        // type inference reaches here before rewrite() validates the arguments
+        validateArgs(f);
+        return computeRecType(f, (MetadataProvider) mp, null, null, null);
     }
 
     @Override
@@ -127,7 +131,7 @@ public class QueryIndexRewriter extends FunctionRewriter implements IResultTypeC
 
     @Override
     protected boolean invalidArgs(List<Mutable<ILogicalExpression>> args) {
-        return args.size() < 3;
+        return args.size() < 3 || args.size() > 4;
     }
 
     private FunctionDataSource createQueryIndexDatasource(MetadataProvider mp, Dataset ds, Index idx,
@@ -137,8 +141,10 @@ public class QueryIndexRewriter extends FunctionRewriter implements IResultTypeC
         AlgebricksAbsolutePartitionConstraint secPartitionConstraint =
                 (AlgebricksAbsolutePartitionConstraint) secIdxHelper.getSecondaryPartitionConstraint();
         INodeDomain domain = mp.findNodeDomain(ds.getNodeGroupName());
+        ARecordType dsType = (ARecordType) mp.findType(ds);
+        ARecordType metaType = DatasetUtil.getMetaType(mp, ds);
         ARecordType recType = computeRecType(f, mp, null, null, null);
-        int numSecKeys = ((Index.ValueIndexDetails) idx.getIndexDetails()).getKeyFieldNames().size();
+        int numSecKeys = KeyFieldTypeUtil.getNumSecondaryKeys(idx, dsType, metaType);
         return new QueryIndexDatasource(ds, idx.getIndexName(), domain, secPartitionConstraint, recType, numSecKeys);
     }
 
@@ -159,10 +165,12 @@ public class QueryIndexRewriter extends FunctionRewriter implements IResultTypeC
         Index index = validateIndex(f, metadataProvider, loc, databaseName, dataverseName, datasetName, indexName);
         ARecordType dsType = (ARecordType) metadataProvider.findType(dataset);
         ARecordType metaType = DatasetUtil.getMetaType(metadataProvider, dataset);
-        dsType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(dsType, metaType, dataset);
+        dsType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(dsType, dataset);
 
         List<IAType> dsKeyTypes = KeyFieldTypeUtil.getPartitoningKeyTypes(dataset, dsType, metaType);
-        List<Pair<IAType, Boolean>> secKeyTypes = KeyFieldTypeUtil.getBTreeIndexKeyTypes(index, dsType, metaType);
+        List<Pair<IAType, Boolean>> secKeyTypes = index.getIndexType() == DatasetConfig.IndexType.BTREE
+                ? KeyFieldTypeUtil.getBTreeIndexKeyTypes(index, dsType, metaType)
+                : KeyFieldTypeUtil.getArrayIndexKeyTypes(index, dsType, metaType);
         int numPrimaryKeys = dsKeyTypes.size();
         int numSecKeys = secKeyTypes.size();
         String[] fieldNames = new String[numSecKeys + numPrimaryKeys];
@@ -170,8 +178,8 @@ public class QueryIndexRewriter extends FunctionRewriter implements IResultTypeC
         int keyIdx = 0;
         boolean overridingKeyFieldTypes = index.getIndexDetails().isOverridingKeyFieldTypes();
         for (int i = 0; i < numSecKeys; i++, keyIdx++) {
-            IAType secKeyType = secKeyTypes.get(i).first;
-            Boolean makeOptional = secKeyTypes.get(i).second;
+            IAType secKeyType = secKeyTypes.get(i).getLeft();
+            Boolean makeOptional = secKeyTypes.get(i).getRight();
             fieldTypes[keyIdx] =
                     overridingKeyFieldTypes || makeOptional ? AUnionType.createUnknownableType(secKeyType) : secKeyType;
             fieldNames[keyIdx] = "SK" + i;
@@ -206,6 +214,11 @@ public class QueryIndexRewriter extends FunctionRewriter implements IResultTypeC
             throw new CompilationException(ErrorCode.UNKNOWN_DATASET_IN_DATAVERSE, loc, dsName,
                     MetadataUtil.dataverseName(dbName, dvName, mp.isUsingDatabase()));
         }
+        if (dataset.isCorrelated()) {
+            throw new CompilationException(ErrorCode.COMPILATION_ERROR, loc,
+                    QUERY_INDEX.getName() + " is not supported on " + IdentifierUtil.dataset() + " " + dsName
+                            + " since it uses the correlated-prefix merge policy");
+        }
         return dataset;
     }
 
@@ -219,12 +232,12 @@ public class QueryIndexRewriter extends FunctionRewriter implements IResultTypeC
             throw new CompilationException(ErrorCode.OPERATION_NOT_SUPPORTED_ON_PRIMARY_INDEX, loc, idxName);
         }
         DatasetConfig.IndexType idxType = index.getIndexType();
-        // currently, only normal secondary indexes are supported
-        if (idxType != DatasetConfig.IndexType.BTREE || Index.IndexCategory.of(idxType) != Index.IndexCategory.VALUE
-                || index.isPrimaryKeyIndex()) {
-            throw new CompilationException(ErrorCode.COMPILATION_FUNC_EXPRESSION_CANNOT_UTILIZE_INDEX,
-                    f.getSourceLocation(), LogRedactionUtil.userData(f.toString()));
+        // currently, only normal and array secondary indexes are supported
+        if ((idxType == DatasetConfig.IndexType.BTREE && !index.isPrimaryKeyIndex())
+                || idxType == DatasetConfig.IndexType.ARRAY) {
+            return index;
         }
-        return index;
+        throw new CompilationException(ErrorCode.COMPILATION_FUNC_EXPRESSION_CANNOT_UTILIZE_INDEX,
+                f.getSourceLocation(), LogRedactionUtil.userData(f.toString()));
     }
 }

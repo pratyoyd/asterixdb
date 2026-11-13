@@ -285,6 +285,23 @@ public class SetMemoryRequirementsRule implements IAlgebraicRewriteRule {
         }
 
         @Override
+        public Void visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
+            // Set before expansion so a budget exists even if the plan is inspected between the rewrite and
+            // the rule that expands this into stages; each stage then declares its own.
+            setOperatorMemoryBudget(op, physConfig.getMaxFramesForClusterBy());
+            return null;
+        }
+
+        @Override
+        public Void visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+            // The k-means stages hold a block of vectors while scoring and spill their merges through sort
+            // runs; both are sized from this budget. Without it the operator keeps fixedMemoryBudget(1) while
+            // the runtime allocates freely, which is how the pool came to be materialized unbounded.
+            setOperatorMemoryBudget(op, physConfig.getMaxFramesForClusterBy());
+            return null;
+        }
+
+        @Override
         public Void visitUnnestOperator(UnnestOperator op, Void arg) throws AlgebricksException {
             return null;
         }

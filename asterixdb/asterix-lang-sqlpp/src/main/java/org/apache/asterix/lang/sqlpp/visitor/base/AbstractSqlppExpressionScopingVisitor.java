@@ -24,6 +24,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
@@ -50,6 +51,7 @@ import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.struct.QuantifiedPair;
 import org.apache.asterix.lang.common.struct.VarIdentifier;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateClause;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.JoinClause;
@@ -60,7 +62,7 @@ import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationRight;
 import org.apache.asterix.lang.sqlpp.util.SqlppVariableUtil;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 
 public class AbstractSqlppExpressionScopingVisitor extends AbstractSqlppSimpleExpressionVisitor {
@@ -107,6 +109,14 @@ public class AbstractSqlppExpressionScopingVisitor extends AbstractSqlppSimpleEx
         // Visit the left expression of a from term.
         fromTerm.setLeftExpression(visit(fromTerm.getLeftExpression(), fromTerm));
 
+        // Resolved before the new scope opens, so the value cannot see this term's own binding variables.
+        // Inside the scope, "FROM Users AS c AT SNAPSHOT c.uid" would bind c to the term's own item
+        // variable and the value would become a per-row field access, failing much later and much less
+        // helpfully -- ASX1106 "expected constant value" pointing at the whole clause, rather than ASX1073
+        // "undefined identifier c" pointing at the c. It would also put this term's own binding variable
+        // into its free variable set, which the rewrites that read that set have no reason to expect.
+        visitTimeTravel(fromTerm.getTimeTravel(), fromTerm);
+
         scopeChecker.createNewScope();
 
         // Registers the data item variable.
@@ -134,6 +144,10 @@ public class AbstractSqlppExpressionScopingVisitor extends AbstractSqlppSimpleEx
         // the correlation here,
         // we defer the check to the query optimizer.
         joinClause.setRightExpression(visit(joinClause.getRightExpression(), joinClause));
+
+        // Before the right branch's variables are registered, for the same reason as in visit(FromTerm):
+        // "JOIN d AT SNAPSHOT d.x" must not bind d to the branch it is selecting the snapshot for.
+        visitTimeTravel(joinClause.getTimeTravel(), joinClause);
 
         // Registers the data item variable.
         VariableExpr rightVar = joinClause.getRightVariable();
@@ -250,13 +264,24 @@ public class AbstractSqlppExpressionScopingVisitor extends AbstractSqlppSimpleEx
             }
         }
         if (gc.hasGroupFieldList()) {
-            for (Pair<Expression, Identifier> gbyField : gc.getGroupFieldList()) {
-                gbyField.first = visit(gbyField.first, arg);
+            for (ListIterator<Pair<Expression, Identifier>> it = gc.getGroupFieldList().listIterator(); it.hasNext();) {
+                Pair<Expression, Identifier> gbyField = it.next();
+                it.set(Pair.of(visit(gbyField.getLeft(), arg), gbyField.getRight()));
             }
         }
         if (gc.hasDecorList()) {
+            // A decoration carries a variable bound outside this block through the GROUP BY, so its
+            // expression is resolved in the scope preceding the block, not in the pre-group scope: there a
+            // FROM or LET variable of the block that shares the outer variable's name would capture it.
+            scopeChecker.pushExistingScope(scopeChecker.getPrecedingScope());
+            try {
+                for (GbyVariableExpressionPair decorVarExpr : gc.getDecorPairList()) {
+                    decorVarExpr.setExpr(visit(decorVarExpr.getExpr(), gc));
+                }
+            } finally {
+                scopeChecker.removeCurrentScope();
+            }
             for (GbyVariableExpressionPair decorVarExpr : gc.getDecorPairList()) {
-                decorVarExpr.setExpr(visit(decorVarExpr.getExpr(), gc));
                 VariableExpr decorVar = decorVarExpr.getVar();
                 if (decorVar != null) {
                     addNewVarSymbolToScope(newScope, decorVar.getVar(), decorVar.getSourceLocation());
@@ -279,6 +304,54 @@ public class AbstractSqlppExpressionScopingVisitor extends AbstractSqlppSimpleEx
             gc.setWithVarMap(newWithMap);
         }
         // Replaces the current scope with the new scope.
+        scopeChecker.replaceCurrentScope(newScope);
+        return null;
+    }
+
+    @Override
+    public Expression visit(ClusterbyClause cc, ILangExpression arg) throws CompilationException {
+        // Resolve the clustering expression and any member-field expressions in the current (pre-cluster) scope.
+        cc.setClusteringExpression(visit(cc.getClusteringExpression(), cc));
+        if (cc.hasClusterFieldList()) {
+            for (ListIterator<Pair<Expression, Identifier>> it = cc.getClusterFieldList().listIterator(); it
+                    .hasNext();) {
+                Pair<Expression, Identifier> memberField = it.next();
+                it.set(Pair.of(visit(memberField.getLeft(), cc), memberField.getRight()));
+            }
+        }
+        // The decorations carry variables bound outside the block, resolved in the scope preceding it (see
+        // the GROUP BY case).
+        scopeChecker.pushExistingScope(scopeChecker.getPrecedingScope());
+        try {
+            visitDecorations(cc, cc);
+        } finally {
+            scopeChecker.removeCurrentScope();
+        }
+        // After the clause the block's own bindings are gone, as after a GROUP BY: the new scope descends
+        // from the scope preceding the SELECT block, so a FROM or LET variable read after the clause fails
+        // name resolution. A SQL-92 aggregate's arguments are mapped through the cluster field list.
+        Scope newScope = new Scope(scopeChecker, scopeChecker.getPrecedingScope());
+        if (cc.hasClusterDescriptorVar()) {
+            VariableExpr descriptorVar = cc.getClusterDescriptorVar();
+            addNewVarSymbolToScope(newScope, descriptorVar.getVar(), descriptorVar.getSourceLocation());
+        }
+        if (cc.hasClusterMembersVar()) {
+            VariableExpr membersVar = cc.getClusterMembersVar();
+            addNewVarSymbolToScope(newScope, membersVar.getVar(), membersVar.getSourceLocation());
+        }
+        // The operator's variables, null before the rewrite has named them.
+        for (VariableExpr produced : new VariableExpr[] { cc.getClusterIdVar(), cc.getCentroidVar() }) {
+            if (produced != null) {
+                addNewVarSymbolToScope(newScope, produced.getVar(), produced.getSourceLocation());
+            }
+        }
+        // A decoration binds its variable again after the clause.
+        if (cc.hasDecorList()) {
+            for (GbyVariableExpressionPair decorPair : cc.getDecorPairList()) {
+                VariableExpr decorVar = decorPair.getVar();
+                addNewVarSymbolToScope(newScope, decorVar.getVar(), decorVar.getSourceLocation());
+            }
+        }
         scopeChecker.replaceCurrentScope(newScope);
         return null;
     }

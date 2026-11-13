@@ -21,7 +21,7 @@ package org.apache.asterix.external.util;
 import static org.apache.asterix.common.exceptions.ErrorCode.REQUIRED_PARAM_IF_PARAM_IS_PRESENT;
 import static org.apache.asterix.external.util.ExternalDataUtils.validateIncludeExclude;
 import static org.apache.asterix.om.utils.ProjectionFiltrationTypeUtil.ALL_FIELDS_TYPE;
-import static org.apache.asterix.om.utils.ProjectionFiltrationTypeUtil.EMPTY_TYPE;
+import static org.apache.hadoop.mapreduce.lib.input.FileInputFormat.LIST_STATUS_NUM_THREADS;
 import static org.apache.hyracks.api.util.ExceptionUtils.getMessageOrToString;
 
 import java.io.ByteArrayInputStream;
@@ -49,6 +49,7 @@ import javax.security.auth.login.LoginContext;
 import javax.security.auth.login.LoginException;
 
 import org.apache.asterix.common.api.IApplicationContext;
+import org.apache.asterix.common.config.CompilerProperties;
 import org.apache.asterix.common.config.DatasetConfig.ExternalFilePendingOp;
 import org.apache.asterix.common.dataflow.ICcApplicationContext;
 import org.apache.asterix.common.exceptions.AsterixException;
@@ -61,7 +62,6 @@ import org.apache.asterix.external.input.record.reader.hdfs.parquet.ParquetReadS
 import org.apache.asterix.external.input.stream.HDFSInputStream;
 import org.apache.asterix.external.util.ExternalDataConstants.ParquetOptions;
 import org.apache.asterix.om.types.ARecordType;
-import org.apache.asterix.runtime.projection.ExternalDatasetProjectionFiltrationInfo;
 import org.apache.asterix.runtime.projection.FunctionCallInformation;
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -108,7 +108,7 @@ public class HDFSUtils {
         try {
             scheduler = new Scheduler(ccContext.getClusterControllerInfo().getClientNetAddress(),
                     ccContext.getClusterControllerInfo().getClientNetPort(),
-                    networkSecurityManager.getSocketChannelFactory());
+                    networkSecurityManager.getSocketChannelFactory(), serviceCtx.getControllerService().getExecutor());
         } catch (HyracksException e) {
             throw new RuntimeDataException(ErrorCode.UTIL_HDFS_UTILS_CANNOT_OBTAIN_HDFS_SCHEDULER);
         }
@@ -224,7 +224,7 @@ public class HDFSUtils {
         }
     }
 
-    public static JobConf configureHDFSJobConf(Map<String, String> configuration) {
+    public static JobConf configureHDFSJobConf(Map<String, String> configuration, ICcApplicationContext serviceCtx) {
         JobConf conf = new JobConf();
         String localShortCircuitSocketPath = configuration.get(ExternalDataConstants.KEY_LOCAL_SOCKET_PATH);
         String formatClassName = HDFSUtils.getInputFormatClassName(configuration);
@@ -245,6 +245,7 @@ public class HDFSUtils {
         }
         conf.setClassLoader(HDFSInputStream.class.getClassLoader());
         conf.set(ExternalDataConstants.KEY_HADOOP_INPUT_FORMAT, formatClassName);
+        conf.set(LIST_STATUS_NUM_THREADS, getHdfsFileSplitParallelism(configuration, serviceCtx));
 
         // Enable local short circuit reads if user supplied the parameters
         if (localShortCircuitSocketPath != null) {
@@ -270,6 +271,12 @@ public class HDFSUtils {
         }
         conf.set(ExternalDataConstants.HDFS_IO_COMPRESSION_CODECS_KEY, AliasGzipCodec.class.getName());
         return conf;
+    }
+
+    private static String getHdfsFileSplitParallelism(Map<String, String> configuration, ICcApplicationContext appCtx) {
+        String numThreads = configuration.get(CompilerProperties.COMPILER_HDFS_SPLIT_PARALLELISM_KEY);
+        return numThreads != null ? numThreads
+                : String.valueOf(appCtx.getCompilerProperties().getHdfsSplitParallelism());
     }
 
     public static Configuration configureHDFSwrite(Map<String, String> configuration) {
@@ -300,6 +307,21 @@ public class HDFSUtils {
                 ExternalDataConstants.KERBEROS_PROTOCOL)) {
             conf.set(ExternalDataConstants.KEY_HADOOP_AUTHENTICATION, ExternalDataConstants.KERBEROS_PROTOCOL);
             conf.set(ExternalDataConstants.KEY_NAMENODE_PRINCIPAL_PATTERN, "*");
+
+            // FileInputFormat delegates input path listing to LocatedFileStatusFetcher, which
+            // globs on a thread pool obtained from HadoopExecutors whenever this is greater than
+            // one. As of Java 24 (JEP 486) the Subject established by UserGroupInformation.doAs
+            // is no longer inherited by child threads, and HadoopExecutors does not use
+            // SubjectInheritingThread, so those pool threads resolve the current user to the
+            // process login user rather than the delegation-token UGI we authenticated with; a
+            // secured NameNode then rejects them with "SIMPLE authentication is not enabled".
+            // Keep the listing on the calling thread so that it stays within the doAs. The
+            // fetcher parallelizes per input path and per discovered directory, and we set a
+            // single input dir without recursive listing, so this only forfeits parallelism for
+            // wildcard paths spanning multiple directories. HADOOP-19906 restores propagation to
+            // child threads within SubjectUtil and is fixed in Hadoop 3.4.4, 3.5.1 and 3.6.0;
+            // this workaround can be removed once we consume one of those.
+            conf.setInt(org.apache.hadoop.mapreduce.lib.input.FileInputFormat.LIST_STATUS_NUM_THREADS, 1);
 
             String kerberosRealm = configuration.get(ExternalDataConstants.KERBEROS_REALM);
             String kerberosKdc = configuration.get(ExternalDataConstants.KERBEROS_KDC);
@@ -440,8 +462,15 @@ public class HDFSUtils {
         //Rebase and parse decimal as double?
         conf.set(ParquetOptions.HADOOP_DECIMAL_TO_DOUBLE,
                 configuration.getOrDefault(ParquetOptions.DECIMAL_TO_DOUBLE, ExternalDataConstants.FALSE));
+        //Read temporal values as the numbers they store, keeping sub-millisecond precision
+        conf.set(ParquetOptions.HADOOP_TIMESTAMP_AS_LONG, configuration.getOrDefault(ParquetOptions.TIMESTAMP_AS_LONG,
+                String.valueOf(ParquetOptions.DEFAULT_TIMESTAMP_AS_LONG)));
+        conf.set(ParquetOptions.HADOOP_DATE_AS_INT, configuration.getOrDefault(ParquetOptions.DATE_AS_INT,
+                String.valueOf(ParquetOptions.DEFAULT_DATE_AS_INT)));
+        conf.set(ParquetOptions.HADOOP_TIME_AS_INT, configuration.getOrDefault(ParquetOptions.TIME_AS_INT,
+                String.valueOf(ParquetOptions.DEFAULT_TIME_AS_INT)));
         //Re-adjust the time zone for UTC-adjusted values
-        conf.set(ParquetOptions.HADOOP_TIMEZONE, configuration.getOrDefault(ParquetOptions.TIMEZONE, ""));
+        conf.set(ParquetOptions.HADOOP_TIMEZONE, configuration.getOrDefault(ExternalDataConstants.KEY_TIMEZONE, ""));
 
     }
 
@@ -456,18 +485,7 @@ public class HDFSUtils {
 
     public static ARecordType getExpectedType(Configuration configuration) throws IOException {
         String encoded = configuration.get(ExternalDataConstants.KEY_REQUESTED_FIELDS, "");
-        if (ALL_FIELDS_TYPE.getTypeName().equals(encoded)) {
-            //By default, return the entire records
-            return ALL_FIELDS_TYPE;
-        } else if (EMPTY_TYPE.getTypeName().equals(encoded)) {
-            //No fields were requested
-            return EMPTY_TYPE;
-        }
-        //A subset of the fields was requested
-        Base64.Decoder decoder = Base64.getDecoder();
-        byte[] typeBytes = decoder.decode(encoded);
-        DataInputStream dataInputStream = new DataInputStream(new ByteArrayInputStream(typeBytes));
-        return ExternalDatasetProjectionFiltrationInfo.createTypeField(dataInputStream);
+        return ExternalDataUtils.getExpectedType(encoded);
     }
 
     public static void setFunctionCallInformationMap(Map<String, FunctionCallInformation> funcCallInfoMap,
@@ -479,13 +497,7 @@ public class HDFSUtils {
     public static Map<String, FunctionCallInformation> getFunctionCallInformationMap(Configuration conf)
             throws IOException {
         String encoded = conf.get(ExternalDataConstants.KEY_HADOOP_ASTERIX_FUNCTION_CALL_INFORMATION, "");
-        if (!encoded.isEmpty()) {
-            Base64.Decoder decoder = Base64.getDecoder();
-            byte[] functionCallInfoMapBytes = decoder.decode(encoded);
-            DataInputStream dataInputStream = new DataInputStream(new ByteArrayInputStream(functionCallInfoMapBytes));
-            return ExternalDatasetProjectionFiltrationInfo.createFunctionCallInformationMap(dataInputStream);
-        }
-        return null;
+        return ExternalDataUtils.getFunctionCallInformationMap(encoded);
     }
 
     public static void setWarnings(List<Warning> warnings, Configuration conf) throws IOException {

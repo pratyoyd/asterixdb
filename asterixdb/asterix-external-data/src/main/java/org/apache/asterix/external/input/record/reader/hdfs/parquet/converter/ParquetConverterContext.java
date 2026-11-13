@@ -30,18 +30,24 @@ import org.apache.asterix.external.input.filter.embedder.IExternalFilterValueEmb
 import org.apache.asterix.external.input.stream.StandardUTF8ToModifiedUTF8OutputStream;
 import org.apache.asterix.external.parser.jackson.ParserContext;
 import org.apache.asterix.external.util.ExternalDataConstants.ParquetOptions;
+import org.apache.asterix.external.util.ExternalDataUtils;
+import org.apache.asterix.external.util.TimestampZoneProjector;
+import org.apache.asterix.external.util.TimestampZoneProjector.TimestampUnit;
 import org.apache.asterix.formats.nontagged.SerializerDeserializerProvider;
 import org.apache.asterix.om.base.ABinary;
 import org.apache.asterix.om.base.ABoolean;
 import org.apache.asterix.om.base.ADate;
 import org.apache.asterix.om.base.ADateTime;
 import org.apache.asterix.om.base.ADouble;
+import org.apache.asterix.om.base.ADuration;
 import org.apache.asterix.om.base.AInt64;
 import org.apache.asterix.om.base.AMutableDate;
 import org.apache.asterix.om.base.AMutableDateTime;
 import org.apache.asterix.om.base.AMutableDouble;
+import org.apache.asterix.om.base.AMutableDuration;
 import org.apache.asterix.om.base.AMutableInt64;
 import org.apache.asterix.om.base.AMutableTime;
+import org.apache.asterix.om.base.ANull;
 import org.apache.asterix.om.base.ATime;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.BuiltinType;
@@ -82,6 +88,12 @@ public class ParquetConverterContext extends ParserContext {
     @SuppressWarnings("unchecked")
     private final ISerializerDeserializer<ADateTime> datetimeSerDer =
             SerializerDeserializerProvider.INSTANCE.getSerializerDeserializer(BuiltinType.ADATETIME);
+    @SuppressWarnings("unchecked")
+    private final ISerializerDeserializer<ADuration> durationSerDer =
+            SerializerDeserializerProvider.INSTANCE.getSerializerDeserializer(BuiltinType.ADURATION);
+    @SuppressWarnings("unchecked")
+    private final ISerializerDeserializer<ANull> nullSerDer =
+            SerializerDeserializerProvider.INSTANCE.getSerializerDeserializer(BuiltinType.ANULL);
 
     //Issued warnings
     private final List<Warning> warnings;
@@ -105,6 +117,7 @@ public class ParquetConverterContext extends ParserContext {
     private final AMutableDate mutableDate = new AMutableDate(0);
     private final AMutableTime mutableTime = new AMutableTime(0);
     private final AMutableDateTime mutableDateTime = new AMutableDateTime(0);
+    private final AMutableDuration mutableDuration = new AMutableDuration(0, 0);
 
     /*
      * ************************************************************************
@@ -119,8 +132,11 @@ public class ParquetConverterContext extends ParserContext {
      * Temporal Configuration
      * ************************************************************************
      */
+    private final boolean timestampAsLong;
+    private final boolean dateAsInt;
+    private final boolean timeAsInt;
     private final String timeZoneId;
-    private final int timeZoneOffset;
+    private final TimestampZoneProjector timeZoneProjector;
 
     /*
      * ************************************************************************
@@ -143,14 +159,29 @@ public class ParquetConverterContext extends ParserContext {
         parseJson = configuration.getBoolean(ParquetOptions.HADOOP_PARSE_JSON_STRING, false);
         decimalToDouble = configuration.getBoolean(ParquetOptions.HADOOP_DECIMAL_TO_DOUBLE, false);
 
+        timestampAsLong = configuration.getBoolean(ParquetOptions.HADOOP_TIMESTAMP_AS_LONG,
+                ParquetOptions.DEFAULT_TIMESTAMP_AS_LONG);
+        dateAsInt = configuration.getBoolean(ParquetOptions.HADOOP_DATE_AS_INT, ParquetOptions.DEFAULT_DATE_AS_INT);
+        timeAsInt = configuration.getBoolean(ParquetOptions.HADOOP_TIME_AS_INT, ParquetOptions.DEFAULT_TIME_AS_INT);
+
         String configuredTimeZoneId = configuration.get(ParquetOptions.HADOOP_TIMEZONE);
-        if (!configuredTimeZoneId.isEmpty()) {
-            timeZoneId = configuredTimeZoneId;
-            timeZoneOffset = TimeZone.getTimeZone(timeZoneId).getRawOffset();
-        } else {
-            timeZoneId = "";
-            timeZoneOffset = 0;
-        }
+        TimeZone timeZone = ExternalDataUtils.resolveTimeZoneOrWarn(configuredTimeZoneId, warnings::add);
+        // kept verbatim rather than canonicalised: AsterixTypeToParquetTypeVisitor only asks whether it is
+        // empty, to decide the "UTC-adjusted value read without a timezone" warning
+        timeZoneId = configuredTimeZoneId == null ? "" : configuredTimeZoneId;
+        timeZoneProjector = new TimestampZoneProjector(timeZone == null ? null : timeZone.toZoneId());
+    }
+
+    public boolean isTimestampAsLong() {
+        return timestampAsLong;
+    }
+
+    public boolean isDateAsInt() {
+        return dateAsInt;
+    }
+
+    public boolean isTimeAsInt() {
+        return timeAsInt;
     }
 
     public IExternalFilterValueEmbedder getValueEmbedder() {
@@ -173,8 +204,24 @@ public class ParquetConverterContext extends ParserContext {
         return timeZoneId;
     }
 
-    public int getTimeZoneOffset() {
-        return timeZoneOffset;
+    /**
+     * Shifts a UTC-adjusted epoch-millisecond value into the configured time zone, using the offset in effect
+     * at that instant rather than the zone's standard offset. Only call this for a value whose parquet
+     * annotation says {@code isAdjustedToUTC}; an INT96 or local timestamp carries no zone.
+     * <p>
+     * Wraps the overflow failure as unchecked, because the parquet converter callbacks that reach this cannot
+     * declare a checked exception -- the same thing {@link #serializeDateTime} does with a serialization
+     * failure.
+     *
+     * @param epochMillis epoch milliseconds of a UTC-adjusted value
+     * @return the shifted value, unchanged when no time zone was configured
+     */
+    public long applyTimeZone(long epochMillis) {
+        try {
+            return timeZoneProjector.projectEpochValue(epochMillis, TimestampUnit.MILLIS);
+        } catch (HyracksDataException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /*
@@ -288,6 +335,23 @@ public class ParquetConverterContext extends ParserContext {
         try {
             mutableDateTime.setValue(timestamp);
             datetimeSerDer.serialize(mutableDateTime, output);
+        } catch (HyracksDataException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    public void serializeDuration(int months, long milliseconds, DataOutput output) {
+        try {
+            mutableDuration.setValue(months, milliseconds);
+            durationSerDer.serialize(mutableDuration, output);
+        } catch (HyracksDataException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    public void serializeNull(DataOutput output) {
+        try {
+            nullSerDer.serialize(ANull.NULL, output);
         } catch (HyracksDataException e) {
             throw new IllegalStateException(e);
         }

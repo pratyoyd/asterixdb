@@ -21,8 +21,9 @@ org.apache.asterix.external.input.HDFSDataSourceFactory
 org.apache.asterix.external.input.record.reader.stream.StreamRecordReaderFactory
 org.apache.asterix.external.input.record.reader.http.HttpServerRecordReaderFactory
 org.apache.asterix.external.input.record.reader.aws.AwsS3ReaderFactory
-org.apache.asterix.external.input.record.reader.aws.parquet.AwsS3ParquetReaderFactory
 org.apache.asterix.external.input.record.reader.aws.delta.AwsS3DeltaReaderFactory
+org.apache.asterix.external.input.record.reader.iceberg.IcebergParquetRecordReaderFactory
+org.apache.asterix.external.input.record.reader.aws.parquet.AwsS3ParquetReaderFactory
 org.apache.asterix.external.input.record.reader.gcs.GCSReaderFactory
 org.apache.asterix.external.input.record.reader.azure.blob.AzureBlobReaderFactory
 org.apache.asterix.external.input.record.reader.azure.datalake.AzureDataLakeReaderFactory
@@ -30,3 +31,4 @@ org.apache.asterix.external.input.record.reader.azure.parquet.AzureBlobParquetRe
 org.apache.asterix.external.input.record.reader.azure.parquet.AzureDataLakeParquetReaderFactory
 org.apache.asterix.external.input.record.reader.gcs.parquet.GCSParquetReaderFactory
 org.apache.asterix.external.input.record.reader.gcs.delta.GCSDeltaReaderFactory
+org.apache.asterix.external.input.record.reader.azure.delta.AzureDeltaReaderFactory

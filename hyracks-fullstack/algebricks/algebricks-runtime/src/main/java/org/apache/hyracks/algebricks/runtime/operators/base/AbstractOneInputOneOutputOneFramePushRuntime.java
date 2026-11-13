@@ -22,10 +22,10 @@ import org.apache.hyracks.api.comm.IFrame;
 import org.apache.hyracks.api.comm.IFrameAppender;
 import org.apache.hyracks.api.comm.IFrameTupleAccessor;
 import org.apache.hyracks.api.comm.IFrameTupleAppender;
-import org.apache.hyracks.api.comm.VSizeFrame;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.util.CleanupUtils;
+import org.apache.hyracks.dataflow.common.comm.io.AbstractFrameAppender;
 import org.apache.hyracks.dataflow.common.comm.io.ArrayTupleBuilder;
 import org.apache.hyracks.dataflow.common.comm.io.FrameTupleAccessor;
 import org.apache.hyracks.dataflow.common.comm.io.FrameTupleAppender;
@@ -38,10 +38,12 @@ public abstract class AbstractOneInputOneOutputOneFramePushRuntime extends Abstr
     protected IFrame frame;
     protected FrameTupleAccessor tAccess;
     protected FrameTupleReference tRef;
+    protected boolean ignoreFailures = false;
 
     protected final void initAccessAppend(IHyracksTaskContext ctx) throws HyracksDataException {
-        frame = new VSizeFrame(ctx);
+        frame = ctx.allocateVSizeFrame();
         appender = new FrameTupleAppender(frame);
+        ((AbstractFrameAppender) appender).setIgnoreFailures(ignoreFailures);
         tAccess = new FrameTupleAccessor(inputRecordDesc);
     }
 
@@ -59,8 +61,10 @@ public abstract class AbstractOneInputOneOutputOneFramePushRuntime extends Abstr
         try {
             flushIfNotFailed();
         } catch (Exception e) {
-            closeException = e;
-            fail(closeException);
+            if (!ignoreFailures) {
+                closeException = e;
+                fail(closeException);
+            }
         } finally {
             closeException = CleanupUtils.close(writer, closeException);
         }
@@ -114,5 +118,16 @@ public abstract class AbstractOneInputOneOutputOneFramePushRuntime extends Abstr
     protected void appendConcat(IFrameTupleAccessor accessor0, int tIndex0, IFrameTupleAccessor accessor1, int tIndex1)
             throws HyracksDataException {
         FrameUtils.appendConcatToWriter(writer, getTupleAppender(), accessor0, tIndex0, accessor1, tIndex1);
+    }
+
+    public void setIgnoreFailures(boolean ignoreFailures) {
+        this.ignoreFailures = ignoreFailures;
+        if (appender != null) {
+            ((AbstractFrameAppender) appender).setIgnoreFailures(ignoreFailures);
+        }
+    }
+
+    public boolean isIgnoreFailures() {
+        return ignoreFailures;
     }
 }

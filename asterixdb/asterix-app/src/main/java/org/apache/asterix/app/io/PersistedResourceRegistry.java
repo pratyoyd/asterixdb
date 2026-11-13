@@ -37,8 +37,10 @@ import org.apache.asterix.common.ioopcallbacks.LSMIndexPageWriteCallbackFactory;
 import org.apache.asterix.common.library.LibraryDescriptor;
 import org.apache.asterix.common.storage.SizeBoundedConcurrentMergePolicyFactory;
 import org.apache.asterix.common.transactions.Checkpoint;
+import org.apache.asterix.common.vector.OptimizedScalarQuantizerFactory;
 import org.apache.asterix.dataflow.data.common.AListElementTokenFactory;
 import org.apache.asterix.dataflow.data.common.AOrderedListBinaryTokenizerFactory;
+import org.apache.asterix.dataflow.data.common.AOrderedListVectorBinaryAccessorFactory;
 import org.apache.asterix.dataflow.data.common.AUnorderedListBinaryTokenizerFactory;
 import org.apache.asterix.dataflow.data.nontagged.comparators.ACirclePartialBinaryComparatorFactory;
 import org.apache.asterix.dataflow.data.nontagged.comparators.ADurationPartialBinaryComparatorFactory;
@@ -70,6 +72,7 @@ import org.apache.asterix.om.types.AUnorderedListType;
 import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.runtime.compression.CompressionManager;
 import org.apache.asterix.runtime.utils.RuntimeComponentsProvider;
+import org.apache.asterix.runtime.utils.VectorDistanceFunctionFactory;
 import org.apache.asterix.transaction.management.opcallbacks.PrimaryIndexOperationTrackerFactory;
 import org.apache.asterix.transaction.management.opcallbacks.SecondaryIndexOperationTrackerFactory;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
@@ -125,6 +128,7 @@ import org.apache.hyracks.storage.am.lsm.invertedindex.tokenizers.UTF8NGramToken
 import org.apache.hyracks.storage.am.lsm.invertedindex.tokenizers.UTF8WordTokenFactory;
 import org.apache.hyracks.storage.am.lsm.rtree.dataflow.LSMRTreeLocalResource;
 import org.apache.hyracks.storage.am.lsm.rtree.dataflow.LSMRTreeWithAntiMatterLocalResource;
+import org.apache.hyracks.storage.am.lsm.vector.dataflow.LSMVTreeLocalResource;
 import org.apache.hyracks.storage.am.rtree.frames.RTreePolicyType;
 import org.apache.hyracks.storage.am.rtree.impls.DoublePrimitiveValueProviderFactory;
 import org.apache.hyracks.storage.am.rtree.impls.FloatPrimitiveValueProviderFactory;
@@ -161,6 +165,17 @@ public class PersistedResourceRegistry implements IPersistedResourceRegistry {
         registeredClasses.put("LSMRTreeWithAntiMatterLocalResource", LSMRTreeWithAntiMatterLocalResource.class);
         registeredClasses.put("LSMInvertedIndexLocalResource", LSMInvertedIndexLocalResource.class);
         registeredClasses.put("LSMColumnBTreeLocalResource", LSMColumnBTreeLocalResource.class);
+        registeredClasses.put("LSMVTreeLocalResource", LSMVTreeLocalResource.class);
+
+        // IVTreeBinaryAccessorFactory — registered so LSMVTreeLocalResource can JSON-round-trip the
+        // factory via IPersistedResourceRegistry.deserialize() instead of Class.forName lookup.
+        registeredClasses.put("AOrderedListVectorBinaryAccessorFactory", AOrderedListVectorBinaryAccessorFactory.class);
+
+        // IVTreeDistanceFunctionFactory — registered so LSMVTreeLocalResource can JSON-round-trip it.
+        registeredClasses.put("VectorDistanceFunctionFactory", VectorDistanceFunctionFactory.class);
+
+        // IVTreeQuantizerFactory — same, for quantized VTree indexes.
+        registeredClasses.put("OptimizedScalarQuantizerFactory", OptimizedScalarQuantizerFactory.class);
 
         // ILSMMergePolicyFactory
         registeredClasses.put("NoMergePolicyFactory", NoMergePolicyFactory.class);

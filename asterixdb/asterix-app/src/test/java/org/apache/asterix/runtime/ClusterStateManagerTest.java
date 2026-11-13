@@ -19,9 +19,7 @@
 package org.apache.asterix.runtime;
 
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -37,6 +35,7 @@ import org.apache.asterix.common.config.StorageProperties;
 import org.apache.asterix.common.metadata.IMetadataBootstrap;
 import org.apache.asterix.common.utils.NcLocalCounters;
 import org.apache.asterix.common.utils.PartitioningScheme;
+import org.apache.asterix.common.utils.Partitions;
 import org.apache.asterix.hyracks.bootstrap.CCApplication;
 import org.apache.asterix.runtime.transaction.ResourceIdManager;
 import org.apache.asterix.runtime.utils.BulkTxnIdFactory;
@@ -194,6 +193,49 @@ public class ClusterStateManagerTest {
         Assert.assertTrue(csm.getState() == ClusterState.UNUSABLE);
     }
 
+    /**
+     * ASTERIXDB-3798: ensures a node's pending-removal registration does not outlive its participation in the
+     * cluster, whether it departs via partition deregistration (rebalance-out) or deactivation. A stranded
+     * registration cannot be re-registered by {@link ClusterStateManager#removePending(String)} (which only
+     * accepts participants), and would silently exclude the node from the cluster locations should its node id
+     * ever be reused.
+     *
+     * @throws Exception
+     */
+    @Test
+    public void pendingRemovalClearedOnNodeDeparture() throws Exception {
+        ClusterStateManager csm = new ClusterStateManager();
+        CcApplicationContext ccApplicationContext = ccAppContext(csm);
+        csm.setCcAppCtx(ccApplicationContext);
+
+        notifyNodeJoined(csm, NC1, 0, true);
+        notifyNodeStartupCompletion(ccApplicationContext, NC1);
+        notifyNodeJoined(csm, NC2, 1, true);
+        notifyNodeStartupCompletion(ccApplicationContext, NC2);
+        notifyNodeJoined(csm, NC3, 2, true);
+        notifyNodeStartupCompletion(ccApplicationContext, NC3);
+        Assert.assertTrue(csm.isClusterActive());
+        Assert.assertTrue(csm.getNodesPendingRemoval().isEmpty());
+
+        // NC2 is ejected: registered for removal, then its partitions are deregistered
+        csm.removePending(NC2);
+        Assert.assertEquals(Collections.singleton(NC2), csm.getNodesPendingRemoval());
+        csm.deregisterNodePartitions(NC2);
+        Assert.assertFalse(csm.getParticipantNodes().contains(NC2));
+        Assert.assertTrue("pending removal leaked ejected node " + NC2, csm.getNodesPendingRemoval().isEmpty());
+
+        // a departed node cannot be re-registered, so re-registering it must not resurrect the entry
+        csm.removePending(NC2);
+        Assert.assertTrue(csm.getNodesPendingRemoval().isEmpty());
+
+        // NC3 is registered for removal, but departs via deactivation rather than deregistration
+        csm.removePending(NC3);
+        Assert.assertEquals(Collections.singleton(NC3), csm.getNodesPendingRemoval());
+        csm.updateNodeState(NC3, false, null, null);
+        Assert.assertFalse(csm.getParticipantNodes().contains(NC3));
+        Assert.assertTrue("pending removal leaked deactivated node " + NC3, csm.getNodesPendingRemoval().isEmpty());
+    }
+
     private void notifyNodeJoined(ClusterStateManager csm, String nodeId, int partitionId, boolean registerPartitions)
             throws HyracksException, AlgebricksException {
         csm.notifyNodeJoin(nodeId, Collections.emptyMap());
@@ -277,8 +319,8 @@ public class ClusterStateManagerTest {
         return localCounters;
     }
 
-    private static Set<Integer> getNodeActivePartitions(String nodeId) {
-        Set<Integer> activePartitions = new HashSet<>();
+    private static Partitions getNodeActivePartitions(String nodeId) {
+        Partitions activePartitions = new Partitions();
         switch (nodeId) {
             case NC1:
                 activePartitions.add(0);

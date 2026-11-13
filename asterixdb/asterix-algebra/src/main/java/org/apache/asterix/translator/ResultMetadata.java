@@ -27,7 +27,7 @@ import org.apache.hyracks.api.result.IResultMetadata;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 public class ResultMetadata implements IResultMetadata {
-    private static final long serialVersionUID = 1905367559307369036L;
+    private static final long serialVersionUID = 1905367559307369037L;
 
     private final SessionConfig.OutputFormat format;
     private long jobDuration;
@@ -43,6 +43,12 @@ public class ResultMetadata implements IResultMetadata {
     private long cloudReadRequestsCount;
     private long cloudPagesReadCount;
     private long cloudPagesPersistedCount;
+    private long resultCount;
+    private long compileTime;
+    private long createTime;
+    private long endTime;
+    private boolean resultSetOrdered;
+    private boolean cachedPlan;
 
     public ResultMetadata(SessionConfig.OutputFormat format) {
         this.format = format;
@@ -150,12 +156,60 @@ public class ResultMetadata implements IResultMetadata {
         return outputTypes;
     }
 
-    public long getQueueWaitTimeInNanos() {
+    public long getQueueWaitTimeNanos() {
         return queueWaitTimeInNanos;
     }
 
-    public void setQueueWaitTimeInNanos(long queueWaitTimeInNanos) {
-        this.queueWaitTimeInNanos = queueWaitTimeInNanos;
+    public void setQueueWaitTimeNanos(long queueWaitTimeNanos) {
+        this.queueWaitTimeInNanos = queueWaitTimeNanos;
+    }
+
+    public void setResultCount(long resultCount) {
+        this.resultCount = resultCount;
+    }
+
+    public long getResultCount() {
+        return resultCount;
+    }
+
+    public long getCompileTimeNanos() {
+        return compileTime;
+    }
+
+    public void setCompileTimeNanos(long compileTimeNanos) {
+        this.compileTime = compileTimeNanos;
+    }
+
+    public long getCreateTimeMillis() {
+        return createTime;
+    }
+
+    public void setCreateTimeMillis(long createTimeMillis) {
+        this.createTime = createTimeMillis;
+    }
+
+    public long getEndTimeMillis() {
+        return endTime;
+    }
+
+    public void setEndTimeMillis(long endTimeMillis) {
+        this.endTime = endTimeMillis;
+    }
+
+    public boolean isResultSetOrdered() {
+        return resultSetOrdered;
+    }
+
+    public void setResultSetOrdered(boolean resultSetOrdered) {
+        this.resultSetOrdered = resultSetOrdered;
+    }
+
+    public boolean isCachedPlan() {
+        return cachedPlan;
+    }
+
+    public void setCachedPlan(boolean cachedPlan) {
+        this.cachedPlan = cachedPlan;
     }
 
     @Override

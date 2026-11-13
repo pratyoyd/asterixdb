@@ -40,14 +40,18 @@ import org.apache.asterix.object.base.AdmObjectNode;
 import org.apache.asterix.object.base.AdmStringNode;
 import org.apache.asterix.object.base.IAdmNode;
 import org.apache.asterix.om.types.ATypeTag;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 
 public class CreateFunctionStatement extends AbstractStatement {
 
-    private static final String NULLCALL_FIELD_NAME = "null-call";
+    public static final String NULLCALL_FIELD_NAME = "null-call";
     private static final boolean NULLCALL_DEFAULT = false;
-    private static final String DETERMINISTIC_FIELD_NAME = "deterministic";
+    public static final String DETERMINISTIC_FIELD_NAME = "deterministic";
+    private static final String BATCHED_FIELD_NAME = "batched";
+    private static final boolean BATCHED_DEFAULT = false;
     private static final boolean DETERMINISTIC_DEFAULT = true;
+    // most HTTP APIs are not: the same request can return a different answer on each call
+    private static final boolean HTTP_DETERMINISTIC_DEFAULT = false;
     private static final String RESOURCES_FIELD_NAME = "resources";
 
     private final FunctionSignature signature;
@@ -59,13 +63,18 @@ public class CreateFunctionStatement extends AbstractStatement {
     private final Namespace libraryNamespace;
     private final String libraryName;
     private final List<String> externalIdentifier;
+    private final String httpUrl;
+    private final Namespace httpLinkNamespace;
+    private final String httpLinkName;
     private final AdmObjectNode options;
 
     private final boolean replaceIfExists;
     private final boolean ifNotExists;
+    private final boolean transform;
 
     public CreateFunctionStatement(FunctionSignature signature, List<Pair<VarIdentifier, TypeExpression>> paramList,
-            String functionBody, Expression functionBodyExpression, boolean replaceIfExists, boolean ifNotExists) {
+            String functionBody, Expression functionBodyExpression, boolean replaceIfExists, boolean ifNotExists,
+            boolean transform) {
         this.signature = signature;
         this.functionBody = functionBody;
         this.functionBodyExpression = functionBodyExpression;
@@ -74,9 +83,13 @@ public class CreateFunctionStatement extends AbstractStatement {
         this.libraryNamespace = null;
         this.libraryName = null;
         this.externalIdentifier = null;
+        this.httpUrl = null;
+        this.httpLinkNamespace = null;
+        this.httpLinkName = null;
         this.options = null;
         this.replaceIfExists = replaceIfExists;
         this.ifNotExists = ifNotExists;
+        this.transform = transform;
     }
 
     public CreateFunctionStatement(FunctionSignature signature, List<Pair<VarIdentifier, TypeExpression>> paramList,
@@ -88,11 +101,43 @@ public class CreateFunctionStatement extends AbstractStatement {
         this.libraryNamespace = libraryNamespace;
         this.libraryName = libraryName;
         this.externalIdentifier = externalIdentifier;
+        this.httpUrl = null;
+        this.httpLinkNamespace = null;
+        this.httpLinkName = null;
         this.options = options == null ? null : ExpressionUtils.toNode(options);
         this.functionBody = null;
         this.functionBodyExpression = null;
         this.replaceIfExists = replaceIfExists;
         this.ifNotExists = ifNotExists;
+        this.transform = false;
+    }
+
+    /**
+     * Creates an external HTTP function, which calls either {@code httpUrl} or the link {@code httpLinkName};
+     * exactly one of the two is given. Such a function is untyped: it has no return type, and its parameters
+     * carry none.
+     */
+    public CreateFunctionStatement(FunctionSignature signature, List<Pair<VarIdentifier, TypeExpression>> paramList,
+            String httpUrl, Namespace httpLinkNamespace, String httpLinkName, RecordConstructor options,
+            boolean replaceIfExists, boolean ifNotExists) throws CompilationException {
+        if ((httpUrl == null) == (httpLinkName == null)) {
+            throw new IllegalArgumentException("exactly one of a URL and a link must be given");
+        }
+        this.signature = signature;
+        this.paramList = paramList;
+        this.returnType = null;
+        this.libraryNamespace = null;
+        this.libraryName = null;
+        this.externalIdentifier = null;
+        this.httpUrl = httpUrl;
+        this.httpLinkNamespace = httpLinkNamespace;
+        this.httpLinkName = httpLinkName;
+        this.options = options == null ? null : ExpressionUtils.toNode(options);
+        this.functionBody = null;
+        this.functionBodyExpression = null;
+        this.replaceIfExists = replaceIfExists;
+        this.ifNotExists = ifNotExists;
+        this.transform = false;
     }
 
     public boolean getReplaceIfExists() {
@@ -148,6 +193,38 @@ public class CreateFunctionStatement extends AbstractStatement {
         return libraryName;
     }
 
+    public boolean isHttp() {
+        return httpUrl != null || httpLinkName != null;
+    }
+
+    /**
+     * @return the URL an external HTTP function names inline, or {@code null} if it names a link
+     */
+    public String getHttpUrl() {
+        return httpUrl;
+    }
+
+    /**
+     * @return the link an external HTTP function names, or {@code null} if it names a URL inline
+     */
+    public String getHttpLinkName() {
+        return httpLinkName;
+    }
+
+    /**
+     * @return the namespace given with the link's name, or {@code null} if the name was unqualified
+     */
+    public Namespace getHttpLinkNamespace() {
+        return httpLinkNamespace;
+    }
+
+    /**
+     * @return the WITH clause, or {@code null} if there was none
+     */
+    public AdmObjectNode getOptions() {
+        return options;
+    }
+
     public boolean getNullCall() throws CompilationException {
         Boolean nullCall = getBooleanOption(NULLCALL_FIELD_NAME);
         return nullCall != null ? nullCall : NULLCALL_DEFAULT;
@@ -155,7 +232,15 @@ public class CreateFunctionStatement extends AbstractStatement {
 
     public boolean getDeterministic() throws CompilationException {
         Boolean deterministic = getBooleanOption(DETERMINISTIC_FIELD_NAME);
-        return deterministic != null ? deterministic : DETERMINISTIC_DEFAULT;
+        if (deterministic != null) {
+            return deterministic;
+        }
+        return isHttp() ? HTTP_DETERMINISTIC_DEFAULT : DETERMINISTIC_DEFAULT;
+    }
+
+    public boolean getBatched() throws CompilationException {
+        Boolean batched = getBooleanOption(BATCHED_FIELD_NAME);
+        return batched != null ? batched : BATCHED_DEFAULT;
     }
 
     private Boolean getBooleanOption(String optionName) throws CompilationException {
@@ -196,6 +281,10 @@ public class CreateFunctionStatement extends AbstractStatement {
         return Category.DDL;
     }
 
+    public boolean isTransform() {
+        return transform;
+    }
+
     private IAdmNode getOption(String optionName) {
         return options != null ? options.get(optionName) : null;
     }
@@ -203,8 +292,8 @@ public class CreateFunctionStatement extends AbstractStatement {
     private static List<Pair<VarIdentifier, TypeExpression>> requireNullTypes(
             List<Pair<VarIdentifier, TypeExpression>> paramList) {
         for (Pair<VarIdentifier, TypeExpression> p : paramList) {
-            if (p.second != null) {
-                throw new IllegalArgumentException(String.valueOf(p.second));
+            if (p.getRight() != null) {
+                throw new IllegalArgumentException(String.valueOf(p.getRight()));
             }
         }
         return paramList;

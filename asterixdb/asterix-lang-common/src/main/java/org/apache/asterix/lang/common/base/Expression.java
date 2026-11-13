@@ -40,6 +40,7 @@ public interface Expression extends ILangExpression {
         SELECT_EXPRESSION,
         PRIMARY_EXPRESSION,
         CASE_EXPRESSION,
-        WINDOW_EXPRESSION
+        WINDOW_EXPRESSION,
+        UPDATE_CHANGE_EXPRESSION,
     }
 }

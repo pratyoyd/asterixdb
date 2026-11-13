@@ -24,12 +24,20 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 
+import org.apache.asterix.metadata.declared.DataSource;
+import org.apache.asterix.metadata.declared.DataSourceId;
+import org.apache.asterix.metadata.declared.DatasetDataSource;
+import org.apache.asterix.metadata.declared.MetadataProvider;
+import org.apache.asterix.metadata.declared.SampleDataSource;
+import org.apache.asterix.metadata.entities.Index;
 import org.apache.asterix.om.base.AString;
 import org.apache.asterix.om.constants.AsterixConstantValue;
+import org.apache.asterix.om.exceptions.ExceptionUtil;
 import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -44,6 +52,7 @@ import org.apache.hyracks.algebricks.core.algebra.operators.logical.AssignOperat
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.DataSourceScanOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.DistinctOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
+import org.apache.hyracks.algebricks.core.rewriter.base.PhysicalOptimizationConfig;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 
 public class OperatorUtils {
@@ -52,8 +61,8 @@ public class OperatorUtils {
             Pair<List<LogicalVariable>, List<AbstractFunctionCallExpression>> distinctVarsFuncPair,
             IOptimizationContext context, HashMap<DataSourceScanOperator, ILogicalOperator> scanAndDistinctOps) {
 
-        List<LogicalVariable> distinctVars = distinctVarsFuncPair.getFirst();
-        List<AbstractFunctionCallExpression> distinctFunctions = distinctVarsFuncPair.getSecond();
+        List<LogicalVariable> distinctVars = distinctVarsFuncPair.getLeft();
+        List<AbstractFunctionCallExpression> distinctFunctions = distinctVarsFuncPair.getRight();
         if (op == null || distinctVars.size() == 0) {
             return;
         }
@@ -107,10 +116,10 @@ public class OperatorUtils {
                             ((GroupByOperator) currentOp).getGroupByList();
                     // look for any DistinctOp/GroupByOp variables are replaceable with a nested GroupByOp Variable-expression
                     for (int i = 0; i < nestedGrpVarsList.size(); i++) {
-                        LogicalVariable prevVar = nestedGrpVarsList.get(i).first;
+                        LogicalVariable prevVar = nestedGrpVarsList.get(i).getLeft();
                         int idx = distinctVars.indexOf(prevVar);
                         if (idx != -1 && distinctVars.size() > 0) {
-                            ILogicalExpression expr = nestedGrpVarsList.get(i).second.getValue();
+                            ILogicalExpression expr = nestedGrpVarsList.get(i).getRight().getValue();
                             if (expr.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                                 LogicalVariable newVar = ((VariableReferenceExpression) expr).getVariableReference();
                                 distinctVars.remove(idx);
@@ -179,9 +188,9 @@ public class OperatorUtils {
     public static Pair<List<LogicalVariable>, List<AbstractFunctionCallExpression>> getGroupByDistinctVarFuncPair(
             ILogicalOperator grpByDistinctOp) {
         Pair<List<LogicalVariable>, List<AbstractFunctionCallExpression>> distinctVarsFunctions =
-                new Pair<>(new ArrayList<>(), new ArrayList<>());
-        List<LogicalVariable> distinctVars = distinctVarsFunctions.getFirst();
-        List<AbstractFunctionCallExpression> distinctFunctions = distinctVarsFunctions.getSecond();
+                Pair.of(new ArrayList<>(), new ArrayList<>());
+        List<LogicalVariable> distinctVars = distinctVarsFunctions.getLeft();
+        List<AbstractFunctionCallExpression> distinctFunctions = distinctVarsFunctions.getRight();
 
         if (grpByDistinctOp == null) {
             return distinctVarsFunctions;
@@ -324,4 +333,116 @@ public class OperatorUtils {
 
         return distinctOp;
     }
+
+    // we need to switch the datasource from the dataset source to the corresponding sample datasource.
+    // Little tricky how this is done!
+    protected static SampleDataSource getSampleDataSource(DataSourceScanOperator scanOp, IOptimizationContext optCtx)
+            throws AlgebricksException {
+        DataSource ds = (DataSource) scanOp.getDataSource();
+        DataSourceId dsid = ds.getId();
+        MetadataProvider mdp = (MetadataProvider) optCtx.getMetadataProvider();
+        Index index = mdp.findSampleIndex(dsid.getDatabaseName(), dsid.getDataverseName(), dsid.getDatasourceName());
+        DatasetDataSource dds = (DatasetDataSource) ds;
+        return new SampleDataSource(dds.getDataset(), index.getIndexName(), ds.getItemType(), ds.getMetaItemType(),
+                ds.getDomain());
+    }
+
+    protected static ILogicalOperator findDataSourceScanOperatorParent(ILogicalOperator op) {
+        ILogicalOperator parent = op;
+        while (op != null && op.getOperatorTag() != LogicalOperatorTag.EMPTYTUPLESOURCE) {
+            if (op.getOperatorTag().equals(LogicalOperatorTag.DATASOURCESCAN)) {
+                return parent;
+            }
+            parent = op;
+            op = op.getInputs().get(0).getValue();
+        }
+        return null;
+    }
+
+    public static boolean doAllDataSourcesHaveSamples(List<AbstractLeafInput> leafInputs, IOptimizationContext context)
+            throws AlgebricksException {
+        return doAllDataSourcesHaveSamples(leafInputs, context, true);
+    }
+
+    public static boolean getCBOMode(IOptimizationContext context) {
+        PhysicalOptimizationConfig physOptConfig = context.getPhysicalOptimizationConfig();
+        return physOptConfig.getCBOMode();
+    }
+
+    public static boolean getCBOTestMode(IOptimizationContext context) {
+        PhysicalOptimizationConfig physOptConfig = context.getPhysicalOptimizationConfig();
+        return physOptConfig.getCBOTestMode();
+    }
+
+    // check to see if every dataset has a sample. If not, CBO code cannot run. A warning message must be issued as well.
+    public static boolean doAllDataSourcesHaveSamples(List<AbstractLeafInput> leafInputs, IOptimizationContext context,
+            boolean handle) throws AlgebricksException {
+        boolean cboTestMode = getCBOTestMode(context);
+        if (!handle) {
+            return false;
+        }
+        int n = 0;
+        for (AbstractLeafInput li : leafInputs) {
+            DataSourceScanOperator scanOp = findDataSourceScanOperator(li.getOp());
+            if (scanOp == null) {
+                continue;
+            }
+
+            Index index = OperatorUtils.findSampleIndex(scanOp, context);
+            if (index == null) {
+                return false;
+            }
+            Index.SampleIndexDetails idxDetails = (Index.SampleIndexDetails) index.getIndexDetails();
+            // empty samples
+            double origDatasetCard = idxDetails.getSourceCardinality();
+            // Skip empty sample check in cboTestMode so tests can run range map computation
+            if (origDatasetCard == 0 && !cboTestMode) {
+                ExceptionUtil.warnEmptySamples(origDatasetCard, scanOp.getSourceLocation(), context);
+                return false;
+            }
+            n++;
+        }
+        return (leafInputs.size() == n);
+    }
+
+    public static DataSourceScanOperator findDataSourceScanOperator(ILogicalOperator op) {
+        ILogicalOperator scanOp = op;
+        while (scanOp != null && scanOp.getOperatorTag() != LogicalOperatorTag.EMPTYTUPLESOURCE) {
+            if (scanOp.getOperatorTag().equals(LogicalOperatorTag.DATASOURCESCAN)) {
+                return (DataSourceScanOperator) scanOp;
+            }
+            scanOp = scanOp.getInputs().get(0).getValue();
+        }
+        return null;
+    }
+
+    public static boolean isSelectOrUnnestOrDataScan(ILogicalOperator op) {
+        LogicalOperatorTag tag = op.getOperatorTag();
+        return tag == LogicalOperatorTag.SELECT || tag == LogicalOperatorTag.UNNEST
+                || tag == LogicalOperatorTag.DATASOURCESCAN;
+    }
+
+    // Finds the first SELECT, UNNEST or DATASOURCESCAN operator going down the linear chain starting at op.
+    public static ILogicalOperator findFirstSelectOrUnnestOrDataScan(ILogicalOperator op) {
+        ILogicalOperator currentOp = op;
+        while (currentOp.getInputs().size() == 1) {
+            if (isSelectOrUnnestOrDataScan(currentOp)) {
+                return currentOp;
+            }
+            currentOp = currentOp.getInputs().get(0).getValue();
+        }
+        return null;
+    }
+
+    protected static Index findSampleIndex(DataSourceScanOperator scanOp, IOptimizationContext context)
+            throws AlgebricksException {
+        DataSource ds = (DataSource) scanOp.getDataSource();
+        if (ds.getDatasourceType() != DataSource.Type.INTERNAL_DATASET) {
+            return null;
+        }
+        DataSourceId dsid = ds.getId();
+        MetadataProvider mdp = (MetadataProvider) context.getMetadataProvider();
+        return mdp.findSampleIndex(dsid.getDatabaseName(), dsid.getDataverseName(), dsid.getDatasourceName());
+    }
+
 }

@@ -45,7 +45,7 @@ import org.apache.hyracks.storage.common.buffercache.IExtraPageBlockHelper;
 public class BTreeNSMInteriorFrame extends TreeIndexNSMFrame implements IBTreeInteriorFrame {
 
     private static final int RIGHT_LEAF_OFFSET = TreeIndexNSMFrame.RESERVED_HEADER_SIZE;
-    private static final int CHILD_PTR_SIZE = 4;
+    public static final int CHILD_PTR_SIZE = 4;
 
     private final ITreeIndexTupleReference cmpFrameTuple;
     private final ITreeIndexTupleReference previousFt;
@@ -61,6 +61,11 @@ public class BTreeNSMInteriorFrame extends TreeIndexNSMFrame implements IBTreeIn
     @Override
     public int getBytesRequiredToWriteTuple(ITupleReference tuple) {
         return tupleWriter.bytesRequired(tuple) + CHILD_PTR_SIZE + slotManager.getSlotSize();
+    }
+
+    @Override
+    public ITreeIndexTupleReference getTupleRef() {
+        return frameTuple;
     }
 
     @Override

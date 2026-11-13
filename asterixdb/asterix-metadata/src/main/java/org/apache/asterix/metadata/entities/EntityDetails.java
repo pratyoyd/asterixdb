@@ -18,7 +18,12 @@
  */
 package org.apache.asterix.metadata.entities;
 
+import java.util.Objects;
+
+import org.apache.asterix.common.functions.FunctionConstants;
+import org.apache.asterix.common.functions.FunctionSignature;
 import org.apache.asterix.common.metadata.DataverseName;
+import org.apache.asterix.om.functions.BuiltinFunctions;
 
 /**
  * This class provides static factory methods for creating entity details.
@@ -33,13 +38,18 @@ public class EntityDetails {
         DATABASE,
         DATAVERSE,
         SYNONYM,
-        INDEX
+        INDEX,
+        BUILT_IN_FUNCTION,
+        CATALOG,
+        LIBRARY
     }
 
     private final String databaseName;
     private final DataverseName dataverseName;
     private final String entityName;
     private final EntityType entityType;
+    // The name of the dataset, only applicable for index entities.
+    private String datasetName;
     // The number of arguments that the function accepts. Relevant only for function entity.
     private int functionArity;
 
@@ -52,11 +62,14 @@ public class EntityDetails {
 
     private EntityDetails(String databaseName, DataverseName dataverseName, String entityName, EntityType entityType,
             int functionArity) {
-        this.databaseName = databaseName;
-        this.dataverseName = dataverseName;
-        this.entityName = entityName;
-        this.entityType = entityType;
+        this(databaseName, dataverseName, entityName, entityType);
         this.functionArity = functionArity;
+    }
+
+    private EntityDetails(String databaseName, DataverseName dataverseName, String datasetName, String entityName,
+            EntityType entityType) {
+        this(databaseName, dataverseName, entityName, entityType);
+        this.datasetName = datasetName;
     }
 
     public static EntityDetails newDatabase(String databaseName) {
@@ -75,8 +88,16 @@ public class EntityDetails {
         return new EntityDetails(databaseName, dataverseName, viewName, EntityType.VIEW);
     }
 
-    public static EntityDetails newFunction(String databaseName, DataverseName dataverseName, String functionName,
-            int functionArity) {
+    public static EntityDetails newFunction(FunctionSignature fs) {
+        boolean isBuiltInFunc = isBuiltinFunctionSignature(fs);
+        String databaseName = fs.getDatabaseName();
+        String functionName = fs.getName();
+        Integer functionArity = fs.getArity();
+        DataverseName dataverseName = fs.getDataverseName();
+        if (isBuiltInFunc) {
+            return new EntityDetails(databaseName, dataverseName, functionName, EntityType.BUILT_IN_FUNCTION,
+                    functionArity);
+        }
         return new EntityDetails(databaseName, dataverseName, functionName, EntityType.FUNCTION, functionArity);
     }
 
@@ -84,12 +105,21 @@ public class EntityDetails {
         return new EntityDetails(databaseName, dataverseName, synonymName, EntityType.SYNONYM);
     }
 
-    public static EntityDetails newIndex(String databaseName, DataverseName dataverseName, String indexName) {
-        return new EntityDetails(databaseName, dataverseName, indexName, EntityType.INDEX);
+    public static EntityDetails newIndex(String databaseName, DataverseName dataverseName, String datasetName,
+            String indexName) {
+        return new EntityDetails(databaseName, dataverseName, datasetName, indexName, EntityType.INDEX);
     }
 
     public static EntityDetails newExtension(String extensionName) {
         return new EntityDetails(null, null, extensionName, null);
+    }
+
+    public static EntityDetails newCatalog(String catalogName) {
+        return new EntityDetails(null, null, catalogName, EntityType.CATALOG);
+    }
+
+    public static EntityDetails newLibrary(String databaseName, DataverseName dataverseName, String libraryName) {
+        return new EntityDetails(databaseName, dataverseName, libraryName, EntityType.LIBRARY);
     }
 
     public String getDatabaseName() {
@@ -112,7 +142,28 @@ public class EntityDetails {
         return functionArity;
     }
 
+    public String getDatasetName() {
+        return datasetName;
+    }
+
+    public static boolean isBuiltinFunctionSignature(FunctionSignature fs) {
+        return isBuiltinFunctionDataverse(Objects.requireNonNull(fs.getDataverseName()))
+                || BuiltinFunctions.getBuiltinFunctionInfo(fs.createFunctionIdentifier()) != null;
+    }
+
+    private static boolean isBuiltinFunctionDataverse(DataverseName dataverse) {
+        return FunctionConstants.ASTERIX_DV.equals(dataverse) || FunctionConstants.ALGEBRICKS_DV.equals(dataverse);
+    }
+
     public static String getFunctionNameWithArity(String functionName, int functionArity) {
         return functionName + "(" + functionArity + ")";
+    }
+
+    public static String getFunctionNameWithoutArity(String functionNameWithArity) {
+        int index = functionNameWithArity.indexOf('(');
+        if (index != -1) {
+            return functionNameWithArity.substring(0, index);
+        }
+        return functionNameWithArity;
     }
 }

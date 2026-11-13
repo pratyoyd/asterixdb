@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 
 import org.apache.hyracks.api.comm.IChannelInterfaceFactory;
 import org.apache.hyracks.api.exceptions.NetException;
@@ -30,6 +31,8 @@ import org.apache.hyracks.net.protocols.tcp.ITCPConnectionListener;
 import org.apache.hyracks.net.protocols.tcp.TCPConnection;
 import org.apache.hyracks.net.protocols.tcp.TCPEndpoint;
 import org.apache.hyracks.util.JSONUtil;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -43,6 +46,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  * @author vinayakb
  */
 public class MuxDemux {
+    private static final Logger LOGGER = LogManager.getLogger();
+
     private final InetSocketAddress localAddress;
 
     private final IChannelOpenListener channelOpenListener;
@@ -56,31 +61,26 @@ public class MuxDemux {
 
     private final MuxDemuxPerformanceCounters perfCounters;
 
-    private final IChannelInterfaceFactory channelInterfaceFatory;
+    private final IChannelInterfaceFactory channelInterfaceFactory;
 
     /**
      * Constructor.
      *
-     * @param localAddress
-     *            - TCP/IP socket address to listen on. Null for non-listening unidirectional sockets
-     * @param listener
-     *            - Callback interface to report channel events. Null for non-listening unidirectional sockets
-     * @param nThreads
-     *            - Number of threads to use for data transfer
-     * @param maxConnectionAttempts
-     *            - Maximum number of connection attempts
-     * @param channelInterfaceFactory
-     *            - The channel interface factory
-     * @param socketChannelFactory
-     *            - The socket channel factory
+     * @param localAddress            - TCP/IP socket address to listen on. Null for non-listening unidirectional sockets
+     * @param listener                - Callback interface to report channel events. Null for non-listening unidirectional sockets
+     * @param nThreads                - Number of threads to use for data transfer
+     * @param maxConnectionAttempts   - Maximum number of connection attempts
+     * @param channelInterfaceFactory - The channel interface factory
+     * @param socketChannelFactory    - The socket channel factory
+     * @param executor                - Executor on which asynchronous socket handshakes are performed
      */
     public MuxDemux(InetSocketAddress localAddress, IChannelOpenListener listener, int nThreads,
             int maxConnectionAttempts, IChannelInterfaceFactory channelInterfaceFactory,
-            ISocketChannelFactory socketChannelFactory) {
+            ISocketChannelFactory socketChannelFactory, ExecutorService executor) {
         this.localAddress = localAddress;
         this.channelOpenListener = listener;
         this.maxConnectionAttempts = maxConnectionAttempts;
-        this.channelInterfaceFatory = channelInterfaceFactory;
+        this.channelInterfaceFactory = channelInterfaceFactory;
         outgoingConnectionMap = new HashMap<>();
         incomingConnectionMap = new HashMap<>();
         this.tcpEndpoint = new TCPEndpoint(new ITCPConnectionListener() {
@@ -90,7 +90,10 @@ public class MuxDemux {
                 synchronized (MuxDemux.this) {
                     mConn = outgoingConnectionMap.get(connection.getRemoteAddress());
                 }
-                assert mConn != null;
+                if (mConn == null) {
+                    throw new IllegalStateException(
+                            "connectionEstablished called for unknown connection: " + connection.getRemoteAddress());
+                }
                 mConn.setTCPConnection(connection);
                 connection.setEventListener(mConn);
                 connection.setAttachment(mConn);
@@ -102,7 +105,9 @@ public class MuxDemux {
                 mConn.setTCPConnection(connection);
                 connection.setEventListener(mConn);
                 connection.setAttachment(mConn);
-                incomingConnectionMap.put(connection.getRemoteAddress(), mConn);
+                synchronized (MuxDemux.this) {
+                    incomingConnectionMap.put(connection.getRemoteAddress(), mConn);
+                }
             }
 
             @Override
@@ -110,10 +115,19 @@ public class MuxDemux {
                 MultiplexedConnection mConn;
                 synchronized (MuxDemux.this) {
                     mConn = outgoingConnectionMap.get(remoteAddress);
-                    assert mConn != null;
+                    if (mConn == null) {
+                        throw new IllegalStateException(
+                                "connectionFailure called for unknown connection: " + remoteAddress);
+                    }
                     int nConnectionAttempts = mConn.getConnectionAttempts();
                     if (nConnectionAttempts > MuxDemux.this.maxConnectionAttempts) {
-                        outgoingConnectionMap.remove(remoteAddress);
+                        if (outgoingConnectionMap.remove(remoteAddress) == null) {
+                            LOGGER.warn("connection to {} failed after {} attempts, but connection was already removed",
+                                    remoteAddress, nConnectionAttempts);
+                        } else {
+                            LOGGER.debug("connection to {} failed after {} attempts, giving up", remoteAddress,
+                                    nConnectionAttempts);
+                        }
                         mConn.setConnectionFailure(new IOException(remoteAddress.toString() + ": " + error, error));
                     } else {
                         mConn.setConnectionAttempts(nConnectionAttempts + 1);
@@ -126,13 +140,28 @@ public class MuxDemux {
             public void connectionClosed(TCPConnection connection) {
                 synchronized (MuxDemux.this) {
                     if (connection.getType() == TCPConnection.ConnectionType.OUTGOING) {
-                        outgoingConnectionMap.remove(connection.getRemoteAddress());
+                        MultiplexedConnection current = outgoingConnectionMap.get(connection.getRemoteAddress());
+                        if (current == connection.getAttachment()) {
+                            outgoingConnectionMap.remove(connection.getRemoteAddress());
+                            LOGGER.debug("removed outgoing connection to {} on close", connection.getRemoteAddress());
+                        } else if (current == null) {
+                            LOGGER.warn("outgoing connection to {} already removed on close",
+                                    connection.getRemoteAddress());
+                        } else {
+                            LOGGER.debug("ignored close for stale outgoing connection to {}",
+                                    connection.getRemoteAddress());
+                        }
                     } else if (connection.getType() == TCPConnection.ConnectionType.INCOMING) {
-                        incomingConnectionMap.remove(connection.getRemoteAddress());
+                        if (incomingConnectionMap.remove(connection.getRemoteAddress()) == null) {
+                            LOGGER.warn("incoming connection from {} already removed on close",
+                                    connection.getRemoteAddress());
+                        } else {
+                            LOGGER.debug("removed incoming connection from {} on close", connection.getRemoteAddress());
+                        }
                     }
                 }
             }
-        }, nThreads, socketChannelFactory);
+        }, nThreads, socketChannelFactory, executor);
         perfCounters = new MuxDemuxPerformanceCounters();
     }
 
@@ -161,6 +190,14 @@ public class MuxDemux {
         MultiplexedConnection mConn;
         synchronized (this) {
             mConn = outgoingConnectionMap.get(remoteAddress);
+            if (mConn != null && mConn.hasConnectionFailure()) {
+                if (outgoingConnectionMap.remove(remoteAddress) == null) {
+                    LOGGER.warn("failed connection to {} was already removed", remoteAddress);
+                } else {
+                    LOGGER.debug("removed failed connection to {} before reconnect", remoteAddress);
+                }
+                mConn = null;
+            }
             if (mConn == null) {
                 mConn = new MultiplexedConnection(this);
                 outgoingConnectionMap.put(remoteAddress, mConn);
@@ -200,7 +237,7 @@ public class MuxDemux {
      * @return
      */
     public IChannelInterfaceFactory getChannelInterfaceFactory() {
-        return channelInterfaceFatory;
+        return channelInterfaceFactory;
     }
 
     public synchronized JsonNode getState() {

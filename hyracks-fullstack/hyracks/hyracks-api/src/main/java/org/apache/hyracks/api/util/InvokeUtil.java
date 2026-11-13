@@ -54,6 +54,23 @@ public class InvokeUtil {
     }
 
     /**
+     * Fails if the current thread has been interrupted, leaving the interrupt status set so that the task
+     * teardown that follows still sees it. Intended for loops that are pure CPU over resident data: Hyracks
+     * cancels a task by interrupting its thread, so a loop that neither blocks nor allocates never observes the
+     * cancellation on its own and strands the thread for the life of the process. The check is a plain field
+     * read, cheap enough to sit directly in such a loop.
+     *
+     * @throws HyracksDataException wrapping an {@link InterruptedException}, which
+     *                              {@link ExceptionUtils#causedByInterrupt(Throwable)} recognizes as a
+     *                              cancellation rather than a query failure
+     */
+    public static void failIfInterrupted() throws HyracksDataException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw HyracksDataException.create(new InterruptedException());
+        }
+    }
+
+    /**
      * Executes the passed interruptible, retrying if the operation is interrupted. Once the interruptible
      * completes, the current thread will be re-interrupted, if the original operation was interrupted.
      *

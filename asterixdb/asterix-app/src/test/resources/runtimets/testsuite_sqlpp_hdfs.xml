@@ -98,7 +98,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">partition</output-dir>
       </compilation-unit>
     </test-case>
@@ -108,7 +108,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">simple-write</output-dir>
       </compilation-unit>
     </test-case>
@@ -118,7 +118,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">default-namespace</output-dir>
       </compilation-unit>
     </test-case>
@@ -128,7 +128,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format"),' />
         <output-dir compare="Text">parquet-simple</output-dir>
       </compilation-unit>
     </test-case>
@@ -138,7 +138,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format"),' />
         <output-dir compare="Text">parquet-tweet</output-dir>
       </compilation-unit>
     </test-case>
@@ -148,7 +148,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format"),' />
         <output-dir compare="Text">parquet-partition-heterogeneous</output-dir>
       </compilation-unit>
     </test-case>
@@ -158,7 +158,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format"),' />
         <output-dir compare="Text">parquet-utf8</output-dir>
       </compilation-unit>
     </test-case>
@@ -168,7 +168,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format"),' />
         <output-dir compare="Text">parquet-heterogeneous</output-dir>
       </compilation-unit>
     </test-case>
@@ -178,7 +178,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format"),' />
         <output-dir compare="Text">parquet-cover-data-types</output-dir>
       </compilation-unit>
     </test-case>
@@ -188,7 +188,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "parquet-input-format"),' />
         <output-dir compare="Text">parquet-empty-array</output-dir>
       </compilation-unit>
     </test-case>
@@ -198,7 +198,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">order-by</output-dir>
       </compilation-unit>
     </test-case>
@@ -207,7 +207,7 @@
         <placeholder name="adapter" value="HDFS" />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">early-missing</output-dir>
         <expected-error>ASX0064: Path expression produced a value of type 'missing'. Path must be of type string</expected-error>
         <expected-error>ASX0064: Path expression produced a value of type 'null'. Path must be of type string</expected-error>
@@ -219,7 +219,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">non-empty-folder</output-dir>
         <expected-error>ASX0062: Cannot write to a non-empty directory '/playground/copy-to-result/duplicate-write'</expected-error>
       </compilation-unit>
@@ -230,9 +230,8 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">supported-adapter-format-compression</output-dir>
-        <expected-error>ASX1188: Unsupported writing adapter 'AZUREBLOB'. Supported adapters: [gcs, hdfs, localfs, s3]</expected-error>
         <expected-error>ASX1189: Unsupported writing format 'avro'. Supported formats: [csv, json, parquet]</expected-error>
         <expected-error>ASX1202: Unsupported compression scheme rar. Supported schemes for json are [gzip]</expected-error>
       </compilation-unit>
@@ -256,9 +255,18 @@
         <expected-error>ASX1205: Invalid Parquet Writer Version provided '3'. Supported values: [1, 2]</expected-error>
         <expected-error>ASX0039: Expected integer value, got yvghc (in line 22, at column 6)</expected-error>
         <expected-error>ASX1209: Maximum value allowed for 'max-schemas' is 10. Found 15</expected-error>
-        <expected-error>HYR0133: Schema could not be inferred, empty types found in the result</expected-error>
         <expected-error>HYR0134: Schema Limit exceeded, maximum number of heterogeneous schemas allowed : '2'</expected-error>
         <expected-error>ASX1204: 'rectangle' type not supported in parquet format</expected-error>
+        <expected-error>ASX0072: Parquet does not support arrays containing mixed data types</expected-error>
+        <expected-error>ASX0072: Parquet does not support arrays containing mixed data types</expected-error>
+        <expected-error>ASX0072: Parquet does not support arrays containing mixed data types</expected-error>
+        <expected-error>ASX0072: Parquet does not support arrays containing mixed data types</expected-error>
+        <expected-error>HYR0132: Extra field in the result, field 'c' does not exist at 'root' in the schema</expected-error>
+        <expected-error>ASX0072: Parquet does not support arrays containing mixed data types</expected-error>
+        <expected-error>IllegalArgumentException: Pathname /playground/copy-to-result/parquet:errorchecks25 from /playground/copy-to-result/parquet:errorchecks25 is not a valid DFS filename.</expected-error>
+        <expected-error>ASX0049: Parameter(s) input-format must be specified (in line 23, at column 1)</expected-error>
+        <expected-error>ASX1204: 'null' type not supported in parquet format</expected-error>
+        <expected-error>ASX1204: 'bigint' type not supported in parquet format</expected-error>
         <source-location>false</source-location>
       </compilation-unit>
     </test-case>
@@ -268,7 +276,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">empty-over</output-dir>
         <expected-error>ASX1001: Syntax error: OVER-clause cannot be empty</expected-error>
       </compilation-unit>
@@ -279,10 +287,24 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">bad-max-objects-per-file</output-dir>
         <expected-error>Minimum value allowed for 'max-objects-per-file' is 1000. Found 2</expected-error>
         <expected-error>Expected integer value, got hello</expected-error>
+        <source-location>false</source-location>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="copy-to/negative">
+      <compilation-unit name="bad-max-file-size">
+        <placeholder name="adapter" value="HDFS" />
+        <placeholder name="pathprefix" value='"/playground", ' />
+        <placeholder name="path_prefix" value="/playground/" />
+        <placeholder name="additionalProperties" value="" />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
+        <output-dir compare="Text">bad-max-file-size</output-dir>
+        <expected-error>Minimum value allowed for 'max-file-size' is 5 MiB. Found 1MB</expected-error>
+        <expected-error>ASX1206: Storage units expected for the field 'max-file-size' (e.g., 0.1KB, 100kb, 1mb, 3MB, 8.5GB ...). Provided 'random'</expected-error>
+        <expected-error>Maximum value allowed for 'max-file-size' is 5 GiB. Found 6TB</expected-error>
         <source-location>false</source-location>
       </compilation-unit>
     </test-case>
@@ -292,14 +314,14 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">csv-error-checks</output-dir>
         <expected-error>ASX1079: Compilation error: TYPE/AS Expression is required for csv format</expected-error>
         <expected-error>ASX1082: Cannot find datatype with name wrongDataType (in line 27, at column 4)</expected-error>
-        <expected-error>ASX3124: 'ABCD' is not a valid quote. The length of a quote should be 1</expected-error>
+        <expected-error>ASX1217: 'ABCD' is not a valid quote. Allowed values: [", ', none]</expected-error>
         <expected-error>ASX3049: 'wrongDelimiter' is not a valid delimiter. The length of a delimiter should be 1</expected-error>
-        <expected-error>ASX3126: 'wrongEscape' is not a valid escape. The length of a escape should be 1</expected-error>
-        <expected-error>ASX3125: 'ABCD' is not a valid force-quote input. The length of a force-quote input should be 1 character</expected-error>
+        <expected-error>ASX1219: 'wrongEscape' is not a valid escape. The length of an escape should be 1</expected-error>
+        <expected-error>ASX3050: 'ABCD' is not a valid record-delimiter. The length of record-delimiter should be 1</expected-error>
         <expected-error>ASX1207: 'object' type not supported in csv format</expected-error>
         <expected-error>ASX1207: 'array' type not supported in csv format</expected-error>
         <expected-error>Syntax error: Both 'TYPE()' and 'AS()' are provided. Please use either 'TYPE()' or 'AS()'.</expected-error>
@@ -314,7 +336,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">simple-csv</output-dir>
       </compilation-unit>
     </test-case>
@@ -324,7 +346,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">type-mismatch</output-dir>
       </compilation-unit>
     </test-case>
@@ -334,7 +356,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">delimiter</output-dir>
       </compilation-unit>
     </test-case>
@@ -344,7 +366,7 @@
         <placeholder name="pathprefix" value='"/playground", ' />
         <placeholder name="path_prefix" value="/playground/" />
         <placeholder name="additionalProperties" value="" />
-        <placeholder name="additional_Properties" value='("input-format" = "text-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "text-input-format"),' />
         <output-dir compare="Text">header</output-dir>
       </compilation-unit>
     </test-case>
@@ -365,7 +387,7 @@
       <compilation-unit name="common/avro/avro-types/avro-map">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/avro-types/avro-map</output-dir>
       </compilation-unit>
     </test-case>
@@ -373,7 +395,7 @@
       <compilation-unit name="common/avro/avro-types/avro-nested-records">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/avro-types/avro-nested-records</output-dir>
       </compilation-unit>
     </test-case>
@@ -381,7 +403,7 @@
       <compilation-unit name="common/avro/avro-types/avro-primitives">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/avro-types/avro-primitives</output-dir>
       </compilation-unit>
     </test-case>
@@ -389,7 +411,7 @@
       <compilation-unit name="common/avro/avro-types/avro-union">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/avro-types/avro-union</output-dir>
       </compilation-unit>
     </test-case>
@@ -397,7 +419,7 @@
       <compilation-unit name="common/avro/type-mismatch">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/type-mismatch</output-dir>
       </compilation-unit>
     </test-case>
@@ -405,7 +427,7 @@
       <compilation-unit name="common/avro/string-standard-utf8">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/string-standard-utf8</output-dir>
       </compilation-unit>
     </test-case>
@@ -413,7 +435,7 @@
       <compilation-unit name="common/avro/select-all-fields">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/select-all-fields</output-dir>
       </compilation-unit>
     </test-case>
@@ -421,7 +443,7 @@
       <compilation-unit name="common/avro/select-count-one-field">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/select-count-one-field</output-dir>
       </compilation-unit>
     </test-case>
@@ -429,7 +451,7 @@
       <compilation-unit name="common/avro/array-access">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/array-access</output-dir>
       </compilation-unit>
     </test-case>
@@ -437,7 +459,7 @@
       <compilation-unit name="common/avro/field-access">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/field-access</output-dir>
       </compilation-unit>
     </test-case>
@@ -445,7 +467,7 @@
       <compilation-unit name="common/avro/heterogeneous-access">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/heterogeneous-access</output-dir>
       </compilation-unit>
     </test-case>
@@ -453,7 +475,7 @@
       <compilation-unit name="common/avro/invalid-avro-files">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">none</output-dir>
         <expected-error>External source error. org.apache.avro.InvalidAvroMagicException: Not an Avro data file</expected-error>
         <source-location>false</source-location>
@@ -463,7 +485,7 @@
       <compilation-unit name="common/avro/invalid-type">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">none</output-dir>
         <expected-error>ASX3123: Type 'AvroType' contains declared fields, which is not supported for 'avro' format</expected-error>
         <source-location>false</source-location>
@@ -473,7 +495,7 @@
       <compilation-unit name="common/avro/missing-fields">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/missing-fields</output-dir>
       </compilation-unit>
     </test-case>
@@ -481,7 +503,7 @@
       <compilation-unit name="common/avro/multi-file-multi-schema">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/multi-file-multi-schema</output-dir>
       </compilation-unit>
     </test-case>
@@ -489,7 +511,7 @@
       <compilation-unit name="common/avro/no-files">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/no-files</output-dir>
         <expected-error>ASX1114: The provided external dataset configuration returned no files from the external source</expected-error>
         <source-location>false</source-location>
@@ -499,7 +521,7 @@
       <compilation-unit name="common/avro/object-concat">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">common/avro/object-concat</output-dir>
       </compilation-unit>
     </test-case>
@@ -507,7 +529,7 @@
       <compilation-unit name="one-field">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">one-field</output-dir>
       </compilation-unit>
     </test-case>
@@ -515,7 +537,7 @@
       <compilation-unit name="query">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">query</output-dir>
       </compilation-unit>
     </test-case>
@@ -523,7 +545,7 @@
       <compilation-unit name="embed-one-value">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">embed-one-value</output-dir>
       </compilation-unit>
     </test-case>
@@ -531,7 +553,7 @@
       <compilation-unit name="embed-multiple-values">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">embed-multiple-values</output-dir>
       </compilation-unit>
     </test-case>
@@ -539,7 +561,7 @@
       <compilation-unit name="embed-flat">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">embed-flat</output-dir>
       </compilation-unit>
     </test-case>
@@ -547,7 +569,7 @@
       <compilation-unit name="embed-with-nested-values">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">embed-with-nested-values</output-dir>
       </compilation-unit>
     </test-case>
@@ -555,7 +577,7 @@
       <compilation-unit name="using-limit">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">using-limit</output-dir>
       </compilation-unit>
     </test-case>
@@ -563,7 +585,7 @@
       <compilation-unit name="views">
         <placeholder name="adapter" value="hdfs" />
         <placeholder name="path_prefix" value="/playground/" />
-        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format")' />
+        <placeholder name="additional_Properties" value='("input-format" = "avro-input-format"),' />
         <output-dir compare="Text">views</output-dir>
       </compilation-unit>
     </test-case>

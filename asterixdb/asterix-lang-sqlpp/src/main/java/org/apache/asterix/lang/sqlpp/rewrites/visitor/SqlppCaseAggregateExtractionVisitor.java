@@ -38,7 +38,7 @@ import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.util.FunctionMapUtil;
 import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppSimpleExpressionVisitor;
 import org.apache.asterix.om.functions.BuiltinFunctions;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 
 /**
  * Extracts SQL-92 aggregate functions from CASE/IF expressions into LET clauses,
@@ -89,7 +89,8 @@ public final class SqlppCaseAggregateExtractionVisitor extends AbstractSqlppExpr
             CallExpr resultExpr = (CallExpr) super.visit(callExpr, arg);
             if (FunctionMapUtil.isSql92AggregateFunction(resultExpr.getFunctionSignature())) {
                 StackElement stackElement = stack.peek();
-                if (stackElement != null && stackElement.getSelectBlock().hasGroupbyClause()) {
+                if (stackElement != null && (stackElement.getSelectBlock().hasGroupbyClause()
+                        || stackElement.getSelectBlock().hasClusterbyClause())) {
                     VarIdentifier v = stackElement.addPendingLetClause(resultExpr);
                     VariableExpr vExpr = new VariableExpr(v);
                     vExpr.setSourceLocation(callExpr.getSourceLocation());

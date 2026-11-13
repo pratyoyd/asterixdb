@@ -18,6 +18,8 @@
  */
 package org.apache.asterix.testframework.context;
 
+import static java.util.stream.Collectors.joining;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -30,6 +32,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import org.apache.asterix.testframework.template.TemplateHelper;
 import org.apache.asterix.testframework.xml.CategoryEnum;
@@ -77,6 +80,15 @@ public class TestCaseContext {
 
     public TestCase getTestCase() {
         return testCase;
+    }
+
+    /**
+     * @return whether this test case declares {@code category} in the {@code category} attribute of its test-case
+     *         element. A category names something the test needs from the suite running it, so a suite that cannot
+     *         provide it can leave the test out.
+     */
+    public boolean hasCategory(CategoryEnum category) {
+        return testCase.getCategory().contains(category);
     }
 
     public int getRepeat() {
@@ -244,7 +256,15 @@ public class TestCaseContext {
         private void addContexts(File tsRoot, TestSuite ts, List<TestGroup> tgPath, List<TestCaseContext> tccs) {
             TestGroup tg = tgPath.get(tgPath.size() - 1);
             for (TestCase tc : tg.getTestCase()) {
-                if (doSlow || tc.getCategory() != CategoryEnum.SLOW) {
+                // an unrecognized category unmarshals to a null list entry rather than failing, and a
+                // category nothing matches silently stops excluding the test it was meant to exclude
+                if (tc.getCategory().contains(null)) {
+                    throw new IllegalArgumentException(
+                            "test case " + tc.getFilePath() + " (" + tc.getCompilationUnit().get(0).getName()
+                                    + ") declares an unrecognized category; " + "valid categories are "
+                                    + Stream.of(CategoryEnum.values()).map(CategoryEnum::value).collect(joining(", ")));
+                }
+                if (doSlow || !tc.getCategory().contains(CategoryEnum.SLOW)) {
                     boolean matches = false;
                     if (re != null) {
                         // Check all compilation units for matching

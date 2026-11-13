@@ -24,22 +24,22 @@ import org.apache.hyracks.storage.am.lsm.btree.column.utils.ColumnUtil;
 import org.apache.hyracks.storage.am.lsm.common.api.IComponentMetadata;
 import org.apache.hyracks.storage.am.lsm.common.impls.LSMIndexBulkLoader;
 import org.apache.hyracks.storage.common.IIndexBulkLoader;
+import org.apache.hyracks.storage.common.ISketchSampler;
 
 public class LSMColumnIndexBulkloader extends LSMIndexBulkLoader {
     private final IColumnMetadata columnMetadata;
-    private final IComponentMetadata componentMetadata;
 
     public LSMColumnIndexBulkloader(IIndexBulkLoader bulkLoader, IColumnMetadata columnMetadata,
-            IComponentMetadata componentMetadata) {
-        super(bulkLoader);
+            IComponentMetadata componentMetadata, ISketchSampler sampler) {
+        super(bulkLoader, componentMetadata, sampler);
         this.columnMetadata = columnMetadata;
-        this.componentMetadata = componentMetadata;
     }
 
     @Override
     public void end() throws HyracksDataException {
         ColumnUtil.putColumnsMetadataValue(columnMetadata.serializeColumnsMetadata(), componentMetadata);
         super.end();
+        columnMetadata.swapSerializedColumnsMetadata();
     }
 
     @Override

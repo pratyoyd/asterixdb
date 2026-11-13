@@ -25,15 +25,16 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.common.exceptions.NotImplementedException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.IPhysicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.InsertDeleteUpsertOperator.Kind;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.KMeansStageOperator;
 import org.apache.hyracks.algebricks.core.algebra.properties.DefaultNodeGroupDomain;
 import org.apache.hyracks.algebricks.core.algebra.properties.ILocalStructuralProperty;
 import org.apache.hyracks.algebricks.core.algebra.properties.INodeDomain;
@@ -309,9 +310,53 @@ public class LogicalOperatorDotVisitor implements ILogicalOperatorVisitor<String
     }
 
     @Override
+    public String visitKMeansStageOperator(KMeansStageOperator op, Boolean showDetails) throws AlgebricksException {
+        stringBuilder.setLength(0);
+        stringBuilder.append("kmeans-stage ").append(str(op.getCandidateVariable())).append(" <- ")
+                .append(op.getMode().getLabel());
+        switch (op.getMode()) {
+            case RECLUSTER:
+                stringBuilder.append(" pool ").append(str(op.getPoolVariable())).append(" to ").append(op.getTopCount())
+                        .append(" means (seed ").append(op.getSeed()).append(')');
+                break;
+            case OVERSAMPLE_LOOP:
+                stringBuilder.append(' ').append(op.getLoopRounds()).append(" rounds of ")
+                        .append(str(op.getVectorVariable())).append(" vs seed ").append(str(op.getPoolVariable()))
+                        .append(" (seed ").append(op.getSeed()).append(')');
+                break;
+            default:
+                stringBuilder.append(' ').append(op.getLoopRounds()).append(" iterations of ")
+                        .append(str(op.getVectorVariable())).append(" vs pool ").append(str(op.getPoolVariable()));
+                break;
+        }
+        stringBuilder.append(" by ").append(op.getMetric());
+        appendSchema(op, showDetails);
+        appendAnnotations(op, showDetails);
+        appendPhysicalOperatorInfo(op, showDetails);
+        return stringBuilder.toString();
+    }
+
+    @Override
+    public String visitClusterByOperator(ClusterByOperator op, Boolean showDetails) throws AlgebricksException {
+        stringBuilder.setLength(0);
+        stringBuilder.append("cluster-by ").append(str(op.getClusterIdVariable())).append(", ")
+                .append(str(op.getCentroidVariable())).append(", ").append(str(op.getMembersVariable()))
+                .append(" <- clusters of ").append(str(op.getVectorVariable())).append(" by ").append(op.getOptions());
+        appendSchema(op, showDetails);
+        appendAnnotations(op, showDetails);
+        appendPhysicalOperatorInfo(op, showDetails);
+        return stringBuilder.toString();
+    }
+
+    @Override
     public String visitUnnestOperator(UnnestOperator op, Boolean showDetails) throws AlgebricksException {
         stringBuilder.setLength(0);
         stringBuilder.append("unnest ").append(op.getVariable());
+        if (op.getTimeTravel() != null) {
+            String keyword = op.getTimeTravel().getType().getKeyword();
+            String timeTravelValue = String.valueOf(op.getTimeTravel().getValueExpression());
+            stringBuilder.append(" at ").append(keyword).append(" ").append(timeTravelValue);
+        }
         if (op.getPositionalVariable() != null) {
             stringBuilder.append(" at ").append(op.getPositionalVariable());
         }
@@ -330,6 +375,11 @@ public class LogicalOperatorDotVisitor implements ILogicalOperatorVisitor<String
             throws AlgebricksException {
         stringBuilder.setLength(0);
         stringBuilder.append("outer-unnest ").append(op.getVariable());
+        if (op.getTimeTravel() != null) {
+            String keyword = op.getTimeTravel().getType().getKeyword();
+            String timeTravelValue = String.valueOf(op.getTimeTravel().getValueExpression());
+            stringBuilder.append(" at ").append(keyword).append(" ").append(timeTravelValue);
+        }
         if (op.getPositionalVariable() != null) {
             stringBuilder.append(" at ").append(op.getPositionalVariable());
         }
@@ -699,10 +749,11 @@ public class LogicalOperatorDotVisitor implements ILogicalOperatorVisitor<String
             } else {
                 stringBuilder.append("; ");
             }
-            if (variableExpressionPair.first != null) {
-                stringBuilder.append(variableExpressionPair.first).append(" := ").append(variableExpressionPair.second);
+            if (variableExpressionPair.getLeft() != null) {
+                stringBuilder.append(variableExpressionPair.getLeft()).append(" := ")
+                        .append(variableExpressionPair.getRight());
             } else {
-                stringBuilder.append(variableExpressionPair.second.getValue().toString());
+                stringBuilder.append(variableExpressionPair.getRight().getValue().toString());
             }
         }
         stringBuilder.append("]");
@@ -711,8 +762,8 @@ public class LogicalOperatorDotVisitor implements ILogicalOperatorVisitor<String
     private void printOrderExprList(List<Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>>> orderExprList) {
         for (Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>> p : orderExprList) {
             stringBuilder.append("(");
-            appendOrder(p.first);
-            stringBuilder.append(", ").append(p.second.getValue().toString()).append(") ");
+            appendOrder(p.getLeft());
+            stringBuilder.append(", ").append(p.getRight().getValue().toString()).append(") ");
         }
     }
 

@@ -54,6 +54,7 @@ import org.apache.hyracks.api.job.DeployedJobSpecId;
 import org.apache.hyracks.api.job.IJobletEventListenerFactory;
 import org.apache.hyracks.api.job.JobFlag;
 import org.apache.hyracks.api.job.JobId;
+import org.apache.hyracks.api.job.JobKind;
 import org.apache.hyracks.api.partitions.PartitionId;
 import org.apache.hyracks.api.util.ExceptionUtils;
 import org.apache.hyracks.comm.channels.NetworkInputChannel;
@@ -98,11 +99,13 @@ public class StartTasksWork extends AbstractWork {
 
     private final String jobStartTimeZoneId;
 
+    private final JobKind jobKind;
+
     public StartTasksWork(NodeControllerService ncs, DeploymentId deploymentId, JobId jobId, byte[] acgBytes,
             List<TaskAttemptDescriptor> taskDescriptors,
             Map<ConnectorDescriptorId, IConnectorPolicy> connectorPoliciesMap, Set<JobFlag> flags,
             Map<byte[], byte[]> jobParameters, DeployedJobSpecId deployedJobSpecId, long jobStartTime,
-            String jobStartTimeZoneId) {
+            String jobStartTimeZoneId, JobKind jobKind) {
         this.ncs = ncs;
         this.deploymentId = deploymentId;
         this.jobId = jobId;
@@ -114,16 +117,18 @@ public class StartTasksWork extends AbstractWork {
         this.jobParameters = jobParameters;
         this.jobStartTime = jobStartTime;
         this.jobStartTimeZoneId = jobStartTimeZoneId;
+        this.jobKind = jobKind;
     }
 
     @Override
     public void run() {
         Task task = null;
         int taskIndex = 0;
+        Joblet joblet = null;
         try {
             ncs.updateMaxJobId(jobId);
             NCServiceContext serviceCtx = ncs.getContext();
-            Joblet joblet = getOrCreateLocalJoblet(deploymentId, serviceCtx, acgBytes);
+            joblet = getOrCreateLocalJoblet(deploymentId, serviceCtx, acgBytes);
             if (ncs.getNodeStatus() != NodeStatus.ACTIVE) {
                 throw HyracksException.create(ErrorCode.NODE_IS_NOT_ACTIVE, ncs.getId());
             }
@@ -206,6 +211,9 @@ public class StartTasksWork extends AbstractWork {
             ExceptionUtils.setNodeIds(exceptions, ncs.getId());
             TaskAttemptId taskId = taskDescriptors.get(taskIndex).getTaskAttemptId();
             ncs.getWorkQueue().schedule(new NotifyTaskFailureWork(ncs, task, exceptions, jobId, taskId));
+            if (joblet == null) {
+                ncs.getWorkQueue().schedule(new FailedJobletCreationCleanupWork(ncs, jobId));
+            }
         }
     }
 
@@ -224,7 +232,8 @@ public class StartTasksWork extends AbstractWork {
                 }
                 listenerFactory.updateListenerJobParameters(ncs.createOrGetJobParameterByteStore(jobId));
             }
-            ji = new Joblet(ncs, deploymentId, jobId, appCtx, acg, listenerFactory, jobStartTime, jobStartTimeZoneId);
+            ji = new Joblet(ncs, deploymentId, jobId, appCtx, acg, listenerFactory, jobStartTime, jobStartTimeZoneId,
+                    jobKind);
             jobletMap.put(jobId, ji);
         }
         return ji;

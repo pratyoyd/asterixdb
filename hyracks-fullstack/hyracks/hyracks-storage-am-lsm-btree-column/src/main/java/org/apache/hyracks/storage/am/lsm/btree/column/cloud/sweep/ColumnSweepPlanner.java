@@ -20,6 +20,7 @@ package org.apache.hyracks.storage.am.lsm.btree.column.cloud.sweep;
 
 import static org.apache.hyracks.storage.am.lsm.common.util.LSMComponentIdUtils.isMergedComponent;
 
+import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -58,6 +59,7 @@ public final class ColumnSweepPlanner {
     private final IntSet indexedColumns;
     private final ISweepClock clock;
     private final int evictionPlanReevaluationThreshold;
+    private final List<ICachedPage> pageZeroSegmentsTempHolder;
     private int numberOfColumns;
     private long lastAccess;
     private int maxSize;
@@ -78,6 +80,7 @@ public final class ColumnSweepPlanner {
         plan = new BitSet();
         reevaluatedPlan = new BitSet();
         punchableThreshold = INITIAL_PUNCHABLE_THRESHOLD;
+        pageZeroSegmentsTempHolder = new ArrayList<>();
         this.evictionPlanReevaluationThreshold = evictionPlanReevaluationThreshold;
     }
 
@@ -115,6 +118,7 @@ public final class ColumnSweepPlanner {
         long accessTime = clock.getCurrentTime();
         lastAccess = accessTime;
         int numberOfColumns = projectionInfo.getNumberOfProjectedColumns();
+        resizeStatsArrays(numberOfColumns);
         boolean requireCloudAccess = false;
         for (int i = 0; i < numberOfColumns; i++) {
             int columnIndex = projectionInfo.getColumnIndex(i);
@@ -182,6 +186,9 @@ public final class ColumnSweepPlanner {
     }
 
     private void resizeStatsArrays(int numberOfColumns) {
+        if (numberOfColumns <= sizes.length) {
+            return;
+        }
         sizes = IntArrays.ensureCapacity(sizes, numberOfColumns);
         lastAccesses = LongArrays.ensureCapacity(lastAccesses, numberOfColumns);
         this.numberOfColumns = numberOfColumns - numberOfPrimaryKeys;
@@ -215,12 +222,19 @@ public final class ColumnSweepPlanner {
         ICachedPage page = bufferCache.pin(dpid);
         try {
             leafFrame.setPage(page);
+            pageZeroSegmentsTempHolder.clear();
+            leafFrame.pinPageZeroSegments(columnBTree.getFileId(), columnBTree.getBulkloadLeafStart(),
+                    pageZeroSegmentsTempHolder, bufferCache, null);
             ranges.reset(leafFrame);
             for (int i = 0; i < leafFrame.getNumberOfColumns(); i++) {
                 sizes[i] = Math.max(sizes[i], ranges.getColumnLength(i));
                 maxSize = Math.max(maxSize, sizes[i]);
             }
         } finally {
+            // unpin the segment pages
+            for (ICachedPage segmentPage : pageZeroSegmentsTempHolder) {
+                bufferCache.unpin(segmentPage);
+            }
             bufferCache.unpin(page);
         }
     }

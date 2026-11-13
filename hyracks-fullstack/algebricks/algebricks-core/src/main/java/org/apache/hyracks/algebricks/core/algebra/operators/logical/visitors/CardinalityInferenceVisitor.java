@@ -49,15 +49,15 @@ import org.apache.hyracks.algebricks.core.algebra.visitors.ILogicalOperatorVisit
  * 5. the cardinality is some unknown value.
  */
 public class CardinalityInferenceVisitor implements ILogicalOperatorVisitor<Long, Void> {
-    private static final long ZERO_OR_ONE = 0L;
-    private static final long ONE = 1L;
-    private static final long ZERO_OR_ONE_GROUP = 2L;
-    private static final long ONE_GROUP = 3L;
-    private static final long UNKNOWN = 100L; // so it fits into the auto-boxing cache
+    protected static final long ZERO_OR_ONE = 0L;
+    protected static final long ONE = 1L;
+    protected static final long ZERO_OR_ONE_GROUP = 2L;
+    protected static final long ONE_GROUP = 3L;
+    protected static final long UNKNOWN = 100L; // so it fits into the auto-boxing cache
 
     private final Set<LogicalVariable> keyVariables = new HashSet<>();
 
-    private CardinalityInferenceVisitor() {
+    public CardinalityInferenceVisitor() {
     }
 
     @Override
@@ -284,6 +284,19 @@ public class CardinalityInferenceVisitor implements ILogicalOperatorVisitor<Long
         return cardinality;
     }
 
+    @Override
+    public Long visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+        // A candidate set sized by k, or (Lloyd) the rows it could place: neither follows from the input.
+        return UNKNOWN;
+    }
+
+    @Override
+    public Long visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
+        // The output is a candidate set sized by the requested cluster count, not by how many rows came in,
+        // so the input's cardinality says nothing about it.
+        return UNKNOWN;
+    }
+
     // Visits an operator that has the left outer semantics, e.g.,
     // left outer join, left outer unnest, left outer unnest map.
     private long visitLeftOuterUnnest(ILogicalOperator operator, Void arg) throws AlgebricksException {
@@ -355,7 +368,7 @@ public class CardinalityInferenceVisitor implements ILogicalOperatorVisitor<Long
     }
 
     // For operators including SELECT and LIMIT.
-    private long adjustCardinalityForTupleReductionOperator(long inputCardinality) {
+    protected long adjustCardinalityForTupleReductionOperator(long inputCardinality) {
         if (inputCardinality == ONE) {
             return ZERO_OR_ONE;
         }

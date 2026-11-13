@@ -27,12 +27,13 @@ import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.functions.IFunctionDescriptorFactory;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.runtime.evaluators.base.AbstractScalarFunctionDynamicDescriptor;
+import org.apache.asterix.runtime.evaluators.functions.PointableHelper;
 import org.apache.asterix.runtime.exceptions.InvalidDataFormatException;
 import org.apache.asterix.runtime.exceptions.TypeMismatchException;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IPointable;
 import org.apache.hyracks.data.std.primitive.VoidPointable;
@@ -81,10 +82,15 @@ public class STGeomFromWKBDescriptor extends AbstractScalarFunctionDynamicDescri
 
         @Override
         public void evaluate(IFrameTupleReference tuple, IPointable result) throws HyracksDataException {
+            resultStorage.reset();
             eval.evaluate(tuple, inputArg);
             byte[] data = inputArg.getByteArray();
             int offset = inputArg.getStartOffset();
             int len = inputArg.getLength();
+
+            if (PointableHelper.checkAndSetMissingOrNull(result, inputArg)) {
+                return;
+            }
 
             if (data[offset] != ATypeTag.SERIALIZED_BINARY_TYPE_TAG) {
                 throw new TypeMismatchException(sourceLoc, BuiltinFunctions.ST_GEOM_FROM_WKB, 0, data[offset],

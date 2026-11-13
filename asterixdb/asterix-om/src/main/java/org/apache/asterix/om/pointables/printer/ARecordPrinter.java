@@ -26,7 +26,7 @@ import org.apache.asterix.om.pointables.ARecordVisitablePointable;
 import org.apache.asterix.om.pointables.base.IVisitablePointable;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.EnumDeserializer;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.MutablePair;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 
 /**
@@ -38,8 +38,8 @@ public class ARecordPrinter {
     protected final String fieldSeparator;
     protected final String fieldNameSeparator;
 
-    protected final Pair<PrintStream, ATypeTag> nameVisitorArg = new Pair<>(null, ATypeTag.STRING);
-    protected final Pair<PrintStream, ATypeTag> itemVisitorArg = new Pair<>(null, null);
+    protected final MutablePair<PrintStream, ATypeTag> nameVisitorArg = new MutablePair<>(null, ATypeTag.STRING);
+    protected final MutablePair<PrintStream, ATypeTag> itemVisitorArg = new MutablePair<>(null, null);
 
     public ARecordPrinter(final String startRecord, final String endRecord, final String fieldSeparator,
             final String fieldNameSeparator) {
@@ -54,8 +54,8 @@ public class ARecordPrinter {
         final List<IVisitablePointable> fieldNames = recordAccessor.getFieldNames();
         final List<IVisitablePointable> fieldValues = recordAccessor.getFieldValues();
 
-        nameVisitorArg.first = ps;
-        itemVisitorArg.first = ps;
+        nameVisitorArg.setLeft(ps);
+        itemVisitorArg.setLeft(ps);
 
         ps.print(startRecord);
 
@@ -82,9 +82,14 @@ public class ARecordPrinter {
         ps.print(endRecord);
     }
 
+    public void printRecord(ARecordVisitablePointable recordAccessor, PrintStream ps, IPrintVisitor visitor,
+            boolean firstRecord) throws HyracksDataException {
+        printRecord(recordAccessor, ps, visitor);
+    }
+
     protected void printField(PrintStream ps, IPrintVisitor visitor, IVisitablePointable fieldName,
             IVisitablePointable fieldValue, ATypeTag fieldTypeTag) throws HyracksDataException {
-        itemVisitorArg.second = fieldTypeTag;
+        itemVisitorArg.setRight(fieldTypeTag);
         if (fieldNameSeparator != null) {
             printFieldName(ps, visitor, fieldName);
             ps.print(fieldNameSeparator);

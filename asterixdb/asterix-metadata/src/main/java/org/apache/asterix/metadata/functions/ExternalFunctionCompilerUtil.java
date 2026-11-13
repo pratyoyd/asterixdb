@@ -73,6 +73,10 @@ public class ExternalFunctionCompilerUtil {
         IResultTypeComputer typeComputer = new ExternalTypeComputer(returnType, paramTypes, function.getNullCall());
 
         ExternalFunctionLanguage lang = getExternalFunctionLanguage(function.getLanguage());
+        if (lang == ExternalFunctionLanguage.HTTP) {
+            throw new CompilationException(ErrorCode.EXTERNAL_HTTP_FUNCTION_CALL_UNSUPPORTED,
+                    function.getSignature().toString());
+        }
 
         Boolean deterministic = function.getDeterministic();
         if (deterministic == null) {
@@ -80,12 +84,11 @@ public class ExternalFunctionCompilerUtil {
             throw new AsterixException(ErrorCode.METADATA_ERROR, function.getSignature().toString());
         }
 
-        //TODO(DB): review
         return new ExternalScalarFunctionInfo(function.getSignature().createFunctionIdentifier(), paramTypes,
                 returnType, typeComputer, lang,
                 new Namespace(function.getLibraryDatabaseName(), function.getLibraryDataverseName()),
                 function.getLibraryName(), function.getExternalIdentifier(), function.getResources(), deterministic,
-                function.getNullCall());
+                function.getNullCall(), function.getBatched());
     }
 
     private static IFunctionInfo getUnnestFunctionInfo(MetadataProvider metadataProvider, Function function) {
@@ -150,7 +153,7 @@ public class ExternalFunctionCompilerUtil {
         try {
             return ExternalFunctionLanguage.valueOf(language);
         } catch (IllegalArgumentException e) {
-            throw new AsterixException(ErrorCode.METADATA_ERROR, language);
+            throw new AsterixException(ErrorCode.METADATA_ERROR, e, language);
         }
     }
 

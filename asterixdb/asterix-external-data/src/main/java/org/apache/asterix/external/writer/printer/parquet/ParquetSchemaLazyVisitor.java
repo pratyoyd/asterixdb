@@ -18,6 +18,7 @@
  */
 package org.apache.asterix.external.writer.printer.parquet;
 
+import static org.apache.asterix.common.exceptions.ErrorCode.PARQUET_UNSUPPORTED_MIXED_TYPE_ARRAY;
 import static org.apache.asterix.common.exceptions.ErrorCode.TYPE_UNSUPPORTED_PARQUET_WRITE;
 import static org.apache.asterix.external.writer.printer.parquet.ParquetSchemaTree.buildParquetSchema;
 
@@ -29,30 +30,27 @@ import org.apache.asterix.om.lazy.AbstractListLazyVisitablePointable;
 import org.apache.asterix.om.lazy.FlatLazyVisitablePointable;
 import org.apache.asterix.om.lazy.ILazyVisitablePointableVisitor;
 import org.apache.asterix.om.lazy.RecordLazyVisitablePointable;
-import org.apache.asterix.om.lazy.TypedRecordLazyVisitablePointable;
-import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.IAType;
-import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IValueReference;
+import org.apache.hyracks.util.LogRedactionUtil;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.Types;
 
+// This class is used to infer the schema of a record into SchemaNode, which is an internal tree representation of the schema.
 public class ParquetSchemaLazyVisitor implements ILazyVisitablePointableVisitor<Void, ParquetSchemaTree.SchemaNode> {
+    private static final Logger LOGGER = LogManager.getLogger();
     private final RecordLazyVisitablePointable rec;
     private final FieldNamesDictionary fieldNamesDictionary;
     private final static String SCHEMA_NAME = "asterix_schema";
+    private boolean foundMissing = false;
 
-    public ParquetSchemaLazyVisitor(IAType typeInfo) {
+    public ParquetSchemaLazyVisitor(IAType typeInfo) throws HyracksDataException {
         this.fieldNamesDictionary = new FieldNamesDictionary();
-        if (typeInfo.getTypeTag() == ATypeTag.OBJECT) {
-            this.rec = new TypedRecordLazyVisitablePointable((ARecordType) typeInfo);
-        } else if (typeInfo.getTypeTag() == ATypeTag.ANY) {
-            this.rec = new RecordLazyVisitablePointable(true);
-        } else {
-            throw new RuntimeException("Type Unsupported for parquet printing");
-        }
+        this.rec = ParquetRecordPointableUtils.createRecordPointable(typeInfo);
     }
 
     @Override
@@ -61,10 +59,11 @@ public class ParquetSchemaLazyVisitor implements ILazyVisitablePointableVisitor<
         if (schemaNode.getType() == null) {
             schemaNode.setType(new ParquetSchemaTree.RecordType());
         }
-        if (!(schemaNode.getType() instanceof ParquetSchemaTree.RecordType)) {
-            throw new HyracksDataException(ErrorCode.RESULT_DOES_NOT_FOLLOW_SCHEMA);
+        if (!(schemaNode.getType() instanceof ParquetSchemaTree.RecordType recordType)) {
+            LOGGER.info("Incompatible type found in record: {} and {}",
+                    LogRedactionUtil.userData(schemaNode.toString()), pointable.getTypeTag());
+            throw RuntimeDataException.create(PARQUET_UNSUPPORTED_MIXED_TYPE_ARRAY);
         }
-        ParquetSchemaTree.RecordType recordType = (ParquetSchemaTree.RecordType) schemaNode.getType();
         for (int i = 0; i < pointable.getNumberOfChildren(); i++) {
             pointable.nextChild();
             AbstractLazyVisitablePointable child = pointable.getChildVisitablePointable();
@@ -76,6 +75,7 @@ public class ParquetSchemaLazyVisitor implements ILazyVisitablePointableVisitor<
                 childType = new ParquetSchemaTree.SchemaNode();
                 recordType.add(childColumnName, childType);
             }
+            // Can optimize by reducing new object creation
             child.accept(this, childType);
         }
         return null;
@@ -84,16 +84,24 @@ public class ParquetSchemaLazyVisitor implements ILazyVisitablePointableVisitor<
     @Override
     public Void visit(AbstractListLazyVisitablePointable pointable, ParquetSchemaTree.SchemaNode schemaNode)
             throws HyracksDataException {
+
         if (schemaNode.getType() == null) {
             schemaNode.setType(new ParquetSchemaTree.ListType());
         }
-        if (!(schemaNode.getType() instanceof ParquetSchemaTree.ListType)) {
-            throw new HyracksDataException(ErrorCode.RESULT_DOES_NOT_FOLLOW_SCHEMA);
+        if (!(schemaNode.getType() instanceof ParquetSchemaTree.ListType listType)) {
+            LOGGER.info("Incompatible type found in list: {} and {}", LogRedactionUtil.userData(schemaNode.toString()),
+                    pointable.getTypeTag());
+            throw RuntimeDataException.create(PARQUET_UNSUPPORTED_MIXED_TYPE_ARRAY);
         }
-        ParquetSchemaTree.ListType listType = (ParquetSchemaTree.ListType) schemaNode.getType();
-        for (int i = 0; i < pointable.getNumberOfChildren(); i++) {
+        int numChildren = pointable.getNumberOfChildren();
+        for (int i = 0; i < numChildren; i++) {
             pointable.nextChild();
             AbstractLazyVisitablePointable child = pointable.getChildVisitablePointable();
+
+            if (child.getTypeTag() == ATypeTag.MISSING) {
+                throw RuntimeDataException.create(PARQUET_UNSUPPORTED_MIXED_TYPE_ARRAY);
+            }
+
             if (listType.isEmpty()) {
                 listType.setChild(new ParquetSchemaTree.SchemaNode());
             }
@@ -105,37 +113,60 @@ public class ParquetSchemaLazyVisitor implements ILazyVisitablePointableVisitor<
     @Override
     public Void visit(FlatLazyVisitablePointable pointable, ParquetSchemaTree.SchemaNode schemaNode)
             throws HyracksDataException {
+        if (pointable.getTypeTag() == ATypeTag.NULL) {
+            return null;
+        }
+
         if (schemaNode.getType() == null) {
+            if (pointable.getTypeTag() == ATypeTag.MISSING) {
+                foundMissing = true;
+                schemaNode.setType(new ParquetSchemaTree.FlatType(ATypeTag.MISSING));
+                return null;
+            }
             if (!AsterixParquetTypeMap.PRIMITIVE_TYPE_NAME_MAP.containsKey(pointable.getTypeTag())) {
                 throw RuntimeDataException.create(TYPE_UNSUPPORTED_PARQUET_WRITE, pointable.getTypeTag());
             }
-            schemaNode.setType(new ParquetSchemaTree.FlatType(
-                    AsterixParquetTypeMap.PRIMITIVE_TYPE_NAME_MAP.get(pointable.getTypeTag()),
-                    AsterixParquetTypeMap.LOGICAL_TYPE_ANNOTATION_MAP.get(pointable.getTypeTag())));
+            schemaNode.setType(new ParquetSchemaTree.FlatType(pointable.getTypeTag()));
             return null;
         }
-        if (!(schemaNode.getType() instanceof ParquetSchemaTree.FlatType)) {
-            throw new HyracksDataException(ErrorCode.RESULT_DOES_NOT_FOLLOW_SCHEMA);
+        if (!(schemaNode.getType() instanceof ParquetSchemaTree.FlatType flatType)) {
+            LOGGER.info("Incompatible type found: {} and {}", LogRedactionUtil.userData(schemaNode.toString()),
+                    pointable.getTypeTag());
+            throw RuntimeDataException.create(PARQUET_UNSUPPORTED_MIXED_TYPE_ARRAY);
         }
-        ParquetSchemaTree.FlatType flatType = (ParquetSchemaTree.FlatType) schemaNode.getType();
-        if (!(flatType.getPrimitiveTypeName() == AsterixParquetTypeMap.PRIMITIVE_TYPE_NAME_MAP
-                .get(pointable.getTypeTag()))
-                || !(flatType.getLogicalTypeAnnotation() == AsterixParquetTypeMap.LOGICAL_TYPE_ANNOTATION_MAP
-                        .get(pointable.getTypeTag()))) {
-            throw new HyracksDataException(ErrorCode.RESULT_DOES_NOT_FOLLOW_SCHEMA);
+        if (!flatType.isCompatibleWith(pointable.getTypeTag())) {
+            LOGGER.info("Incompatible type found: {} and {}", flatType, pointable.getTypeTag());
+            throw RuntimeDataException.create(PARQUET_UNSUPPORTED_MIXED_TYPE_ARRAY);
         }
+
+        flatType.coalesce(pointable.getTypeTag());
         return null;
+    }
+
+    public void updateSchema(IValueReference valueReference, ParquetSchemaTree.SchemaNode previousSchema)
+            throws HyracksDataException {
+        rec.set(valueReference);
+        foundMissing = false;
+        rec.accept(this, previousSchema);
+        if (foundMissing) {
+            removeMissing(previousSchema);
+        }
     }
 
     public ParquetSchemaTree.SchemaNode inferSchema(IValueReference valueReference) throws HyracksDataException {
         ParquetSchemaTree.SchemaNode schemaNode = new ParquetSchemaTree.SchemaNode();
         rec.set(valueReference);
+        foundMissing = false;
         rec.accept(this, schemaNode);
+        if (foundMissing) {
+            removeMissing(schemaNode);
+        }
         return schemaNode;
     }
 
     public static MessageType generateSchema(ParquetSchemaTree.SchemaNode schemaRoot) throws HyracksDataException {
         Types.MessageTypeBuilder builder = Types.buildMessage();
+        LOGGER.info("Building parquet schema: {}", LogRedactionUtil.userData(schemaRoot.toString()));
         if (schemaRoot.getType() == null)
             return builder.named(SCHEMA_NAME);
         for (Map.Entry<String, ParquetSchemaTree.SchemaNode> entry : ((ParquetSchemaTree.RecordType) schemaRoot
@@ -145,4 +176,25 @@ public class ParquetSchemaLazyVisitor implements ILazyVisitablePointableVisitor<
         return builder.named(SCHEMA_NAME);
     }
 
+    private static void removeMissing(ParquetSchemaTree.SchemaNode schemaNode) {
+        if (schemaNode.getType() == null) {
+            return;
+        }
+        if (schemaNode.getType() instanceof ParquetSchemaTree.RecordType recordType) {
+            recordType.getChildren().entrySet()
+                    .removeIf(entry -> (entry.getValue().getType() instanceof ParquetSchemaTree.FlatType flatType
+                            && flatType.getTypeTag() == ATypeTag.MISSING));
+
+            for (Map.Entry<String, ParquetSchemaTree.SchemaNode> entry : recordType.getChildren().entrySet()) {
+                removeMissing(entry.getValue());
+            }
+        }
+
+        if (schemaNode.getType() instanceof ParquetSchemaTree.ListType listType) {
+            if (listType.isEmpty()) {
+                return;
+            }
+            removeMissing(listType.getChild());
+        }
+    }
 }

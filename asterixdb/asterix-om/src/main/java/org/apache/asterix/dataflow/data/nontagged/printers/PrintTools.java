@@ -47,9 +47,16 @@ public class PrintTools {
 
     private static final GregorianCalendarSystem gCalInstance = GregorianCalendarSystem.getInstance();
     private static final long CHRONON_OF_DAY = TimeUnit.DAYS.toMillis(1);
+    private static final ObjectMapper GEO_JSON_MAPPER = createGeoJsonMapper();
+
+    private static ObjectMapper createGeoJsonMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new JtsModule());
+        return mapper;
+    }
 
     public static void printDateString(byte[] b, int s, int l, PrintStream ps) throws HyracksDataException {
-        long chrononTime = AInt32SerializerDeserializer.getInt(b, s + 1) * CHRONON_OF_DAY;
+        long chrononTime = getDateChronon(b, s + 1);
 
         try {
             gCalInstance.getExtendStringRepUntilField(chrononTime, ps, GregorianCalendarSystem.Fields.YEAR,
@@ -59,8 +66,12 @@ public class PrintTools {
         }
     }
 
+    public static long getDateChronon(byte[] b, int s) {
+        return AInt32SerializerDeserializer.getInt(b, s) * CHRONON_OF_DAY;
+    }
+
     public static void printDateTimeString(byte[] b, int s, int l, PrintStream ps) throws HyracksDataException {
-        long chrononTime = AInt64SerializerDeserializer.getLong(b, s + 1);
+        long chrononTime = getDateTimeChronon(b, s + 1);
 
         try {
             gCalInstance.getExtendStringRepUntilField(chrononTime, ps, GregorianCalendarSystem.Fields.YEAR,
@@ -70,9 +81,13 @@ public class PrintTools {
         }
     }
 
+    public static long getDateTimeChronon(byte[] b, int s) {
+        return AInt64SerializerDeserializer.getLong(b, s);
+    }
+
     public static void printDayTimeDurationString(byte[] b, int s, int l, PrintStream ps) throws HyracksDataException {
         boolean positive = true;
-        long milliseconds = AInt64SerializerDeserializer.getLong(b, s + 1);
+        long milliseconds = getDateTimeChronon(b, s + 1);
 
         // set the negative flag. "||" is necessary in case that months field is not there (so it is 0)
         if (milliseconds < 0) {
@@ -218,7 +233,7 @@ public class PrintTools {
     }
 
     public static void printTimeString(byte[] b, int s, int l, PrintStream ps) throws HyracksDataException {
-        int time = AInt32SerializerDeserializer.getInt(b, s + 1);
+        int time = getTimeChronon(b, s + 1);
 
         try {
             gCalInstance.getExtendStringRepUntilField(time, ps, GregorianCalendarSystem.Fields.HOUR,
@@ -226,6 +241,10 @@ public class PrintTools {
         } catch (IOException e) {
             throw HyracksDataException.create(e);
         }
+    }
+
+    public static int getTimeChronon(byte[] b, int s) {
+        return AInt32SerializerDeserializer.getInt(b, s);
     }
 
     public static void printDoubleForJson(byte[] b, int s, PrintStream ps) {
@@ -293,7 +312,7 @@ public class PrintTools {
         boolean shouldQuote = forceQuote;
         if (!shouldQuote) {
             // Check if the string contains any special characters that require quoting
-            for (int i = position; i < maxPosition; i++) {
+            for (int i = position; i < maxPosition; i += UTF8StringUtil.charSize(b, i)) {
                 char c = UTF8StringUtil.charAt(b, i);
                 if (c == quote || c == '\r' || c == '\n' || c == escape || c == delimiter) {
                     shouldQuote = true;
@@ -323,7 +342,7 @@ public class PrintTools {
 
             // Write the character bytes
             while (sz > 0) {
-                ps.print(c);
+                ps.write(b[position]);
                 ++position;
                 --sz;
             }
@@ -332,6 +351,42 @@ public class PrintTools {
         if (shouldQuote) {
             ps.print(quoteChar);
         }
+    }
+
+    /**
+     * Computes the number of bytes {@link #writeUTF8StringRaw} will emit for the string stored at {@code s}. This is
+     * not the stored length: a supplementary character is stored as a surrogate pair of two 3-byte modified-UTF8
+     * characters, but is written out as a single 4-byte UTF-8 sequence.
+     *
+     * @param b the buffer holding a length-prefixed modified-UTF8 string
+     * @param s the offset of that string's length prefix
+     * @return the length, in bytes, of the standard UTF-8 encoding of that string
+     */
+    public static int getUTF8StringRawLength(byte[] b, int s) {
+        final int utfLength = UTF8StringUtil.getUTFLength(b, s);
+        int position = s + UTF8StringUtil.getNumBytesToStoreLength(utfLength);
+        final int maxPosition = position + utfLength;
+        int rawLength = 0;
+        while (position < maxPosition) {
+            final int sz = UTF8StringUtil.charSize(b, position);
+            final char c = UTF8StringUtil.charAt(b, position);
+            if (!Character.isHighSurrogate(c)) {
+                rawLength += sz;
+                position += sz;
+                continue;
+            }
+            final int lowSurrogatePos = position + sz;
+            if (lowSurrogatePos >= maxPosition) {
+                throw new IllegalStateException("malformed utf8 input");
+            }
+            final char lowSurrogate = UTF8StringUtil.charAt(b, lowSurrogatePos);
+            // the malformed case is spelled the same way writeSupplementaryChar encodes it, so the two cannot
+            // disagree on a length that must already have been written into a msgpack header
+            rawLength += Character.isLowSurrogate(lowSurrogate) ? 4
+                    : new String(new char[] { c, lowSurrogate }).getBytes(StandardCharsets.UTF_8).length;
+            position = lowSurrogatePos + UTF8StringUtil.charSize(b, lowSurrogatePos);
+        }
+        return rawLength;
     }
 
     public static void writeUTF8StringRaw(byte[] b, int s, int l, DataOutput os) throws IOException {
@@ -505,10 +560,8 @@ public class PrintTools {
         if (geometry == null) {
             return "";
         }
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JtsModule());
         try {
-            return mapper.writeValueAsString(geometry);
+            return GEO_JSON_MAPPER.writeValueAsString(geometry);
         } catch (JsonProcessingException e) {
             return "";
         }

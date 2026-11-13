@@ -103,4 +103,12 @@ public class MetadataTupleTranslatorProvider {
     public SynonymTupleTranslator getSynonymTupleTranslator(boolean getTuple) {
         return new SynonymTupleTranslator(getTuple, mdIndexesProvider.getSynonymEntity());
     }
+
+    public CatalogTupleTranslator getCatalogTupleTranslator(boolean getTuple) {
+        return new CatalogTupleTranslator(getTuple, mdIndexesProvider.getCatalogEntity());
+    }
+
+    public CRSTupleTranslator getCRSTupleTranslator(boolean getTuple) {
+        return new CRSTupleTranslator(getTuple, mdIndexesProvider.getCRSEntity());
+    }
 }

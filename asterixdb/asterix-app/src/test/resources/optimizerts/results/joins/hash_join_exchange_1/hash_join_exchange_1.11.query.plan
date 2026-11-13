@@ -1,0 +1,38 @@
+distribute result [$$50]
+-- DISTRIBUTE_RESULT  |PARTITIONED|
+  exchange
+  -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+    assign [$$50] <- [{"a_0": $$53, "a_1": $$54, "a_2": $$55, "a_3": $$66, "b_3": $$67}] project: [$$50]
+    -- ASSIGN  |PARTITIONED|
+      project ([$$53, $$54, $$55, $$66, $$67])
+      -- STREAM_PROJECT  |PARTITIONED|
+        exchange
+        -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+          left outer join (and(eq($$53, $$56), eq($$57, $$54), eq($$55, $$58)))
+          -- HYBRID_HASH_JOIN [$$53, $$54, $$55][$$56, $$57, $$58]  |PARTITIONED|
+            exchange
+            -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+              select (eq($$53, $$55))
+              -- STREAM_SELECT  |PARTITIONED|
+                assign [$$66] <- [$$A.getField("a_3")] project: [$$53, $$54, $$55, $$66]
+                -- ASSIGN  |PARTITIONED|
+                  exchange
+                  -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                    data-scan []<-[$$53, $$54, $$55, $$A] <- test.A
+                    -- DATASOURCE_SCAN  |PARTITIONED|
+                      exchange
+                      -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                        empty-tuple-source
+                        -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
+            exchange
+            -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+              assign [$$67] <- [$$B.getField("b_3")] project: [$$67, $$56, $$57, $$58]
+              -- ASSIGN  |PARTITIONED|
+                exchange
+                -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                  data-scan []<-[$$56, $$57, $$58, $$B] <- test.B
+                  -- DATASOURCE_SCAN  |PARTITIONED|
+                    exchange
+                    -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                      empty-tuple-source
+                      -- EMPTY_TUPLE_SOURCE  |PARTITIONED|

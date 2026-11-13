@@ -26,7 +26,9 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.asterix.metadata.entities.Dataset;
+import org.apache.asterix.metadata.utils.DatasetUtil;
 import org.apache.asterix.optimizer.rules.pushdown.descriptor.DefineDescriptor;
+import org.apache.asterix.optimizer.rules.pushdown.descriptor.ParquetDatasetScanDefineDescriptor;
 import org.apache.asterix.optimizer.rules.pushdown.descriptor.ScanDefineDescriptor;
 import org.apache.asterix.optimizer.rules.pushdown.descriptor.UseDescriptor;
 import org.apache.asterix.optimizer.rules.pushdown.visitor.FilterExpressionInlineVisitor;
@@ -84,8 +86,14 @@ public class PushdownContext {
 
     public void registerScan(Dataset dataset, List<LogicalVariable> pkList, LogicalVariable recordVariable,
             LogicalVariable metaVariable, AbstractScanOperator scanOperator) {
-        ScanDefineDescriptor scanDefDesc =
-                new ScanDefineDescriptor(scopes.size(), dataset, pkList, recordVariable, metaVariable, scanOperator);
+        ScanDefineDescriptor scanDefDesc;
+        if (DatasetUtil.isParquetFormat(dataset)) {
+            scanDefDesc = new ParquetDatasetScanDefineDescriptor(scopes.size(), dataset, pkList, recordVariable,
+                    metaVariable, scanOperator);
+        } else {
+            scanDefDesc = new ScanDefineDescriptor(scopes.size(), dataset, pkList, recordVariable, metaVariable,
+                    scanOperator);
+        }
         defineChain.put(recordVariable, scanDefDesc);
         useChain.put(recordVariable, new ArrayList<>());
         if (metaVariable != null) {
@@ -108,7 +116,7 @@ public class PushdownContext {
     public void define(LogicalVariable variable, ILogicalOperator operator, ILogicalExpression expression,
             int expressionIndex) {
         if (defineChain.containsKey(variable)) {
-            LOGGER.warn("Variable {}  declared twice", variable);
+            LOGGER.trace("Variable {} declared twice", variable);
             return;
         } else if (definedVariable.containsKey(expression)) {
             DefineDescriptor defineDescriptor = definedVariable.get(expression);
@@ -139,8 +147,8 @@ public class PushdownContext {
             DefineDescriptor defineDescriptor = defineChain.get(variable);
             if (defineDescriptor == null) {
                 // Log to track any definition that we may have missed
-                LOGGER.warn("Variable {} is not defined", variable);
-                return;
+                LOGGER.trace("Variable {} is not defined", variable);
+                continue;
             }
 
             List<UseDescriptor> uses = useChain.get(variable);
@@ -173,9 +181,12 @@ public class PushdownContext {
     }
 
     private static Set<LogicalOperatorTag> getScopeOperators() {
+        // LIMIT: a filter pushed into the scan beneath it would change which rows the LIMIT is taken from.
+        // CLUSTER_BY / KMEANS_STAGE: a filter above must not change which rows are clustered.
         return EnumSet.of(LogicalOperatorTag.INNERJOIN, LogicalOperatorTag.LEFTOUTERJOIN, LogicalOperatorTag.GROUP,
                 LogicalOperatorTag.WINDOW, LogicalOperatorTag.RUNNINGAGGREGATE, LogicalOperatorTag.UNIONALL,
-                LogicalOperatorTag.INTERSECT);
+                LogicalOperatorTag.INTERSECT, LogicalOperatorTag.LIMIT, LogicalOperatorTag.CLUSTER_BY,
+                LogicalOperatorTag.KMEANS_STAGE);
     }
 
 }

@@ -18,7 +18,6 @@
  */
 package org.apache.asterix.column.tuple;
 
-import java.nio.ByteBuffer;
 import java.util.List;
 
 import org.apache.asterix.column.assembler.value.MissingValueGetter;
@@ -36,7 +35,6 @@ import org.apache.asterix.column.operation.query.ColumnAssembler;
 import org.apache.asterix.column.operation.query.QueryColumnMetadata;
 import org.apache.asterix.column.values.IColumnValuesReader;
 import org.apache.asterix.column.values.reader.PrimitiveColumnValuesReader;
-import org.apache.asterix.column.values.writer.filters.AbstractColumnFilterWriter;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IValueReference;
 import org.apache.hyracks.storage.am.lsm.btree.column.api.IColumnBufferProvider;
@@ -93,18 +91,17 @@ public final class QueryColumnTupleReference extends AbstractAsterixColumnTupleR
     }
 
     @Override
-    protected boolean startNewPage(ByteBuffer pageZero, int numberOfColumns, int numberOfTuples)
-            throws HyracksDataException {
+    protected boolean startNewPage(int numberOfTuples) throws HyracksDataException {
         //Skip to filters
-        pageZero.position(pageZero.position() + numberOfColumns * Integer.BYTES);
+        frame.skipColumnOffsets();
         //Set filters' values
-        FilterAccessorProvider.setFilterValues(filterValueAccessors, pageZero, numberOfColumns);
+        FilterAccessorProvider.setFilterValues(filterValueAccessors, frame);
         //Skip filters
-        pageZero.position(pageZero.position() + numberOfColumns * AbstractColumnFilterWriter.FILTER_SIZE);
+        frame.skipFilters();
         //Check if we should read all column pages
         boolean readColumns = rangeFilterEvaluator.evaluate();
         assembler.reset(readColumns ? numberOfTuples : 0);
-        columnFilterEvaluator.reset();
+        columnFilterEvaluator.reset(numberOfTuples);
         previousIndex = -1;
         return readColumns;
     }
@@ -131,8 +128,29 @@ public final class QueryColumnTupleReference extends AbstractAsterixColumnTupleR
     }
 
     @Override
-    public void skip(int count) throws HyracksDataException {
-        columnFilterEvaluator.setAt(assembler.skip(count));
+    public void initSkip(int tupleIndex, int count) throws HyracksDataException {
+        columnFilterEvaluator.setAt(tupleIndex);
+        skip(count);
+    }
+
+    @Override
+    public void skipCurrentTuple() throws HyracksDataException {
+        if (isFilterApplied()) {
+            // since cursorIndex is markedAsDeleted
+            // move filter evaluator to the next valid tuple
+            columnFilterEvaluator.setAt(tupleIndex + 1);
+            assembler.setAt(columnFilterEvaluator.getValueIndex());
+        } else {
+            skip(1);
+        }
+    }
+
+    private boolean isFilterApplied() {
+        return columnFilterEvaluator.getTupleIndex() != -1;
+    }
+
+    private void skip(int count) throws HyracksDataException {
+        assembler.skip(count);
     }
 
     public IValueReference getAssembledValue() throws HyracksDataException {
@@ -158,19 +176,22 @@ public final class QueryColumnTupleReference extends AbstractAsterixColumnTupleR
     }
 
     private IValueReference getFilteredAssembledValue() throws HyracksDataException {
-        int index = columnFilterEvaluator.getTupleIndex();
-        // index == -1 if the normalized filter indicated that a mega leaf node
-        // is filtered
-        if (index == tupleIndex) {
-            antimatterGap = 0;
-            // setAt in the assembler expect the value index (i.e., tupleCount - antiMatterCount)
-            assembler.setAt(columnFilterEvaluator.getValueIndex());
-            // set the next tuple index that satisfies the filter
-            columnFilterEvaluator.evaluate();
-            return assembler.nextValue();
-        } else {
-            antimatterGap++;
+        try {
+            int index = columnFilterEvaluator.getTupleIndex();
+            // index == -1 if the normalized filter indicated that a mega leaf node
+            // is filtered
+            if (index == tupleIndex) {
+                // setAt in the assembler expect the value index (i.e., tupleCount - antiMatterCount)
+                assembler.setAt(columnFilterEvaluator.getValueIndex());
+                // set the next tuple index that satisfies the filter
+                columnFilterEvaluator.evaluate();
+                return assembler.nextValue();
+            }
+            return MissingValueGetter.MISSING;
+        } catch (ColumnarValueException e) {
+            columnFilterEvaluator.appendInformation(e);
+            e.getNode().put("cursorTupleIndex", tupleIndex);
+            throw e;
         }
-        return MissingValueGetter.MISSING;
     }
 }

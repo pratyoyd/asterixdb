@@ -19,7 +19,6 @@
 
 package org.apache.asterix.runtime.evaluators.comparisons;
 
-import org.apache.asterix.common.annotations.MissingNullInOutFunction;
 import org.apache.asterix.formats.nontagged.SerializerDeserializerProvider;
 import org.apache.asterix.om.base.ADouble;
 import org.apache.asterix.om.base.AMutableDouble;
@@ -30,13 +29,12 @@ import org.apache.asterix.om.functions.IFunctionTypeInferer;
 import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.runtime.functions.FunctionTypeInferers;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.dataflow.value.ISerializerDeserializer;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 
-@MissingNullInOutFunction
 public class PosInfIfEqualsDescriptor extends AbstractComparisonDescriptor {
     private static final long serialVersionUID = 1L;
 

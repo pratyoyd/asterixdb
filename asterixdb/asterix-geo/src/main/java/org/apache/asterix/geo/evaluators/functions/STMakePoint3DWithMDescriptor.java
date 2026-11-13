@@ -25,10 +25,11 @@ import org.apache.asterix.dataflow.data.nontagged.serde.AGeometrySerializerDeser
 import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.functions.IFunctionDescriptorFactory;
 import org.apache.asterix.om.types.ATypeTag;
+import org.apache.asterix.runtime.evaluators.functions.PointableHelper;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IPointable;
 import org.apache.hyracks.data.std.primitive.VoidPointable;
@@ -38,11 +39,6 @@ import org.locationtech.jts.geom.CoordinateXYZM;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
 
-/**
- * TODO: Support writing geometry with 4 dimensions
- * JTS WKBWriter currently does not support writing 4 dimensions and loses the detail.
- * See https://github.com/locationtech/jts/issues/733 for more details.
- */
 public class STMakePoint3DWithMDescriptor extends AbstractGetValDescriptor {
 
     private static final long serialVersionUID = 1L;
@@ -101,6 +97,10 @@ public class STMakePoint3DWithMDescriptor extends AbstractGetValDescriptor {
             eval1.evaluate(tuple, inputArg1);
             eval2.evaluate(tuple, inputArg2);
             eval3.evaluate(tuple, inputArg3);
+
+            if (PointableHelper.checkAndSetMissingOrNull(result, inputArg0, inputArg1, inputArg2, inputArg3)) {
+                return;
+            }
 
             byte[] bytes0 = inputArg0.getByteArray();
             int offset0 = inputArg0.getStartOffset();

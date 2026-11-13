@@ -29,6 +29,7 @@ import org.apache.asterix.common.exceptions.RuntimeDataException;
 import org.apache.asterix.external.input.record.reader.hdfs.parquet.converter.AbstractComplexConverter;
 import org.apache.asterix.external.input.record.reader.hdfs.parquet.converter.ParquetConverterContext;
 import org.apache.asterix.external.input.record.reader.hdfs.parquet.converter.primitve.DecimalConverter;
+import org.apache.asterix.external.util.ExternalDataConstants;
 import org.apache.asterix.external.util.ExternalDataConstants.ParquetOptions;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.ATypeTag;
@@ -44,6 +45,7 @@ import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.DateLogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.DecimalLogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.IntLogicalTypeAnnotation;
+import org.apache.parquet.schema.LogicalTypeAnnotation.IntervalLogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimeLogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimestampLogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.UUIDLogicalTypeAnnotation;
@@ -238,14 +240,18 @@ public class AsterixTypeToParquetTypeVisitor implements IATypeVisitor<Type, Type
         if (logicalType == null || logicalType instanceof IntLogicalTypeAnnotation) {
             inferredTypeTag = ATypeTag.BIGINT;
         } else if (logicalType instanceof DateLogicalTypeAnnotation) {
-            inferredTypeTag = ATypeTag.DATE;
+            inferredTypeTag = context.isDateAsInt() ? ATypeTag.BIGINT : ATypeTag.DATE;
         } else if (logicalType instanceof TimeLogicalTypeAnnotation) {
-            inferredTypeTag = ATypeTag.TIME;
-        } else if (logicalType instanceof TimestampLogicalTypeAnnotation
-                && checkDatetime(type, context, sourceLocation)) {
-            TimestampLogicalTypeAnnotation tsType = (TimestampLogicalTypeAnnotation) logicalType;
-            warnIfUTCAdjustedAndZoneIdIsNotSet(context, sourceLocation, tsType.isAdjustedToUTC());
-            inferredTypeTag = ATypeTag.DATETIME;
+            inferredTypeTag = context.isTimeAsInt() ? ATypeTag.BIGINT : ATypeTag.TIME;
+        } else if (logicalType instanceof TimestampLogicalTypeAnnotation) {
+            if (context.isTimestampAsLong()) {
+                // the stored epoch value is returned as it is, so there is no zone to warn about
+                inferredTypeTag = ATypeTag.BIGINT;
+            } else if (checkDatetime(type, context, sourceLocation)) {
+                TimestampLogicalTypeAnnotation tsType = (TimestampLogicalTypeAnnotation) logicalType;
+                warnIfUTCAdjustedAndZoneIdIsNotSet(context, sourceLocation, tsType.isAdjustedToUTC());
+                inferredTypeTag = ATypeTag.DATETIME;
+            }
         } else if (logicalType instanceof DecimalLogicalTypeAnnotation) {
             ensureDecimalToDoubleEnabled(type, context, sourceLocation);
             inferredTypeTag = ATypeTag.DOUBLE;
@@ -261,6 +267,8 @@ public class AsterixTypeToParquetTypeVisitor implements IATypeVisitor<Type, Type
         ATypeTag inferredTypeTag = ATypeTag.SYSTEM_NULL;
         if (logicalType == null || logicalType == LogicalTypeAnnotation.bsonType()) {
             inferredTypeTag = ATypeTag.BINARY;
+        } else if (logicalType instanceof IntervalLogicalTypeAnnotation) {
+            inferredTypeTag = ATypeTag.DURATION;
         } else if (logicalType == LogicalTypeAnnotation.stringType()
                 || logicalType == LogicalTypeAnnotation.enumType()) {
             inferredTypeTag = ATypeTag.STRING;
@@ -315,7 +323,7 @@ public class AsterixTypeToParquetTypeVisitor implements IATypeVisitor<Type, Type
             SourceLocation sourceLocation, boolean adjustedToUTC) {
         if (adjustedToUTC && context.getTimeZoneId().isEmpty()) {
             Warning warning = Warning.of(sourceLocation, ErrorCode.PARQUET_TIME_ZONE_ID_IS_NOT_SET, ATypeTag.DATETIME,
-                    ParquetOptions.TIMEZONE);
+                    ExternalDataConstants.KEY_TIMEZONE);
             context.getWarnings().add(warning);
         }
     }

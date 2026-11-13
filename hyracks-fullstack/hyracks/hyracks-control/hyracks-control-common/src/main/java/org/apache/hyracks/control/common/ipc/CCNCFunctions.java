@@ -54,6 +54,7 @@ import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.job.DeployedJobSpecId;
 import org.apache.hyracks.api.job.JobFlag;
 import org.apache.hyracks.api.job.JobId;
+import org.apache.hyracks.api.job.JobKind;
 import org.apache.hyracks.api.job.JobStatus;
 import org.apache.hyracks.api.partitions.PartitionId;
 import org.apache.hyracks.api.result.IResultMetadata;
@@ -93,6 +94,7 @@ public class CCNCFunctions {
         REGISTER_PARTITION_REQUEST,
         REGISTER_RESULT_PARTITION_LOCATION,
         REPORT_RESULT_PARTITION_WRITE_COMPLETION,
+        REPORT_RESULT_PARTITION_CONSUMED,
 
         NODE_REGISTRATION_RESULT,
         START_TASKS,
@@ -608,8 +610,10 @@ public class CCNCFunctions {
 
         private NetworkAddress networkAddress;
 
+        private String nodeId;
+
         public RegisterResultPartitionLocationFunction(JobId jobId, ResultSetId rsId, IResultMetadata metadata,
-                boolean emptyResult, int partition, int nPartitions, NetworkAddress networkAddress) {
+                boolean emptyResult, int partition, int nPartitions, NetworkAddress networkAddress, String nodeId) {
             this.jobId = jobId;
             this.rsId = rsId;
             this.metadata = metadata;
@@ -617,6 +621,7 @@ public class CCNCFunctions {
             this.partition = partition;
             this.nPartitions = nPartitions;
             this.networkAddress = networkAddress;
+            this.nodeId = nodeId;
         }
 
         @Override
@@ -651,6 +656,10 @@ public class CCNCFunctions {
         public NetworkAddress getNetworkAddress() {
             return networkAddress;
         }
+
+        public String getNodeId() {
+            return nodeId;
+        }
     }
 
     public static class ReportResultPartitionWriteCompletionFunction extends Function {
@@ -662,7 +671,48 @@ public class CCNCFunctions {
 
         private final int partition;
 
-        public ReportResultPartitionWriteCompletionFunction(JobId jobId, ResultSetId rsId, int partition) {
+        private final long resultCount;
+
+        public ReportResultPartitionWriteCompletionFunction(JobId jobId, ResultSetId rsId, int partition,
+                long resultCount) {
+            this.jobId = jobId;
+            this.rsId = rsId;
+            this.partition = partition;
+            this.resultCount = resultCount;
+        }
+
+        @Override
+        public FunctionId getFunctionId() {
+            return FunctionId.REPORT_RESULT_PARTITION_WRITE_COMPLETION;
+        }
+
+        public JobId getJobId() {
+            return jobId;
+        }
+
+        public ResultSetId getResultSetId() {
+            return rsId;
+        }
+
+        public int getPartition() {
+            return partition;
+        }
+
+        public long getResultCount() {
+            return resultCount;
+        }
+    }
+
+    public static class ReportResultPartitionConsumedFunction extends Function {
+        private static final long serialVersionUID = 1L;
+
+        private final JobId jobId;
+
+        private final ResultSetId rsId;
+
+        private final int partition;
+
+        public ReportResultPartitionConsumedFunction(JobId jobId, ResultSetId rsId, int partition) {
             this.jobId = jobId;
             this.rsId = rsId;
             this.partition = partition;
@@ -670,7 +720,7 @@ public class CCNCFunctions {
 
         @Override
         public FunctionId getFunctionId() {
-            return FunctionId.REPORT_RESULT_PARTITION_WRITE_COMPLETION;
+            return FunctionId.REPORT_RESULT_PARTITION_CONSUMED;
         }
 
         public JobId getJobId() {
@@ -787,6 +837,9 @@ public class CCNCFunctions {
     public static class StartTasksFunction extends Function {
         private static final long serialVersionUID = 2L;
 
+        /** Sentinel value written when {@code jobKind} is {@code null}. */
+        private static final byte JOB_KIND_NULL = -1;
+
         private final DeploymentId deploymentId;
         private final JobId jobId;
         private final byte[] planBytes;
@@ -797,12 +850,13 @@ public class CCNCFunctions {
         private final DeployedJobSpecId deployedJobSpecId;
         private final long jobStartTime;
         private final String jobStartTimeZoneId;
+        private final JobKind jobKind;
 
         public StartTasksFunction(DeploymentId deploymentId, JobId jobId, byte[] planBytes,
                 List<TaskAttemptDescriptor> taskDescriptors,
                 Map<ConnectorDescriptorId, IConnectorPolicy> connectorPolicies, Set<JobFlag> flags,
                 Map<byte[], byte[]> jobParameters, DeployedJobSpecId deployedJobSpecId, long jobStartTime,
-                String jobStartTimeZoneId) {
+                String jobStartTimeZoneId, JobKind jobKind) {
             this.deploymentId = deploymentId;
             this.jobId = jobId;
             this.planBytes = planBytes;
@@ -813,6 +867,7 @@ public class CCNCFunctions {
             this.deployedJobSpecId = deployedJobSpecId;
             this.jobStartTime = jobStartTime;
             this.jobStartTimeZoneId = jobStartTimeZoneId;
+            this.jobKind = jobKind;
         }
 
         @Override
@@ -858,6 +913,10 @@ public class CCNCFunctions {
 
         public String getJobStartTimeZoneId() {
             return jobStartTimeZoneId;
+        }
+
+        public JobKind getJobKind() {
+            return jobKind;
         }
 
         public static Object deserialize(ByteBuffer buffer, int length) throws Exception {
@@ -932,8 +991,12 @@ public class CCNCFunctions {
             long jobStartTime = dis.readLong();
             String jobStartTimeZoneId = dis.readUTF();
 
+            // read JobKind
+            int jobKindOrdinal = dis.readByte();
+            JobKind jobKind = jobKindOrdinal == JOB_KIND_NULL ? null : JobKind.values()[jobKindOrdinal];
+
             return new StartTasksFunction(deploymentId, jobId, planBytes, taskDescriptors, connectorPolicies, flags,
-                    jobParameters, deployedJobSpecId, jobStartTime, jobStartTimeZoneId);
+                    jobParameters, deployedJobSpecId, jobStartTime, jobStartTimeZoneId, jobKind);
         }
 
         public static void serialize(OutputStream out, Object object) throws Exception {
@@ -942,7 +1005,7 @@ public class CCNCFunctions {
 
             //write jobId and deploymentId
             fn.jobId.writeFields(dos);
-            dos.writeBoolean(fn.deploymentId == null ? false : true);
+            dos.writeBoolean(fn.deploymentId != null);
             if (fn.deploymentId != null) {
                 fn.deploymentId.writeFields(dos);
             }
@@ -993,6 +1056,8 @@ public class CCNCFunctions {
             //write job start timezone
             dos.writeUTF(fn.jobStartTimeZoneId);
 
+            // write JobKind
+            dos.writeByte(fn.jobKind == null ? JOB_KIND_NULL : fn.jobKind.ordinal());
         }
     }
 

@@ -23,7 +23,7 @@ import java.util.Collection;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.FileReference;
 
-public interface IParallelDownloader {
+public interface IParallelDownloader extends AutoCloseable {
 
     /**
      * Downloads files in all partitions
@@ -38,7 +38,7 @@ public interface IParallelDownloader {
      * @param toDownload all files to be downloaded
      * @return file that failed to download
      */
-    Collection<FileReference> downloadDirectories(Collection<FileReference> toDownload) throws HyracksDataException;
+    void downloadDirectoriesWithRetry(Collection<FileReference> toDownload) throws HyracksDataException;
 
     /**
      * Close the downloader and release all of its resources

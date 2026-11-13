@@ -50,7 +50,6 @@ import org.apache.hyracks.algebricks.core.algebra.base.LogicalOperatorTag;
 import org.apache.hyracks.algebricks.core.algebra.expressions.AbstractFunctionCallExpression;
 import org.apache.hyracks.algebricks.core.algebra.expressions.ScalarFunctionCallExpression;
 import org.apache.hyracks.algebricks.core.algebra.functions.AlgebricksBuiltinFunctions;
-import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
 import org.apache.hyracks.algebricks.core.algebra.functions.IFunctionInfo;
 
 /**
@@ -62,7 +61,7 @@ public class ColumnFilterPushdownProcessor extends AbstractFilterPushdownProcess
     protected final ExpressionToExpectedSchemaNodeVisitor exprToNodeVisitor;
     protected final ColumnFilterPathBuilderVisitor pathBuilderVisitor;
     protected final Map<ILogicalExpression, ARecordType> paths;
-    private final ArrayPathCheckerVisitor checkerVisitor;
+    protected final ArrayPathCheckerVisitor checkerVisitor;
 
     public ColumnFilterPushdownProcessor(PushdownContext pushdownContext, IOptimizationContext context) {
         super(pushdownContext, context);
@@ -97,17 +96,16 @@ public class ColumnFilterPushdownProcessor extends AbstractFilterPushdownProcess
         ILogicalOperator useOp = useDescriptor.getOperator();
         ILogicalOperator scanOp = scanDescriptor.getOperator();
         exprToNodeVisitor.setTypeEnv(PushdownUtil.getTypeEnv(useOp, scanOp, context));
-        paths.clear();
     }
 
     @Override
     protected boolean isNotPushable(AbstractFunctionCallExpression expression) {
-        FunctionIdentifier fid = expression.getFunctionIdentifier();
         return isProhibitedFilterFunction(expression);
     }
 
     @Override
-    protected boolean handleCompare(AbstractFunctionCallExpression expression, int depth) throws AlgebricksException {
+    protected FilterBranch handleCompare(AbstractFunctionCallExpression expression, int depth,
+            UseDescriptor currentDescriptor) throws AlgebricksException {
         List<Mutable<ILogicalExpression>> args = expression.getArguments();
 
         Mutable<ILogicalExpression> leftRef = args.get(0);
@@ -116,22 +114,57 @@ public class ColumnFilterPushdownProcessor extends AbstractFilterPushdownProcess
         ILogicalExpression left = leftRef.getValue();
         ILogicalExpression right = rightRef.getValue();
 
-        return pushdownFilterExpression(left, depth + 1) && pushdownFilterExpression(right, depth + 1);
+        //If the left or right is handlePath (like getField), then the right or left shouldn't be an array
+        FilterBranch leftBranch = pushdownFilterExpression(left, currentDescriptor, depth + 1);
+        FilterBranch rightBranch = pushdownFilterExpression(right, currentDescriptor, depth + 1);
+
+        FilterBranch result = FilterBranch.andOutput(leftBranch, rightBranch, FilterBranch.COMPARE);
+        if (result == FilterBranch.NA) {
+            //If the result is NA, then we cannot push down the filter
+            return FilterBranch.NA;
+        }
+
+        boolean pushdown = true;
+        //If the value is a filterPath, means it is coming from the expression tree.
+        if (leftBranch == FilterBranch.FILTER_PATH && rightBranch == FilterBranch.FILTER_PATH) {
+            return FilterBranch.COMPARE;
+        } else if (leftBranch == FilterBranch.FILTER_PATH) {
+            // if the expression return type is an array or any, we cannot push it down
+            pushdown = !expressionReturnsArray(right, currentDescriptor.getOperator());
+        } else if (rightBranch == FilterBranch.FILTER_PATH) {
+            pushdown = !expressionReturnsArray(left, currentDescriptor.getOperator());
+        }
+
+        return pushdown ? result : FilterBranch.NA;
     }
 
     @Override
-    protected boolean handlePath(AbstractFunctionCallExpression expression) throws AlgebricksException {
-        IExpectedSchemaNode node = expression.accept(exprToNodeVisitor, null);
-        if (node == null || node.getType() != ExpectedSchemaNodeType.ANY) {
-            return false;
+    protected FilterBranch handlePath(AbstractFunctionCallExpression expression, IExpectedSchemaNode node)
+            throws AlgebricksException {
+        if (node.getType() != ExpectedSchemaNodeType.ANY) {
+            return FilterBranch.NA;
         }
         paths.put(expression, pathBuilderVisitor.buildPath((AnyExpectedSchemaNode) node));
-        return true;
+        return FilterBranch.FILTER_PATH;
+    }
+
+    @Override
+    protected boolean pushdownFilter(ScanDefineDescriptor scanDescriptor) throws AlgebricksException {
+        paths.clear();
+        checkerVisitor.beforeVisit();
+        return super.pushdownFilter(scanDescriptor);
     }
 
     @Override
     protected void putFilterInformation(ScanDefineDescriptor scanDefineDescriptor, ILogicalExpression inlinedExpr)
             throws AlgebricksException {
+        if (checkerVisitor.containsMultipleArrayPaths(paths.values())) {
+            // Cannot pushdown a filter with multiple unnest
+            // TODO allow rewindable column readers for filters
+            // TODO this is a bit conservative (maybe too conservative) as we can push part of expression down
+            return;
+        }
+
         ILogicalExpression filterExpr = scanDefineDescriptor.getFilterExpression();
         if (filterExpr != null) {
             filterExpr = andExpression(filterExpr, inlinedExpr);
@@ -140,14 +173,12 @@ public class ColumnFilterPushdownProcessor extends AbstractFilterPushdownProcess
             scanDefineDescriptor.setFilterExpression(inlinedExpr);
         }
 
-        if (checkerVisitor.containsMultipleArrayPaths(paths.values())) {
-            // Cannot pushdown a filter with multiple unnest
-            // TODO allow rewindable column readers for filters
-            // TODO this is a bit conservative (maybe too conservative) as we can push part of expression down
-            return;
-        }
-
         scanDefineDescriptor.getFilterPaths().putAll(paths);
+    }
+
+    @Override
+    protected IExpectedSchemaNode getPathNode(AbstractFunctionCallExpression expression) throws AlgebricksException {
+        return expression.accept(exprToNodeVisitor, null);
     }
 
     protected final AbstractFunctionCallExpression andExpression(ILogicalExpression filterExpr,

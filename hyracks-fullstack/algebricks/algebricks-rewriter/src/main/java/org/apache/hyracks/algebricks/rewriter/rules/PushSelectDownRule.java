@@ -36,12 +36,7 @@ import org.apache.hyracks.algebricks.core.rewriter.base.IAlgebraicRewriteRule;
 public class PushSelectDownRule implements IAlgebraicRewriteRule {
 
     @Override
-    public boolean rewritePost(Mutable<ILogicalOperator> opRef, IOptimizationContext context) {
-        return false;
-    }
-
-    @Override
-    public boolean rewritePre(Mutable<ILogicalOperator> opRef, IOptimizationContext context)
+    public boolean rewritePost(Mutable<ILogicalOperator> opRef, IOptimizationContext context)
             throws AlgebricksException {
         AbstractLogicalOperator op = (AbstractLogicalOperator) opRef.getValue();
         if (op.getOperatorTag() != LogicalOperatorTag.SELECT || !OperatorPropertiesUtil.isMovable(op)) {
@@ -73,11 +68,23 @@ public class PushSelectDownRule implements IAlgebraicRewriteRule {
         }
     }
 
+    @Override
+    public boolean rewritePre(Mutable<ILogicalOperator> opRef, IOptimizationContext context)
+            throws AlgebricksException {
+        return false;
+    }
+
     private static boolean propagateSelectionRec(Mutable<ILogicalOperator> sigmaRef, Mutable<ILogicalOperator> opRef2)
             throws AlgebricksException {
         AbstractLogicalOperator op2 = (AbstractLogicalOperator) opRef2.getValue();
         if (op2.getInputs().size() != 1 || op2.getOperatorTag() == LogicalOperatorTag.DATASOURCESCAN
                 || !OperatorPropertiesUtil.isMovable(op2)) {
+            return false;
+        }
+        // A LIMIT cuts rows by count and position. A filter above it keeps some of the rows the cut let
+        // through; the same filter below it changes which rows the cut is taken from. Those are different
+        // queries, so a SELECT is never moved through a LIMIT, however unrelated its variables.
+        if (op2.getOperatorTag() == LogicalOperatorTag.LIMIT) {
             return false;
         }
 

@@ -15,23 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import pickle
-import sklearn
-import sys
 import os
-import ctypes
+
+
 class TweetSent(object):
-
-    def __init__(self):
-        pickle_path = os.path.join(os.path.dirname(__file__), 'sentiment_pipeline3')
-        f = open(pickle_path,'rb')
-        self.pipeline = pickle.load(f)
-        f.close()
-
-    def sentiment(self, args):
-        if args is None:
-            return 2
-        return self.pipeline.predict([args])[0].item()
 
     def crash(self):
         os._exit(1)

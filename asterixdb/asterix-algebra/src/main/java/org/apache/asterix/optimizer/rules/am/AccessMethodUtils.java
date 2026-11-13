@@ -75,8 +75,8 @@ import org.apache.asterix.runtime.runningaggregates.std.WinMarkFirstMissingRunni
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableInt;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Quadruple;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
@@ -121,8 +121,7 @@ public class AccessMethodUtils {
     // Output variable type from a secondary unnest-map
     enum SecondaryUnnestMapOutputVarType {
         PRIMARY_KEY,
-        SECONDARY_KEY,
-        CONDITIONAL_SPLIT_VAR
+        SECONDARY_KEY
     }
 
     public final static ImmutableSet<FunctionIdentifier> CAST_NULL_TYPE_CONSTRUCTORS = ImmutableSet.of(
@@ -152,7 +151,7 @@ public class AccessMethodUtils {
         INDEX_USE_ON_FUNCTION_CALL_WHITELIST.put(BuiltinFunctions.RECORD_CONCAT, ALL_INDEX_FUNCTION_ARGUMENTS);
     }
 
-    private final static Pair<List<String>, Integer> NO_FIELD_NAME = new Pair<>(Collections.emptyList(), 0);
+    private final static Pair<List<String>, Integer> NO_FIELD_NAME = Pair.of(Collections.emptyList(), 0);
 
     public static void appendPrimaryIndexTypes(Dataset dataset, IAType itemType, IAType metaItemType,
             List<Object> target) throws AlgebricksException {
@@ -259,8 +258,8 @@ public class AccessMethodUtils {
                 if (varConstType == null) {
                     return false;
                 }
-                fieldVar = varConstType.first;
-                constantExpressionType = varConstType.second;
+                fieldVar = varConstType.getLeft();
+                constantExpressionType = varConstType.getRight();
                 constExpression = arg2;
                 varIndex = 0;
             } else if (acceptExpressionArg(arg2, context, typeEnvironment)) {
@@ -270,8 +269,8 @@ public class AccessMethodUtils {
                 if (varConstType == null) {
                     return false;
                 }
-                fieldVar = varConstType.first;
-                constantExpressionType = varConstType.second;
+                fieldVar = varConstType.getLeft();
+                constantExpressionType = varConstType.getRight();
                 constExpression = arg1;
                 varIndex = 1;
             } else {
@@ -320,7 +319,7 @@ public class AccessMethodUtils {
         AbstractFunctionCallExpression funExpr = (AbstractFunctionCallExpression) exprWithVar;
         LogicalVariable varFromExpr =
                 ((VariableReferenceExpression) funExpr.getArguments().get(0).getValue()).getVariableReference();
-        return new Pair<>(varFromExpr, constExprType);
+        return Pair.of(varFromExpr, constExprType);
     }
 
     private static void constructNewOptFuncExprAndAddToAnalysisCtx(AbstractFunctionCallExpression funcExpr,
@@ -430,9 +429,10 @@ public class AccessMethodUtils {
      * Appends the types of the fields produced by the given secondary index to dest.
      */
     public static void appendSecondaryIndexTypes(Dataset dataset, ARecordType recordType, ARecordType metaRecordType,
-            Index index, List<Object> dest, boolean requireResultOfInstantTryLock) throws AlgebricksException {
-        // In case of an inverted-index search, secondary keys will not be generated.
-        boolean primaryKeysOnly = isInvertedIndex(index);
+            Index index, List<Object> dest) throws AlgebricksException {
+        // In case of an inverted-index or vector-index search, secondary keys will not be generated.
+        // For vector indexes, this avoids transferring large embeddings when only PKs are needed.
+        boolean primaryKeysOnly = isInvertedIndex(index) || index.getIndexType() == IndexType.VTREE;
         if (!primaryKeysOnly) {
             switch (index.getIndexType()) {
                 case ARRAY:
@@ -443,15 +443,18 @@ public class AccessMethodUtils {
                             KeyFieldTypeUtil.getBTreeIndexKeyTypes(index, recordType, metaRecordType);
                     boolean overridingKeyFieldTypes = index.getIndexDetails().isOverridingKeyFieldTypes();
                     for (int i = 0; i < bTreeIndexKeyTypes.size(); i++) {
-                        if (bTreeIndexKeyTypes.get(i).second || overridingKeyFieldTypes) {
-                            dest.add(AUnionType.createUnknownableType(bTreeIndexKeyTypes.get(i).first));
+                        if (bTreeIndexKeyTypes.get(i).getRight() || overridingKeyFieldTypes) {
+                            dest.add(AUnionType.createUnknownableType(bTreeIndexKeyTypes.get(i).getLeft()));
                         } else {
-                            dest.add(bTreeIndexKeyTypes.get(i).first);
+                            dest.add(bTreeIndexKeyTypes.get(i).getLeft());
                         }
                     }
                     break;
                 case RTREE:
                     dest.addAll(KeyFieldTypeUtil.getRTreeIndexKeyTypes(index, recordType, metaRecordType));
+                    break;
+                case VTREE:
+                    dest.addAll(KeyFieldTypeUtil.getVectorIndexKeyTypes(index, recordType, metaRecordType));
                     break;
                 default:
                     break;
@@ -465,23 +468,19 @@ public class AccessMethodUtils {
             dest.addAll(KeyFieldTypeUtil.getPartitoningKeyTypes(dataset, recordType, metaRecordType));
         }
 
-        // Adds one more type to apply an index-only plan optimization.
-        // Currently, we use AINT32 to decode result values for this.
-        // Refer to appendSecondaryIndexOutputVars() for more details.
-        if (requireResultOfInstantTryLock) {
-            dest.add(BuiltinType.AINT32);
-        }
-
     }
 
     /**
      * Creates output variables for the given unnest-map or left-outer-unnestmap operator
      * that does a secondary index lookup.
-     * The order: SK, PK, [Optional: the result of a instantTryLock on PK]
+     * The order:
+     *   - For most indexes: SK, PK
+     *   - For inverted/vector indexes: PK
+     * Vector and inverted indexes skip SK output to avoid materializing unnecessary data.
      */
     public static void appendSecondaryIndexOutputVars(Dataset dataset, ARecordType recordType,
-            ARecordType metaRecordType, Index index, IOptimizationContext context, List<LogicalVariable> dest,
-            boolean requireResultOfInstantTryLock) throws AlgebricksException {
+            ARecordType metaRecordType, Index index, IOptimizationContext context, List<LogicalVariable> dest)
+            throws AlgebricksException {
         int numPrimaryKeys;
         if (dataset.getDatasetType() == DatasetType.EXTERNAL) {
             numPrimaryKeys = IndexingConstants
@@ -490,16 +489,10 @@ public class AccessMethodUtils {
             numPrimaryKeys = dataset.getPrimaryKeys().size();
         }
         int numSecondaryKeys = KeyFieldTypeUtil.getNumSecondaryKeys(index, recordType, metaRecordType);
-        // In case of an inverted-index search, secondary keys will not be generated.
-        int numVars = isInvertedIndex(index) ? numPrimaryKeys : numPrimaryKeys + numSecondaryKeys;
-
-        // If it's an index-only plan, add one more variable to put the result of instantTryLock on PK -
-        // whether this lock can be granted on a primary key.
-        // If it is granted, then we don't need to do a post verification (select).
-        // If it is not granted, then we need to do a secondary index lookup, do a primary index lookup, and select.
-        if (requireResultOfInstantTryLock) {
-            numVars += 1;
-        }
+        // In case of an inverted-index or vector-index search, secondary keys will not be generated.
+        // For vector indexes, this is a significant optimization since embeddings are very large (1024+ floats).
+        boolean skipSecondaryKeys = isInvertedIndex(index) || index.getIndexType() == IndexType.VTREE;
+        int numVars = skipSecondaryKeys ? numPrimaryKeys : numPrimaryKeys + numSecondaryKeys;
 
         for (int i = 0; i < numVars; i++) {
             dest.add(context.newVar());
@@ -509,7 +502,9 @@ public class AccessMethodUtils {
     /**
      * Gets the primary key variables from the unnest-map or left-outer-unnest-map operator
      * that does a secondary index lookup.
-     * The order: SK, PK, [Optional: the result of a TryLock on PK]
+     * The order:
+     *   - For most indexes: SK, PK
+     *   - For inverted/vector indexes: PK
      */
     public static List<LogicalVariable> getKeyVarsFromSecondaryUnnestMap(Dataset dataset, ARecordType recordType,
             ARecordType metaRecordType, ILogicalOperator unnestMapOp, Index index,
@@ -530,13 +525,13 @@ public class AccessMethodUtils {
         int stop;
 
         // If a secondary-index search didn't generate SKs, set it to zero.
-        // Currently, only an inverted-index search doesn't generate any SKs.
-        boolean isNgramOrKeywordIndex = isInvertedIndex(index);
-        if (isNgramOrKeywordIndex) {
+        // Currently, inverted-index and vector-index searches don't generate any SKs.
+        boolean skipSecondaryKeys = isInvertedIndex(index) || index.getIndexType() == IndexType.VTREE;
+        if (skipSecondaryKeys) {
             numSecondaryKeys = 0;
         }
 
-        // Fetches keys: type 0 - PK, type 1 - SK, type 2 - the result of instantTryLock() on PK
+        // Fetches keys: type 0 - PK, type 1 - SK
         switch (keyVarType) {
             case PRIMARY_KEY:
                 // Fetches primary keys - the second position
@@ -547,16 +542,6 @@ public class AccessMethodUtils {
                 // Fetches secondary keys - the first position
                 start = 0;
                 stop = numSecondaryKeys;
-                break;
-            case CONDITIONAL_SPLIT_VAR:
-                // Sanity check - the given unnest map should generate this variable.
-                if (!abstractUnnestMapOp.getGenerateCallBackProceedResultVar()) {
-                    throw CompilationException.create(ErrorCode.CANNOT_GET_CONDITIONAL_SPLIT_KEY_VARIABLE,
-                            unnestMapOp.getSourceLocation());
-                }
-                // Fetches conditional splitter - the last position
-                start = numSecondaryKeys + numPrimaryKeys;
-                stop = start + 1;
                 break;
             default:
                 return Collections.emptyList();
@@ -605,7 +590,7 @@ public class AccessMethodUtils {
 
     /**
      * Returns the search key expression which feeds a secondary-index search. If we are optimizing a selection query
-     * then this method returns the a ConstantExpression from the first constant value in the optimizable function
+     * then this method returns a ConstantExpression from the first constant value in the optimizable function
      * expression.
      * If we are optimizing a join, then this method returns the VariableReferenceExpression that should feed the
      * secondary index probe.
@@ -615,6 +600,17 @@ public class AccessMethodUtils {
     public static Triple<ILogicalExpression, ILogicalExpression, Boolean> createSearchKeyExpr(Index index,
             IOptimizableFuncExpr optFuncExpr, IAType indexedFieldType, OptimizableOperatorSubTree probeSubTree,
             SearchKeyRoundingFunctionProvider roundingFunctionProvider) throws AlgebricksException {
+        return createSearchKeyExpr(index, optFuncExpr, 0, indexedFieldType, probeSubTree, roundingFunctionProvider);
+    }
+
+    /**
+     * As {@link #createSearchKeyExpr(Index, IOptimizableFuncExpr, IAType, OptimizableOperatorSubTree,
+     * SearchKeyRoundingFunctionProvider)}, but from the given constant of the optimizable function expression.
+     */
+    public static Triple<ILogicalExpression, ILogicalExpression, Boolean> createSearchKeyExpr(Index index,
+            IOptimizableFuncExpr optFuncExpr, int constantIndex, IAType indexedFieldType,
+            OptimizableOperatorSubTree probeSubTree, SearchKeyRoundingFunctionProvider roundingFunctionProvider)
+            throws AlgebricksException {
         SourceLocation sourceLoc = optFuncExpr.getFuncExpr().getSourceLocation();
         if (probeSubTree == null) {
             // We are optimizing a selection query. Search key is a constant.
@@ -629,13 +625,13 @@ public class AccessMethodUtils {
                 return new Triple<>(varRef, null, false);
             }
 
-            ILogicalExpression constantAtRuntimeExpression = optFuncExpr.getConstantExpr(0);
+            ILogicalExpression constantAtRuntimeExpression = optFuncExpr.getConstantExpr(constantIndex);
             AsterixConstantValue constantValue = null;
             if (constantAtRuntimeExpression.getExpressionTag() == LogicalExpressionTag.CONSTANT) {
                 constantValue = (AsterixConstantValue) ((ConstantExpression) constantAtRuntimeExpression).getValue();
             }
 
-            ATypeTag constantValueTag = optFuncExpr.getConstantType(0).getTypeTag();
+            ATypeTag constantValueTag = optFuncExpr.getConstantType(constantIndex).getTypeTag();
             ATypeTag indexedFieldTypeTag = TypeComputeUtils.getActualType(indexedFieldType).getTypeTag();
 
             // type casting happened from real (FLOAT, DOUBLE) value -> INT value?
@@ -735,6 +731,9 @@ public class AccessMethodUtils {
             // We are optimizing a join query. Determine which variable feeds the secondary index.
             OptimizableOperatorSubTree opSubTree0 = optFuncExpr.getOperatorSubTree(0);
             int probeVarIndex = opSubTree0 == null || opSubTree0 == probeSubTree ? 0 : 1;
+            if (probeVarIndex >= optFuncExpr.getNumLogicalVars()) {
+                return null;
+            }
             LogicalVariable probeVar = optFuncExpr.getLogicalVar(probeVarIndex);
             VariableReferenceExpression probeExpr = new VariableReferenceExpression(probeVar);
             probeExpr.setSourceLocation(sourceLoc);
@@ -798,13 +797,13 @@ public class AccessMethodUtils {
     public static IOptimizableFuncExpr chooseFirstOptFuncExpr(Index chosenIndex,
             AccessMethodAnalysisContext analysisCtx) {
         List<Pair<Integer, Integer>> indexExprs = analysisCtx.getIndexExprsFromIndexExprsAndVars(chosenIndex);
-        int firstExprIndex = indexExprs.get(0).first;
+        int firstExprIndex = indexExprs.get(0).getLeft();
         return analysisCtx.getMatchedFuncExpr(firstExprIndex);
     }
 
     public static int chooseFirstOptFuncVar(Index chosenIndex, AccessMethodAnalysisContext analysisCtx) {
         List<Pair<Integer, Integer>> indexExprs = analysisCtx.getIndexExprsFromIndexExprsAndVars(chosenIndex);
-        return indexExprs.get(0).second;
+        return indexExprs.get(0).getRight();
     }
 
     /**
@@ -815,7 +814,7 @@ public class AccessMethodUtils {
             Mutable<ILogicalOperator> joinRef, OptimizableOperatorSubTree probeSubTree,
             OptimizableOperatorSubTree indexSubTree, Index chosenIndex, AccessMethodAnalysisContext analysisCtx,
             IOptimizationContext context, AbstractFunctionCallExpression funcExpr,
-            List<Pair<FunctionIdentifier, Boolean>> funcIdentifiers) throws AlgebricksException {
+            List<Pair<FunctionIdentifier, Boolean>> funcIdentifiers, boolean isJoin) throws AlgebricksException {
         // index-only plan possible?
         boolean isIndexOnlyPlan = false;
 
@@ -830,8 +829,8 @@ public class AccessMethodUtils {
         Pair<Boolean, Boolean> functionFalsePositiveCheck =
                 AccessMethodUtils.canFunctionGenerateFalsePositiveResultsUsingIndex(funcExpr, funcIdentifiers);
 
-        if (functionFalsePositiveCheck.first) {
-            requireVerificationAfterSIdxSearch = functionFalsePositiveCheck.second;
+        if (functionFalsePositiveCheck.getLeft()) {
+            requireVerificationAfterSIdxSearch = functionFalsePositiveCheck.getRight();
         } else {
             // Function not found?
             return false;
@@ -842,7 +841,7 @@ public class AccessMethodUtils {
 
         if (analysisCtx.getIndexDatasetMap().get(chosenIndex).getDatasetType() == DatasetType.INTERNAL) {
             AccessMethodUtils.indexOnlyPlanCheck(afterJoinRefs, joinRef, indexSubTree, probeSubTree, chosenIndex,
-                    analysisCtx, context, indexOnlyPlanInfo);
+                    analysisCtx, context, indexOnlyPlanInfo, isJoin);
         } else {
             // We don't consider an index on an external dataset to be an index-only plan.
             isIndexOnlyPlan = false;
@@ -869,21 +868,9 @@ public class AccessMethodUtils {
         ILogicalOperator finalIndexSearchOp = indexSearchOp;
         if (isLeftOuterJoin) {
             if (isLeftOuterJoinWithSpecialGroupBy) {
-                ScalarFunctionCallExpression lojFuncExprs = analysisCtx.getLOJIsMissingNullFuncInSpecialGroupBy();
-                List<LogicalVariable> lojMissingNullVariables = new ArrayList<>();
-                lojFuncExprs.getUsedVariables(lojMissingNullVariables);
-                boolean lojMissingNullVarExist = !lojMissingNullVariables.isEmpty();
-
                 // Resets the missing place holder variable.
                 AccessMethodUtils.resetLOJMissingNullPlaceholderVarInGroupByOp(analysisCtx,
                         newMissingNullPlaceHolderVar, context);
-
-                // For the index-only plan, if newMissingNullPlaceHolderVar is not in the variable map of the union operator
-                // or if the variable is removed during the above method, we need to refresh the variable mapping in UNION.
-                if (isIndexOnlyPlan) {
-                    finalIndexSearchOp = AccessMethodUtils.resetVariableMappingInUnionOpInIndexOnlyPlan(
-                            lojMissingNullVarExist, lojMissingNullVariables, indexSearchOp, afterJoinRefs, context);
-                }
             } else {
                 // We'll need to remove unjoined duplicates after the left outer join if there is no special GroupBy,
                 // but in order to do that we need to know the keys of the probe branch.
@@ -919,20 +906,6 @@ public class AccessMethodUtils {
                     }
                     return false;
                 }
-                if (isIndexOnlyPlan) {
-                    // re-map probe branch keys after UnionAll introduced by the indexonly plan
-                    if (indexSearchOp.getOperatorTag() != LogicalOperatorTag.UNIONALL) {
-                        return false;
-                    }
-                    UnionAllOperator unionAllOp = (UnionAllOperator) indexSearchOp;
-                    for (int i = 0, ln = probePKVars.size(); i < ln; i++) {
-                        LogicalVariable unionAllOutputVar = findUnionAllOutputVariable(unionAllOp, probePKVars.get(i));
-                        if (unionAllOutputVar == null) {
-                            return false;
-                        }
-                        probePKVars.set(i, unionAllOutputVar);
-                    }
-                }
             }
         }
 
@@ -953,7 +926,6 @@ public class AccessMethodUtils {
                         || dataSourceRefOp.getOperatorTag() == LogicalOperatorTag.LEFT_OUTER_UNNEST_MAP)) {
                     indexSubTree.getDataSourceRef().setValue(dataSourceRefOp);
                 }
-                // Replaces the current operator with the newly created UNIONALL operator.
                 finalOp = finalIndexSearchOp;
             } else {
                 // Non-index only plan case
@@ -968,11 +940,7 @@ public class AccessMethodUtils {
                 finalOp = topSelectOp;
             }
         } else {
-            if (finalIndexSearchOp.getOperatorTag() == LogicalOperatorTag.UNIONALL) {
-                finalOp = finalIndexSearchOp;
-            } else {
-                finalOp = indexSubTree.getRootRef().getValue();
-            }
+            finalOp = indexSubTree.getRootRef().getValue();
         }
 
         if (isLeftOuterJoin && !isLeftOuterJoinWithSpecialGroupBy) {
@@ -1030,7 +998,7 @@ public class AccessMethodUtils {
         winOrderByVarRef.setSourceLocation(sourceLoc);
         /* Sort in DESC order, so all MISSING (or NULL) values are at the end */
         Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>> winOrderByPair =
-                new Pair<>(OrderOperator.DESC_ORDER, new MutableObject<>(winOrderByVarRef));
+                Pair.of(OrderOperator.DESC_ORDER, new MutableObject<>(winOrderByVarRef));
 
         LogicalVariable winVar = context.newVar();
         VariableReferenceExpression winOrderByVarRef2 = new VariableReferenceExpression(newNullPlaceHolderVar);
@@ -1062,8 +1030,7 @@ public class AccessMethodUtils {
     public static ILogicalOperator createSecondaryIndexUnnestMap(Dataset dataset, ARecordType recordType,
             ARecordType metaRecordType, Index index, ILogicalOperator inputOp, AccessMethodJobGenParams jobGenParams,
             IOptimizationContext context, boolean retainInput, boolean retainNull,
-            boolean generateInstantTrylockResultFromIndexSearch, IAlgebricksConstantValue leftOuterMissingValue)
-            throws AlgebricksException {
+            IAlgebricksConstantValue leftOuterMissingValue) throws AlgebricksException {
         SourceLocation sourceLoc = inputOp.getSourceLocation();
         // The job gen parameters are transferred to the actual job gen via the UnnestMapOperator's function arguments.
         ArrayList<Mutable<ILogicalExpression>> secondaryIndexFuncArgs = new ArrayList<>();
@@ -1072,11 +1039,8 @@ public class AccessMethodUtils {
         List<LogicalVariable> secondaryIndexUnnestVars = new ArrayList<>();
         List<Object> secondaryIndexOutputTypes = new ArrayList<>();
         // Append output variables/types generated by the secondary-index search (not forwarded from input).
-        // Output: SK, PK, [Optional: the result of instantTryLock]
-        appendSecondaryIndexOutputVars(dataset, recordType, metaRecordType, index, context, secondaryIndexUnnestVars,
-                generateInstantTrylockResultFromIndexSearch);
-        appendSecondaryIndexTypes(dataset, recordType, metaRecordType, index, secondaryIndexOutputTypes,
-                generateInstantTrylockResultFromIndexSearch);
+        appendSecondaryIndexOutputVars(dataset, recordType, metaRecordType, index, context, secondaryIndexUnnestVars);
+        appendSecondaryIndexTypes(dataset, recordType, metaRecordType, index, secondaryIndexOutputTypes);
         // An index search is expressed as an unnest over an index-search function.
         IFunctionInfo secondaryIndexSearch = FunctionUtil.getFunctionInfo(BuiltinFunctions.INDEX_SEARCH);
         UnnestingFunctionCallExpression secondaryIndexSearchFunc =
@@ -1095,8 +1059,6 @@ public class AccessMethodUtils {
                         secondaryIndexUnnestVars, new MutableObject<>(secondaryIndexSearchFunc),
                         secondaryIndexOutputTypes, leftOuterMissingValue);
                 secondaryIndexLeftOuterUnnestOp.setSourceLocation(sourceLoc);
-                secondaryIndexLeftOuterUnnestOp
-                        .setGenerateCallBackProceedResultVar(generateInstantTrylockResultFromIndexSearch);
                 secondaryIndexLeftOuterUnnestOp.getInputs().add(new MutableObject<>(inputOp));
                 context.computeAndSetTypeEnvironmentForOperator(secondaryIndexLeftOuterUnnestOp);
                 secondaryIndexLeftOuterUnnestOp.setExecutionMode(ExecutionMode.PARTITIONED);
@@ -1111,7 +1073,6 @@ public class AccessMethodUtils {
             UnnestMapOperator secondaryIndexUnnestOp = new UnnestMapOperator(secondaryIndexUnnestVars,
                     new MutableObject<>(secondaryIndexSearchFunc), secondaryIndexOutputTypes, retainInput);
             secondaryIndexUnnestOp.setSourceLocation(sourceLoc);
-            secondaryIndexUnnestOp.setGenerateCallBackProceedResultVar(generateInstantTrylockResultFromIndexSearch);
             secondaryIndexUnnestOp.getInputs().add(new MutableObject<>(inputOp));
             context.computeAndSetTypeEnvironmentForOperator(secondaryIndexUnnestOp);
             secondaryIndexUnnestOp.setExecutionMode(ExecutionMode.PARTITIONED);
@@ -1119,20 +1080,43 @@ public class AccessMethodUtils {
         }
     }
 
-    private static AbstractUnnestMapOperator createFinalNonIndexOnlySearchPlan(Dataset dataset,
-            ILogicalOperator inputOp, IOptimizationContext context, boolean sortPrimaryKeys, boolean retainInput,
-            boolean retainMissing, boolean requiresBroadcast, boolean requiresDistinct,
-            List<LogicalVariable> primaryKeyVars, List<LogicalVariable> primaryIndexUnnestVars,
-            List<LogicalVariable> auxDistinctVars, List<Object> primaryIndexOutputTypes,
-            IAlgebricksConstantValue leftOuterMissingValue) throws AlgebricksException {
-        SourceLocation sourceLoc = inputOp.getSourceLocation();
+    private static AbstractUnnestMapOperator createFinalNonIndexOnlySearchPlan(
+            List<Mutable<ILogicalOperator>> afterTopOpRefs, Dataset dataset, ILogicalOperator inputOp,
+            IOptimizationContext context, boolean sortPrimaryKeys, boolean retainInput, boolean retainMissing,
+            boolean requiresBroadcast, boolean requiresDistinct, List<LogicalVariable> primaryKeyVars,
+            List<LogicalVariable> primaryIndexUnnestVars, List<LogicalVariable> auxDistinctVars,
+            List<Object> primaryIndexOutputTypes, IAlgebricksConstantValue leftOuterMissingValue,
+            ARecordType recordType, ARecordType metaRecordType, OptimizableOperatorSubTree subTree,
+            Index secondaryIndex, Mutable<ILogicalOperator> topOpRef,
+            List<Mutable<ILogicalOperator>> assignsBeforeTopOpRef, Mutable<ILogicalExpression> conditionRef,
+            LogicalVariable newMissingPlaceHolderForLOJ,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions)
+            throws AlgebricksException {
 
+        SourceLocation sourceLoc = inputOp.getSourceLocation();
         // Sanity check: requiresDistinct and sortPrimaryKeys are mutually exclusive.
         if (requiresDistinct && sortPrimaryKeys) {
             throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE, sourceLoc,
                     "Non-index search plan " + "cannot include a DISTINCT and an ORDER.");
         }
+        ILogicalOperator op = null;
+        IndexType idxType = secondaryIndex.getIndexType();
 
+        // for now the additional selection is only added just for the value index.
+        if (Index.IndexCategory.of(idxType) == Index.IndexCategory.VALUE) {
+            Index.ValueIndexDetails secondaryIndexDetails = (Index.ValueIndexDetails) secondaryIndex.getIndexDetails();
+            List<List<String>> chosenIndexFieldNames = secondaryIndexDetails.getKeyFieldNames();
+            List<IAType> secodaryKeysType = secondaryIndexDetails.getKeyFieldTypes();
+            if (idxType == IndexType.BTREE && secodaryKeysType.contains(BuiltinType.ANY)) {
+                op = additionalSelectForHeterogeneousIndex(chosenIndexFieldNames, afterTopOpRefs, dataset, inputOp,
+                        context, retainMissing, leftOuterMissingValue, recordType, metaRecordType, subTree,
+                        secondaryIndex, topOpRef, assignsBeforeTopOpRef, conditionRef, newMissingPlaceHolderForLOJ,
+                        optimizableDisjunctionConditions);
+            }
+        }
+        if (op == null) {
+            op = inputOp;
+        }
         // If we have an array index, then we must only give unique keys to our primary-index scan.
         DistinctOperator distinct = null;
         if (requiresDistinct) {
@@ -1151,7 +1135,7 @@ public class AccessMethodUtils {
             }
             distinct = new DistinctOperator(distinctExprs);
             distinct.setSourceLocation(sourceLoc);
-            distinct.getInputs().add(new MutableObject<>(inputOp));
+            distinct.getInputs().add(new MutableObject<>(op));
             distinct.setExecutionMode(ExecutionMode.LOCAL);
             context.computeAndSetTypeEnvironmentForOperator(distinct);
         }
@@ -1167,10 +1151,10 @@ public class AccessMethodUtils {
                 VariableReferenceExpression pkVarRef = new VariableReferenceExpression(pkVar);
                 pkVarRef.setSourceLocation(sourceLoc);
                 Mutable<ILogicalExpression> vRef = new MutableObject<>(pkVarRef);
-                order.getOrderExpressions().add(new Pair<>(OrderOperator.ASC_ORDER, vRef));
+                order.getOrderExpressions().add(Pair.of(OrderOperator.ASC_ORDER, vRef));
             }
             // The secondary-index search feeds into the sort.
-            order.getInputs().add(new MutableObject<>(inputOp));
+            order.getInputs().add(new MutableObject<>(op));
             order.setExecutionMode(ExecutionMode.LOCAL);
             context.computeAndSetTypeEnvironmentForOperator(order);
         }
@@ -1286,7 +1270,7 @@ public class AccessMethodUtils {
         else if (sortPrimaryKeys && !context.getPhysicalOptimizationConfig().getInteractiveMode()) {
             primaryIndexUnnestMapOp.getInputs().add(new MutableObject<>(order));
         } else {
-            primaryIndexUnnestMapOp.getInputs().add(new MutableObject<>(inputOp));
+            primaryIndexUnnestMapOp.getInputs().add(new MutableObject<>(op));
         }
         context.computeAndSetTypeEnvironmentForOperator(primaryIndexUnnestMapOp);
         primaryIndexUnnestMapOp.setExecutionMode(ExecutionMode.PARTITIONED);
@@ -1301,7 +1285,8 @@ public class AccessMethodUtils {
             AccessMethodAnalysisContext analysisCtx, OptimizableOperatorSubTree subTree,
             LogicalVariable newMissingPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue,
             List<LogicalVariable> pkVarsFromSIdxUnnestMapOp, List<LogicalVariable> primaryIndexUnnestVars,
-            List<Object> primaryIndexOutputTypes, boolean anyRealTypeConvertedToIntegerType)
+            boolean anyRealTypeConvertedToIntegerType,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions)
             throws AlgebricksException {
         SourceLocation sourceLoc = inputOp.getSourceLocation();
         Quadruple<Boolean, Boolean, Boolean, Boolean> indexOnlyPlanInfo = analysisCtx.getIndexOnlyPlanInfo();
@@ -1313,19 +1298,7 @@ public class AccessMethodUtils {
         boolean skFieldUsedAfterTopOp = indexOnlyPlanInfo.getSecond();
         boolean requireVerificationAfterSIdxSearch = indexOnlyPlanInfo.getThird();
         ILogicalOperator assignBeforeTopOp;
-        UnionAllOperator unionAllOp;
-        SelectOperator newSelectOpInLeftPath;
-        SelectOperator newSelectOpInRightPath;
-        SplitOperator splitOp = null;
-        // This variable map will be used as input to UNIONALL operator. The form is <left, right, output>.
-        // In our case, left: instantTryLock fail path, right: instantTryLock success path
-        List<Triple<LogicalVariable, LogicalVariable, LogicalVariable>> unionVarMap = new ArrayList<>();
-        List<LogicalVariable> condSplitVars;
-        List<LogicalVariable> liveVarsAfterTopOp = new ArrayList<>();
-
-        // Constructs the variable mapping between newly constructed secondary
-        // key search (SK, PK) and those in the original plan (datasource scan).
-        LinkedHashMap<LogicalVariable, LogicalVariable> origVarToSIdxUnnestMapOpVarMap = new LinkedHashMap<>();
+        SelectOperator newSelectOp = null;
 
         Index.ValueIndexDetails secondaryIndexDetails = (Index.ValueIndexDetails) secondaryIndex.getIndexDetails();
         List<List<String>> chosenIndexFieldNames = secondaryIndexDetails.getKeyFieldNames();
@@ -1337,11 +1310,6 @@ public class AccessMethodUtils {
 
         // variables used in ASSIGN before SELECT operator
         List<LogicalVariable> producedVarsInAssignsBeforeTopOp = new ArrayList<>();
-
-        // For the index-nested-loop join case, we need to exclude the variables from the left (outer) branch
-        // when deciding which variables should be propagated via UNIONALL operator.
-        // This is because these variables are already generated and is not related to the decision
-        // whether the plan is an index-only plan or not. Only the right (inner) branch matters.
         List<LogicalVariable> liveVarsInSubTreeRootOp = new ArrayList<>();
 
         // variables used after SELECT or JOIN operator
@@ -1354,7 +1322,7 @@ public class AccessMethodUtils {
         // is on a rectangle or point.
         AssignOperator skVarAssignOpInRightPath = null;
         List<LogicalVariable> restoredSKVarFromRTree = null;
-        // Original SK field variable to restored SK field variable in the right path mapping
+        // Original SK field variable to restored SK field variable
         LinkedHashMap<LogicalVariable, LogicalVariable> origSKFieldVarToNewSKFieldVarMap = new LinkedHashMap<>();
         // Index-only plan consideration for the R-Tree index only:
         // Constructs an additional ASSIGN to restore the original secondary key field(s) from
@@ -1370,7 +1338,7 @@ public class AccessMethodUtils {
                 return null;
             }
             // Gets the number of dimensions corresponding to the field indexed by chosenIndex.
-            IAType spatialType = keyPairType.first;
+            IAType spatialType = keyPairType.getLeft();
             ArrayList<Mutable<ILogicalExpression>> restoredSKFromRTreeExprs = new ArrayList<>();
             restoredSKVarFromRTree = new ArrayList<>();
             switch (spatialType.getTypeTag()) {
@@ -1415,7 +1383,6 @@ public class AccessMethodUtils {
         copyVarsToAnotherList(usedVarsInTopOp, uniqueUsedVarsInTopOp);
 
         // If there are ASSIGN operators (usually secondary key field) before the given SELECT or JOIN operator,
-        // we may need to propagate these produced variables via the UNIONALL operator if they are used afterwards.
         if (assignsBeforeTopOpRef != null && !assignsBeforeTopOpRef.isEmpty()) {
             for (int i = 0; i < assignsBeforeTopOpRef.size(); i++) {
                 assignBeforeTopOp = assignsBeforeTopOpRef.get(i).getValue();
@@ -1429,9 +1396,7 @@ public class AccessMethodUtils {
         // This assign operator keeps any constant expression(s) extracted from the original ASSIGN operators
         // in the subtree and are used after the SELECT or JOIN operator. In usual case,
         // this constant value would be used in a group-by after a left-outer-join and will be removed by the optimizer.
-        // We need to conduct this since this variable does not have to be in the both branch of an index-only plan.
         AssignOperator constAssignOp = null;
-        ILogicalOperator currentOpAfterTopOp = null;
         List<LogicalVariable> constAssignVars = new ArrayList<>();
         List<Mutable<ILogicalExpression>> constAssignExprs = new ArrayList<>();
         ILogicalOperator currentOp = inputOp;
@@ -1470,8 +1435,6 @@ public class AccessMethodUtils {
                         break;
                     }
                 }
-                // If this assign operator is not used in the SELECT or JOIN operator,
-                // we will add this operator after creating UNION operator in the last part of this method.
                 constAssignOp = new AssignOperator(constAssignVars, constAssignExprs);
                 constAssignOp.setSourceLocation(sourceLoc);
                 if (constantAssignVarUsedInTopOp) {
@@ -1494,95 +1457,27 @@ public class AccessMethodUtils {
             }
         }
 
-        // Now, adds a SPLIT operator to propagate <SK, PK> pair from the secondary-index search to the two paths.
-        // And constructs the path from the secondary index search to the SPLIT operator.
-
-        // Fetches the conditional split variable from the secondary-index search
-        condSplitVars = AccessMethodUtils.getKeyVarsFromSecondaryUnnestMap(dataset, recordType, metaRecordType, inputOp,
-                secondaryIndex, SecondaryUnnestMapOutputVarType.CONDITIONAL_SPLIT_VAR);
-
-        // Adds a SPLIT operator after the given secondary index-search unnest-map operator.
-        splitOp = new SplitOperator(2,
-                new MutableObject<ILogicalExpression>(new VariableReferenceExpression(condSplitVars.get(0))));
-        splitOp.setSourceLocation(sourceLoc);
-        splitOp.getInputs().add(new MutableObject<ILogicalOperator>(currentOp));
-        splitOp.setExecutionMode(ExecutionMode.PARTITIONED);
-        context.computeAndSetTypeEnvironmentForOperator(splitOp);
-
-        // To maintain SSA, we assign new variables for the incoming variables in the left branch
-        // since the most tuples go to the right branch (instantTryLock success path). Also, the output of
-        // UNIONALL should be a new variable. (it cannot be the same to the left or right variable.)
-
-        // Original variables (before SPLIT) to the variables in the left path mapping
-        LinkedHashMap<LogicalVariable, LogicalVariable> liveVarAfterSplitToLeftPathMap = new LinkedHashMap<>();
-        // output variables to the variables generated in the left branch mapping
-        LinkedHashMap<LogicalVariable, LogicalVariable> origPKRecAndSKVarToleftPathMap = new LinkedHashMap<>();
-        // Original variables (before SPLIT) to the output variables mapping (mainly for join case)
         LinkedHashMap<LogicalVariable, LogicalVariable> origVarToOutputVarMap = new LinkedHashMap<>();
-        List<LogicalVariable> liveVarsAfterSplitOp = new ArrayList<>();
-        VariableUtilities.getLiveVariables(splitOp, liveVarsAfterSplitOp);
-
-        ArrayList<LogicalVariable> assignVars = new ArrayList<>();
-        ArrayList<Mutable<ILogicalExpression>> assignExprs = new ArrayList<>();
-        for (LogicalVariable v : liveVarsAfterSplitOp) {
-            LogicalVariable newVar = context.newVar();
-            liveVarAfterSplitToLeftPathMap.put(v, newVar);
-            assignVars.add(newVar);
-            VariableReferenceExpression vRef = new VariableReferenceExpression(v);
-            vRef.setSourceLocation(sourceLoc);
-            assignExprs.add(new MutableObject<ILogicalExpression>(vRef));
-        }
-        AssignOperator origVarsToLeftPathVarsAssignOp = new AssignOperator(assignVars, assignExprs);
-        origVarsToLeftPathVarsAssignOp.setSourceLocation(sourceLoc);
-        origVarsToLeftPathVarsAssignOp.getInputs().add(new MutableObject<ILogicalOperator>(splitOp));
-        context.computeAndSetTypeEnvironmentForOperator(origVarsToLeftPathVarsAssignOp);
-        origVarsToLeftPathVarsAssignOp.setExecutionMode(ExecutionMode.PARTITIONED);
-
-        // Creates the variable mapping for the UNIONALL operator.
-
-        // PK Variable(s) that will be fed into the primary index-search has been re-assigned in the left path.
-        List<LogicalVariable> pkVarsInLeftPathFromSIdxSearchBeforeSplit = new ArrayList<>();
-        for (LogicalVariable v : pkVarsFromSIdxUnnestMapOp) {
-            pkVarsInLeftPathFromSIdxSearchBeforeSplit.add(liveVarAfterSplitToLeftPathMap.get(v));
-        }
-        // PK and Record variable(s) from the primary-index search will be reassigned in the left path
-        // to make the output of the UNIONALL the original variables from the data-scan.
-        List<LogicalVariable> pkVarsFromPIdxSearchInLeftPath = new ArrayList<>();
-        for (int i = 0; i < primaryIndexUnnestVars.size(); i++) {
-            LogicalVariable replacedVar = context.newVar();
-            pkVarsFromPIdxSearchInLeftPath.add(replacedVar);
-            origPKRecAndSKVarToleftPathMap.put(primaryIndexUnnestVars.get(i), replacedVar);
+        if (retainMissing && newMissingPlaceHolderForLOJ == primaryIndexUnnestVars.get(0)) {
+            origVarToOutputVarMap.put(pkVarsFromSIdxUnnestMapOp.get(0), newMissingPlaceHolderForLOJ);
         }
 
         // Are the used variables after SELECT or JOIN operator from the primary index?
         // Then, creates the variable mapping between two paths.
         for (LogicalVariable tVar : usedVarsAfterTopOp) {
-            // Checks whether this variable is already added to the union variable map.
-            // It should be also a part of the primary key variables.
-            if (findVarInTripleVarList(unionVarMap, tVar, false) || !primaryIndexUnnestVars.contains(tVar)) {
-                continue;
-            }
+
             int pIndexPKIdx = primaryIndexUnnestVars.indexOf(tVar);
             // If the above value is -1, either it is a secondary key variable or a variable
             // from different branch (join case). These cases will be dealt with later.
             if (pIndexPKIdx == -1) {
                 continue;
             }
-            unionVarMap.add(new Triple<>(pkVarsFromPIdxSearchInLeftPath.get(pIndexPKIdx),
-                    pkVarsFromSIdxUnnestMapOp.get(pIndexPKIdx), tVar));
             origVarToOutputVarMap.put(pkVarsFromSIdxUnnestMapOp.get(pIndexPKIdx), tVar);
 
-            // Constructs the mapping between the PK from the original data-scan to the PK
-            // from the secondary index search since they are different logical variables.
-            origVarToSIdxUnnestMapOpVarMap.put(tVar, pkVarsFromSIdxUnnestMapOp.get(pIndexPKIdx));
         }
 
         // Are the used variables after SELECT or JOIN operator from the given secondary index?
         for (LogicalVariable tVar : usedVarsAfterTopOp) {
-            // Checks whether this variable is already added to the union variable map.
-            if (findVarInTripleVarList(unionVarMap, tVar, false)) {
-                continue;
-            }
             // Should be either used in the condition or a composite index field that is not used in the condition.
             if (!usedVarsInTopOp.contains(tVar) && !producedVarsInAssignsBeforeTopOp.contains(tVar)) {
                 continue;
@@ -1602,21 +1497,14 @@ public class AccessMethodUtils {
                 if (!skFieldUsedAfterTopOp && !requireVerificationAfterSIdxSearch) {
                     continue;
                 }
-                LogicalVariable replacedVar = context.newVar();
-                origPKRecAndSKVarToleftPathMap.put(tVar, replacedVar);
                 origSKFieldVarToNewSKFieldVarMap.put(tVar, restoredSKVarFromRTree.get(sIndexIdx));
-                unionVarMap.add(new Triple<>(replacedVar, restoredSKVarFromRTree.get(sIndexIdx), tVar));
                 continue;
             }
             // B-Tree case:
-            LogicalVariable replacedVar = context.newVar();
-            origPKRecAndSKVarToleftPathMap.put(tVar, replacedVar);
+
             origVarToOutputVarMap.put(skVarsFromSIdxUnnestMap.get(sIndexIdx), tVar);
-            unionVarMap.add(new Triple<LogicalVariable, LogicalVariable, LogicalVariable>(replacedVar,
-                    skVarsFromSIdxUnnestMap.get(sIndexIdx), tVar));
             // Constructs the mapping between the SK from the original data-scan
             // and the SK from the secondary index search since they are different logical variables.
-            origVarToSIdxUnnestMapOpVarMap.put(tVar, skVarsFromSIdxUnnestMap.get(sIndexIdx));
         }
 
         // For B-Tree case: if the given secondary key field variable is used only in the select or
@@ -1634,18 +1522,16 @@ public class AccessMethodUtils {
                 if (sIndexIdx == -1) {
                     continue;
                 }
-                LogicalVariable replacedVar = context.newVar();
-                origPKRecAndSKVarToleftPathMap.put(v, replacedVar);
+
                 origVarToOutputVarMap.put(skVarsFromSIdxUnnestMap.get(sIndexIdx), v);
                 // Constructs the mapping between the SK from the original data-scan
                 // and the SK from the secondary index search since they are different logical variables.
-                origVarToSIdxUnnestMapOpVarMap.put(v, skVarsFromSIdxUnnestMap.get(sIndexIdx));
             }
         }
 
         // For R-Tree case: if the given secondary key field variable is used only in the select or join condition,
         // we were not able to catch the mapping between the original secondary key field and the newly restored
-        // secondary key field in the assign operator in the right path.
+        // secondary key field in the assign operator in the path.
         if (idxType == IndexType.RTREE && (skFieldUsedAfterTopOp || requireVerificationAfterSIdxSearch)) {
             for (LogicalVariable v : uniqueUsedVarsInTopOp) {
                 if (!primaryIndexUnnestVars.contains(v)) {
@@ -1654,99 +1540,36 @@ public class AccessMethodUtils {
             }
         }
 
-        // For the index-nested-loop join case,
-        // we propagate all variables that come from the outer relation and are used after join operator.
-        // Adds the variables that are both live after JOIN and used after the JOIN operator.
-        VariableUtilities.getLiveVariables(topOpRef.getValue(), liveVarsAfterTopOp);
-        for (LogicalVariable v : usedVarsAfterTopOp) {
-            if (!liveVarsAfterTopOp.contains(v) || findVarInTripleVarList(unionVarMap, v, false)) {
-                continue;
-            }
-            LogicalVariable outputVar = context.newVar();
-            origVarToOutputVarMap.put(v, outputVar);
-            unionVarMap.add(new Triple<>(liveVarAfterSplitToLeftPathMap.get(v), v, outputVar));
-        }
-
         // Replaces the original variables in the operators after the SELECT or JOIN operator to satisfy SSA.
         if (afterTopOpRefs != null) {
             for (Mutable<ILogicalOperator> afterTopOpRef : afterTopOpRefs) {
+                VariableUtilities.substituteVariables(afterTopOpRef.getValue(), origSKFieldVarToNewSKFieldVarMap,
+                        context);
                 VariableUtilities.substituteVariables(afterTopOpRef.getValue(), origVarToOutputVarMap, context);
             }
         }
 
-        // Creates the primary index lookup operator.
-        // The job gen parameters are transferred to the actual job gen via the UnnestMapOperator's function arguments.
-        AbstractUnnestMapOperator primaryIndexUnnestMapOp = createPrimaryIndexUnnestMapOp(dataset, retainInput,
-                retainMissing, requiresBroadcast, pkVarsInLeftPathFromSIdxSearchBeforeSplit,
-                pkVarsFromPIdxSearchInLeftPath, primaryIndexOutputTypes, sourceLoc, leftOuterMissingValue);
-        primaryIndexUnnestMapOp.setSourceLocation(sourceLoc);
-        primaryIndexUnnestMapOp.getInputs().add(new MutableObject<ILogicalOperator>(origVarsToLeftPathVarsAssignOp));
-        context.computeAndSetTypeEnvironmentForOperator(primaryIndexUnnestMapOp);
-        primaryIndexUnnestMapOp.setExecutionMode(ExecutionMode.PARTITIONED);
-
-        // Now, generates the UnionAllOperator to merge the left and right paths.
-        // If we are transforming a join, in the instantTryLock on PK fail path, a SELECT operator should be
-        // constructed from the join condition and placed after the primary index lookup
-        // to do the final verification. If this is a select plan, we just need to use the original
-        // SELECT operator after the primary index lookup to do the final verification.
-        LinkedHashMap<LogicalVariable, LogicalVariable> origVarToNewVarInLeftPathMap = new LinkedHashMap<>();
-        origVarToNewVarInLeftPathMap.putAll(liveVarAfterSplitToLeftPathMap);
-        origVarToNewVarInLeftPathMap.putAll(origPKRecAndSKVarToleftPathMap);
-        ILogicalExpression conditionRefExpr = conditionRef.getValue().cloneExpression();
-        // The retainMissing variable contains the information whether we are optimizing a left-outer join or not.
         LogicalVariable newMissingPlaceHolderVar = retainMissing ? newMissingPlaceHolderForLOJ : null;
-        newSelectOpInLeftPath =
-                retainMissing ? new SelectOperator(new MutableObject<>(conditionRefExpr), leftOuterMissingValue,
-                        newMissingPlaceHolderVar) : new SelectOperator(new MutableObject<>(conditionRefExpr));
-        newSelectOpInLeftPath.setSourceLocation(conditionRefExpr.getSourceLocation());
-        VariableUtilities.substituteVariables(newSelectOpInLeftPath, origVarToNewVarInLeftPathMap, context);
 
-        // If there are ASSIGN operators before the SELECT or JOIN operator,
-        // we need to put these operators between the SELECT or JOIN and the primary index lookup in the left path.
-        if (assignsBeforeTopOpRef != null && !assignsBeforeTopOpRef.isEmpty()) {
-            // Makes the primary unnest-map as the child of the last ASSIGN (from top) in the path.
-            assignBeforeTopOp = assignsBeforeTopOpRef.get(assignsBeforeTopOpRef.size() - 1).getValue();
-            assignBeforeTopOp.getInputs().clear();
-            assignBeforeTopOp.getInputs().add(new MutableObject<ILogicalOperator>(primaryIndexUnnestMapOp));
-
-            // Makes the first ASSIGN (from top) as the child of the SELECT operator.
-            for (int i = assignsBeforeTopOpRef.size() - 1; i >= 0; i--) {
-                if (assignsBeforeTopOpRef.get(i) != null) {
-                    AbstractLogicalOperator assignTmpOp =
-                            (AbstractLogicalOperator) assignsBeforeTopOpRef.get(i).getValue();
-                    assignTmpOp.setExecutionMode(ExecutionMode.PARTITIONED);
-                    VariableUtilities.substituteVariables(assignTmpOp, origVarToNewVarInLeftPathMap, context);
-                    context.computeAndSetTypeEnvironmentForOperator(assignTmpOp);
-                }
-            }
-            newSelectOpInLeftPath.getInputs().clear();
-            newSelectOpInLeftPath.getInputs()
-                    .add(new MutableObject<ILogicalOperator>(assignsBeforeTopOpRef.get(0).getValue()));
-        } else {
-            newSelectOpInLeftPath.getInputs().add(new MutableObject<ILogicalOperator>(primaryIndexUnnestMapOp));
-        }
-        newSelectOpInLeftPath.setExecutionMode(ExecutionMode.PARTITIONED);
-        context.computeAndSetTypeEnvironmentForOperator(newSelectOpInLeftPath);
-
-        // Now, we take care of the right path (instantTryLock on PK success path).
-        ILogicalOperator currentTopOpInRightPath = splitOp;
+        VariableUtilities.substituteVariables(currentOp, origVarToOutputVarMap, context);
+        ILogicalOperator currentTopOp = currentOp;
         // For an R-Tree index, if there are operators that are using the secondary key field value,
         // we need to reconstruct that field value from the result of R-Tree search.
         // This is done by adding the following assign operator that we have made in the beginning of this method.
         if (skVarAssignOpInRightPath != null) {
-            skVarAssignOpInRightPath.getInputs().add(new MutableObject<ILogicalOperator>(splitOp));
+            skVarAssignOpInRightPath.getInputs().add(new MutableObject<ILogicalOperator>(currentOp));
+            VariableUtilities.substituteVariables(skVarAssignOpInRightPath, origVarToOutputVarMap, context);
             skVarAssignOpInRightPath.setExecutionMode(ExecutionMode.PARTITIONED);
             context.computeAndSetTypeEnvironmentForOperator(skVarAssignOpInRightPath);
-            currentTopOpInRightPath = skVarAssignOpInRightPath;
+            currentTopOp = skVarAssignOpInRightPath;
         }
-
+        VariableUtilities.substituteVariables(currentTopOp, origVarToOutputVarMap, context);
         // For an R-Tree index, if the given query shape is not RECTANGLE or POINT,
         // we need to add the original SELECT operator to filter out the false positive results.
         // (e.g., spatial-intersect($o.pointfield, create-circle(create-point(30.0,70.0), 5.0)) )
         //
-        // Also, for a B-Tree composite index, we need to apply SELECT operators in the right path
+        // Also, for a B-Tree composite index and heterogeneous index, we need to apply SELECT operators
         // to remove any false positive results from the secondary composite index search.
-        //
         // Lastly, if there is an index-nested-loop-join and the join contains more conditions
         // other than joining fields, then those conditions need to be applied to filter out
         // false positive results in the right path.
@@ -1756,56 +1579,119 @@ public class AccessMethodUtils {
             // Creates a new SELECT operator by deep-copying the SELECT operator in the left path
             // since we need to change the variable reference in the SELECT operator.
             // For the index-nested-loop join case, we copy the condition of the join operator.
-            ILogicalExpression conditionRefExpr2 = conditionRef.getValue().cloneExpression();
-            newSelectOpInRightPath =
+            Mutable<ILogicalExpression> conditionCopyRef =
+                    new MutableObject<>(conditionRef.getValue().cloneExpression());
+            if (optimizableDisjunctionConditions != null) {
+                BTreeAccessMethod.optimizeSelectCondition(conditionCopyRef, optimizableDisjunctionConditions);
+            }
+            ILogicalExpression conditionRefExpr2 = conditionCopyRef.getValue();
+            newSelectOp =
                     retainMissing
                             ? new SelectOperator(new MutableObject<>(conditionRefExpr2), leftOuterMissingValue,
                                     newMissingPlaceHolderVar)
                             : new SelectOperator(new MutableObject<>(conditionRefExpr2));
-            newSelectOpInRightPath.setSourceLocation(conditionRefExpr2.getSourceLocation());
-            newSelectOpInRightPath.getInputs().add(new MutableObject<ILogicalOperator>(currentTopOpInRightPath));
-            VariableUtilities.substituteVariables(newSelectOpInRightPath, origVarToSIdxUnnestMapOpVarMap, context);
-            VariableUtilities.substituteVariables(newSelectOpInRightPath, origSKFieldVarToNewSKFieldVarMap, context);
-            newSelectOpInRightPath.setExecutionMode(ExecutionMode.PARTITIONED);
-            context.computeAndSetTypeEnvironmentForOperator(newSelectOpInRightPath);
-            currentTopOpInRightPath = newSelectOpInRightPath;
+            newSelectOp.setSourceLocation(conditionRefExpr2.getSourceLocation());
+            newSelectOp.getInputs().add(new MutableObject<ILogicalOperator>(currentTopOp));
+            VariableUtilities.substituteVariables(newSelectOp, origSKFieldVarToNewSKFieldVarMap, context);
+            newSelectOp.setExecutionMode(ExecutionMode.PARTITIONED);
+            context.computeAndSetTypeEnvironmentForOperator(newSelectOp);
+            currentTopOp = newSelectOp;
+
         }
+        return createFinalIndexOnlySearchPlan(constantAssignVarUsedInTopOp, afterTopOpRefs, constAssignVars,
+                origVarToOutputVarMap, pkVarsFromSIdxUnnestMapOp, sourceLoc, context, currentTopOp, constAssignOp);
 
-        // Adds the new missing place holder in case of a left-outer-join if it's not been added yet.
-        // The assumption here is that this variable is the first PK variable that was set.
-        if (retainMissing && newMissingPlaceHolderForLOJ == primaryIndexUnnestVars.get(0)
-                && !findVarInTripleVarList(unionVarMap, newMissingPlaceHolderForLOJ, false)) {
-            unionVarMap.add(new Triple<>(origPKRecAndSKVarToleftPathMap.get(newMissingPlaceHolderForLOJ),
-                    pkVarsFromSIdxUnnestMapOp.get(0), newMissingPlaceHolderForLOJ));
+    }
+
+    private static ILogicalOperator createFinalIndexOnlySearchPlanForJOIN(boolean constantAssignVarUsedInTopOp,
+            List<Mutable<ILogicalOperator>> afterTopOpRefs, List<LogicalVariable> constAssignVars,
+            LinkedHashMap<LogicalVariable, LogicalVariable> origVarToOutputVarMap,
+            List<LogicalVariable> pkVarsFromSIdxUnnestMapOp, List<LogicalVariable> skVarsFromSIdxUnnestMap,
+            SourceLocation sourceLoc, IOptimizationContext context, ILogicalOperator currentTopOp,
+            AssignOperator constAssignOp) throws AlgebricksException {
+
+        List<Mutable<ILogicalExpression>> winPartitionByList = new ArrayList<>(pkVarsFromSIdxUnnestMapOp.size());
+        for (LogicalVariable probePKeyVar : pkVarsFromSIdxUnnestMapOp) {
+            VariableReferenceExpression probePKeyVarRef = new VariableReferenceExpression(probePKeyVar);
+            probePKeyVarRef.setSourceLocation(sourceLoc);
+            winPartitionByList.add(new MutableObject<>(probePKeyVarRef));
         }
-
-        // UNIONALL operator that combines both paths.
-        unionAllOp = new UnionAllOperator(unionVarMap);
-        unionAllOp.setSourceLocation(sourceLoc);
-        unionAllOp.getInputs().add(new MutableObject<ILogicalOperator>(newSelectOpInLeftPath));
-        unionAllOp.getInputs().add(new MutableObject<ILogicalOperator>(currentTopOpInRightPath));
-
-        unionAllOp.setExecutionMode(ExecutionMode.PARTITIONED);
-        context.computeAndSetTypeEnvironmentForOperator(unionAllOp);
-
-        // If an assign operator that keeps constant values was added, set the UNIONALL operator as its child.
-        if (!constAssignVars.isEmpty() && !constantAssignVarUsedInTopOp) {
-            constAssignOp.getInputs().clear();
-            constAssignOp.getInputs().add(new MutableObject<ILogicalOperator>(unionAllOp));
-            constAssignOp.setExecutionMode(ExecutionMode.PARTITIONED);
-            context.computeAndSetTypeEnvironmentForOperator(constAssignOp);
-
-            // This constant assign operator is the new child of the first operator after the original
-            // SELECT or JOIN operator.
-            currentOpAfterTopOp = afterTopOpRefs.get(afterTopOpRefs.size() - 1).getValue();
-            currentOpAfterTopOp.getInputs().clear();
-            currentOpAfterTopOp.getInputs().add(new MutableObject<ILogicalOperator>(constAssignOp));
-            context.computeAndSetTypeEnvironmentForOperator(currentOpAfterTopOp);
-            afterTopOpRefs.add(new MutableObject<ILogicalOperator>(constAssignOp));
+        List<Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>>> winOrderByPair = new ArrayList<>();
+        for (LogicalVariable pkVar : skVarsFromSIdxUnnestMap) {
+            VariableReferenceExpression pkVarRef = new VariableReferenceExpression(pkVar);
+            pkVarRef.setSourceLocation(sourceLoc);
+            Mutable<ILogicalExpression> vRef = new MutableObject<>(pkVarRef);
+            winOrderByPair.add(Pair.of(OrderOperator.ASC_ORDER, vRef));
         }
+        List<Mutable<ILogicalExpression>> winOrderByPair2 = new ArrayList<>();
+        for (LogicalVariable pkVar : skVarsFromSIdxUnnestMap) {
+            VariableReferenceExpression pkVarRef = new VariableReferenceExpression(pkVar);
+            pkVarRef.setSourceLocation(sourceLoc);
+            Mutable<ILogicalExpression> vRef = new MutableObject<>(pkVarRef);
+            winOrderByPair2.add(vRef);
+        }
+        LogicalVariable winVar = context.newVar();
+        FunctionIdentifier winMarkFirstUnknownValueFn = BuiltinFunctions.WIN_MARK_VALID_TUPLES_IMPL;
+        AbstractFunctionCallExpression winExpr =
+                BuiltinFunctions.makeWindowFunctionExpression(winMarkFirstUnknownValueFn, winOrderByPair2);
 
-        // Index-only plan is now constructed. Return this operator to the caller.
-        return unionAllOp;
+        WindowOperator winOp = new WindowOperator(winPartitionByList, winOrderByPair);
+        winOp.getVariables().add(winVar);
+        winOp.getExpressions().add(new MutableObject<>(winExpr));
+        winOp.getInputs().add(new MutableObject<>(currentTopOp));
+        winOp.setExecutionMode(ExecutionMode.PARTITIONED);
+        winOp.setSourceLocation(sourceLoc);
+        VariableUtilities.substituteVariables(winOp, origVarToOutputVarMap, context);
+        context.computeAndSetTypeEnvironmentForOperator(winOp);
+
+        VariableReferenceExpression winVarRef = new VariableReferenceExpression(winVar);
+        winVarRef.setSourceLocation(sourceLoc);
+        SelectOperator selectOp = new SelectOperator(new MutableObject<>(winVarRef));
+        selectOp.getInputs().add(new MutableObject<>(winOp));
+        selectOp.setExecutionMode(ExecutionMode.LOCAL);
+        VariableUtilities.substituteVariables(selectOp, origVarToOutputVarMap, context);
+        selectOp.setSourceLocation(sourceLoc);
+        context.computeAndSetTypeEnvironmentForOperator(selectOp);
+        //the AssignVar are covered before if needed.
+        return selectOp;
+    }
+
+    private static ILogicalOperator createFinalIndexOnlySearchPlan(boolean constantAssignVarUsedInTopOp,
+            List<Mutable<ILogicalOperator>> afterTopOpRefs, List<LogicalVariable> constAssignVars,
+            LinkedHashMap<LogicalVariable, LogicalVariable> origVarToOutputVarMap,
+            List<LogicalVariable> pkVarsFromSIdxUnnestMapOp, SourceLocation sourceLoc, IOptimizationContext context,
+            ILogicalOperator currentTopOp, AssignOperator constAssignOp) throws AlgebricksException {
+        OrderOperator order = new OrderOperator();
+        order.setSourceLocation(sourceLoc);
+        for (LogicalVariable pkVar : pkVarsFromSIdxUnnestMapOp) {
+            VariableReferenceExpression pkVarRef = new VariableReferenceExpression(pkVar);
+            pkVarRef.setSourceLocation(sourceLoc);
+            Mutable<ILogicalExpression> vRef = new MutableObject<>(pkVarRef);
+            order.getOrderExpressions().add(Pair.of(OrderOperator.ASC_ORDER, vRef));
+        }
+        // The secondary-index search feeds into the sort.
+        order.getInputs().add(new MutableObject<>(currentTopOp));
+        order.setExecutionMode(ExecutionMode.LOCAL);
+        VariableUtilities.substituteVariables(order, origVarToOutputVarMap, context);
+        context.computeAndSetTypeEnvironmentForOperator(order);
+
+        DistinctOperator distinct = null;
+        List<Mutable<ILogicalExpression>> distinctExprs = new ArrayList<>();
+        for (LogicalVariable pkVar : pkVarsFromSIdxUnnestMapOp) {
+            VariableReferenceExpression pkVarRef = new VariableReferenceExpression(pkVar);
+            pkVarRef.setSourceLocation(sourceLoc);
+            Mutable<ILogicalExpression> vRef = new MutableObject<>(pkVarRef);
+            distinctExprs.add(vRef);
+        }
+        distinct = new DistinctOperator(distinctExprs);
+        distinct.setSourceLocation(sourceLoc);
+        distinct.getInputs().add(new MutableObject<>(order));
+        distinct.setExecutionMode(ExecutionMode.LOCAL);
+        VariableUtilities.substituteVariables(distinct, origVarToOutputVarMap, context);
+
+        context.computeAndSetTypeEnvironmentForOperator(distinct);
+        //the AssignVar are covered before if needed.
+        return distinct;
     }
 
     private static AbstractUnnestMapOperator createPrimaryIndexUnnestMapOp(Dataset dataset, boolean retainInput,
@@ -1852,22 +1738,15 @@ public class AccessMethodUtils {
     }
 
     /**
-     * Creates operators that do a primary index lookup in the plan. In case of an index-only plan,
-     * this creates two paths including the primary index lookup in the left path.
-     * If this is an index-only plan (only using PK and/or secondary field(s) after SELECT operator) and/or
-     * the combination of the SELECT (JOIN) condition and the chosen secondary index do not generate
-     * false positive results, we can apply instantTryLock() on PK optimization since a result from these indexes
-     * doesn't have to be verified by the primary index-lookup and a subsequent SELECT operator.
-     * (i.e., we can guarantee the correctness of the result.)
-     * <p>
-     * Case A) non-index-only plan
-     * sidx-search -> (optional) sort -> (optional) distinct -> pdix-search
-     * <p>
-     * Case B) index-only plan
-     * left path (an instantTryLock() on the PK fail path):
-     * right path(an instantTryLock() on the PK success path):
-     * (left) sidx-search -> assign? -> split -> primary index-search -> select (verification) -> union ->
-     * (right) ........................ split -> assign? -> select? -> .......................... union ...
+     * Creates operators for completing the plan for a query using secondary indexes:
+     * Case A) Non-index-only plan:
+     *   sidx-search -> (for heterogeneous) select -> (optional) sort -> (optional) distinct -> pdix-search
+     * Case B) Index-only plan:
+     *   Two forms depending on the query type:
+     *   1. Single collection query:
+     *      sidx-search -> (for heterogeneous) select -> (optional) sort -> (optional) distinct
+     *   2. Join query:
+     *      sidx-search -> (for heterogeneous) select ->  sort -> select (with window function)
      */
     public static ILogicalOperator createRestOfIndexSearchPlan(List<Mutable<ILogicalOperator>> afterTopOpRefs,
             Mutable<ILogicalOperator> topOpRef, Mutable<ILogicalExpression> conditionRef,
@@ -1877,7 +1756,9 @@ public class AccessMethodUtils {
             boolean requiresBroadcast, Index secondaryIndex, AccessMethodAnalysisContext analysisCtx,
             OptimizableOperatorSubTree indexSubTree, OptimizableOperatorSubTree probeSubTree,
             LogicalVariable newMissingPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue,
-            boolean anyRealTypeConvertedToIntegerType) throws AlgebricksException {
+            boolean anyRealTypeConvertedToIntegerType,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions)
+            throws AlgebricksException {
         // Common part for the non-index-only plan and index-only plan
         // Variables and types for the primary-index search.
         List<LogicalVariable> primaryIndexUnnestVars = new ArrayList<>();
@@ -1924,22 +1805,19 @@ public class AccessMethodUtils {
                 joinPKVars = Collections.emptyList();
             }
 
-            //            return createFinalNonIndexOnlySearchPlan(dataset, inputOp, context, !isArrayIndex && sortPrimaryKeys,
-            //                    retainInput, retainMissing, requiresBroadcast, isArrayIndex, pkVarsFromSIdxUnnestMapOp,
-            //                    primaryIndexUnnestVars, joinPKVars, primaryIndexOutputTypes, leftOuterMissingValue);
+            return createFinalNonIndexOnlySearchPlan(afterTopOpRefs, dataset, inputOp, context,
+                    !isArrayIndex && sortPrimaryKeys, retainInput, retainMissing, requiresBroadcast, isArrayIndex,
+                    pkVarsFromSIdxUnnestMapOp, primaryIndexUnnestVars, joinPKVars, primaryIndexOutputTypes,
+                    leftOuterMissingValue, recordType, metaRecordType, indexSubTree, secondaryIndex, topOpRef,
+                    assignsBeforeTopOpRef, conditionRef, newMissingPlaceHolderForLOJ, optimizableDisjunctionConditions);
 
-            return createFinalNonIndexOnlySearchPlan(dataset, inputOp, context, !isArrayIndex && sortPrimaryKeys,
-                    retainInput, retainMissing, requiresBroadcast, isArrayIndex, pkVarsFromSIdxUnnestMapOp,
-                    primaryIndexUnnestVars, joinPKVars, primaryIndexOutputTypes, leftOuterMissingValue);
         } else if (!isArrayIndex) {
-            // Index-only plan case: creates a UNIONALL operator that has two paths after the secondary unnest-map op,
-            // and returns it.
 
             return createFinalIndexOnlySearchPlan(afterTopOpRefs, topOpRef, conditionRef, assignsBeforeTopOpRef,
                     dataset, recordType, metaRecordType, inputOp, context, retainInput, retainMissing,
                     requiresBroadcast, secondaryIndex, analysisCtx, indexSubTree, newMissingPlaceHolderForLOJ,
-                    leftOuterMissingValue, pkVarsFromSIdxUnnestMapOp, primaryIndexUnnestVars, primaryIndexOutputTypes,
-                    anyRealTypeConvertedToIntegerType);
+                    leftOuterMissingValue, pkVarsFromSIdxUnnestMapOp, primaryIndexUnnestVars,
+                    anyRealTypeConvertedToIntegerType, optimizableDisjunctionConditions);
         } else {
             throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE, inputOp.getSourceLocation(),
                     "Cannot use index-only plan with array indexes.");
@@ -2112,11 +1990,11 @@ public class AccessMethodUtils {
             VariableReferenceExpression pkVarRef = new VariableReferenceExpression(pkVar);
             pkVarRef.setSourceLocation(sourceLoc);
             Mutable<ILogicalExpression> vRef = new MutableObject<>(pkVarRef);
-            order.getOrderExpressions().add(new Pair<>(OrderOperator.ASC_ORDER, vRef));
+            order.getOrderExpressions().add(Pair.of(OrderOperator.ASC_ORDER, vRef));
         }
         // The secondary-index search feeds into the sort.
         order.getInputs().add(new MutableObject<>(inputOp));
-        order.setExecutionMode(ExecutionMode.LOCAL);
+        order.setExecutionMode(ExecutionMode.PARTITIONED);
         context.computeAndSetTypeEnvironmentForOperator(order);
         List<Mutable<ILogicalExpression>> externalLookupArgs = new ArrayList<>();
         //Add dataverse to the arguments
@@ -2196,46 +2074,46 @@ public class AccessMethodUtils {
         FunctionIdentifier argFuncIdent = funcExpr.getFunctionIdentifier();
         boolean functionFound = false;
         for (int i = 0; i < funcIdents.size(); i++) {
-            if (argFuncIdent.equals(funcIdents.get(i).first)) {
+            if (argFuncIdent.equals(funcIdents.get(i).getLeft())) {
                 functionFound = true;
-                requireVerificationAfterSIdxSearch = funcIdents.get(i).second;
-                break;
+                requireVerificationAfterSIdxSearch = funcIdents.get(i).getRight();
+                return Pair.of(functionFound, requireVerificationAfterSIdxSearch);
             }
         }
 
         // If function-call itself is not an index-based access method, we check its arguments.
-        if (!functionFound) {
-            for (Mutable<ILogicalExpression> arg : funcExpr.getArguments()) {
-                ILogicalExpression argExpr = arg.getValue();
-                if (argExpr.getExpressionTag() != LogicalExpressionTag.FUNCTION_CALL) {
-                    continue;
-                }
-                AbstractFunctionCallExpression argFuncExpr = (AbstractFunctionCallExpression) argExpr;
-                FunctionIdentifier argExprFuncIdent = argFuncExpr.getFunctionIdentifier();
-                for (int i = 0; i < funcIdents.size(); i++) {
-                    if (argExprFuncIdent.equals(funcIdents.get(i).first)) {
-                        functionFound = true;
-                        requireVerificationAfterSIdxSearch = funcIdents.get(i).second;
-                        break;
-                    }
+
+        for (Mutable<ILogicalExpression> arg : funcExpr.getArguments()) {
+            ILogicalExpression argExpr = arg.getValue();
+            if (argExpr.getExpressionTag() != LogicalExpressionTag.FUNCTION_CALL) {
+                continue;
+            }
+            AbstractFunctionCallExpression argFuncExpr = (AbstractFunctionCallExpression) argExpr;
+            for (int i = 0; i < funcIdents.size(); i++) {
+                Pair<Boolean, Boolean> pair =
+                        canFunctionGenerateFalsePositiveResultsUsingIndex(argFuncExpr, funcIdents);
+                if (pair.getLeft()) {
+                    functionFound = true;
+                    requireVerificationAfterSIdxSearch = pair.getRight();
+                    return Pair.of(functionFound, requireVerificationAfterSIdxSearch);
                 }
             }
         }
 
-        return new Pair<>(functionFound, requireVerificationAfterSIdxSearch);
+        return Pair.of(functionFound, requireVerificationAfterSIdxSearch);
     }
 
     /**
-     * Checks whether the given plan is an index-only plan (a.k.a. instantTryLock() on PK optimization).
+     * Checks whether the given plan is an index-only plan.
      * Refer to the IntroduceSelectAccessMethodRule or IntroduceJoinAccessMethodRule for more details.
-     *
+     * This is the function which needs to be changed when we have fields in the include section.
      * @throws AlgebricksException
      */
     public static void indexOnlyPlanCheck(List<Mutable<ILogicalOperator>> afterTopRefs,
             Mutable<ILogicalOperator> topRef, OptimizableOperatorSubTree indexSubTree,
             OptimizableOperatorSubTree probeSubTree, Index chosenIndex, AccessMethodAnalysisContext analysisCtx,
-            IOptimizationContext context, Quadruple<Boolean, Boolean, Boolean, Boolean> indexOnlyPlanInfo)
-            throws AlgebricksException {
+            IOptimizationContext context, Quadruple<Boolean, Boolean, Boolean, Boolean> indexOnlyPlanInfo,
+            boolean isJoin) throws AlgebricksException {
         // First, checks all cases that the index-only can't be applied. If so, we can stop here.
         Dataset dataset = indexSubTree.getDataset();
         // For an external dataset, primary index, we don't apply index-only plan optimization.
@@ -2247,17 +2125,15 @@ public class AccessMethodUtils {
         boolean noIndexOnlyPlanOption = !context.getPhysicalOptimizationConfig().isIndexOnly();
         // TODO: For the inverted index / array index access-method cases only:
         // Since an inverted index can contain multiple secondary key entries per one primary key,
-        // Index-only plan can't be applied. For example, suppose there are two entries (SK1, SK2) for one PK.
-        // Since we can't access <SK1, PK>, <SK2, PK> at the same time unless we use tryLock (we use instantTryLock),
-        // right now, we can't support an index-only plan on an inverted index.
-        // Once this issue is resolved, we can apply an index-only plan.
+        // Index-only plan can't be applied, the distinct on the secondary key will remove some of the correct results
+        // in the secondary index.
         // One additional condition for inverted indexes:
         // Even if the above is resolved, if a secondary key field is used after
         // SELECT or JOIN operator, this can't be qualified as an index-only plan since
         // an inverted index contains a part of a field value, not all of it.
         if (noIndexOnlyPlanOption || dataset.getDatasetType() == DatasetType.EXTERNAL || chosenIndex.isPrimaryIndex()
                 || chosenIndex.getIndexDetails().isOverridingKeyFieldTypes() || chosenIndex.isEnforced()
-                || isInvertedIndex(chosenIndex) || chosenIndex.getIndexType() == IndexType.ARRAY) {
+                || isInvertedIndex(chosenIndex) || chosenIndex.getIndexType() == IndexType.ARRAY || isJoin) {
             indexOnlyPlanInfo.setFirst(false);
             return;
         }
@@ -2638,7 +2514,7 @@ public class AccessMethodUtils {
      * The above condition must hold since we can't reconstruct the original field value otherwise.
      * If this is the case and the following condition is met, we don't need to
      * do a post-processing. That is, the given index will not generate a superset of the final results.
-     * If not, we need to add a "SELECT" operator to the path where instantTryLock on PK succeeds, too.
+     * If not, we need to add a "SELECT" operator after the secondary index search.
      * Condition 2: Query shape should be point or rectangle.
      */
     private static boolean checkRTreeSpecificIdxOnlyCondition(OptimizableOperatorSubTree probeSubTree,
@@ -2681,8 +2557,8 @@ public class AccessMethodUtils {
                     if (tmpVal.getObject().getType().getTypeTag() == ATypeTag.POINT
                             || tmpVal.getObject().getType().getTypeTag() == ATypeTag.RECTANGLE) {
                         // Index type
-                        if (keyPairType.first.getTypeTag() == ATypeTag.POINT
-                                || keyPairType.first.getTypeTag() == ATypeTag.RECTANGLE) {
+                        if (keyPairType.getLeft().getTypeTag() == ATypeTag.POINT
+                                || keyPairType.getLeft().getTypeTag() == ATypeTag.RECTANGLE) {
                             requireVerificationAfterSIdxSearch = false;
                         } else {
                             requireVerificationAfterSIdxSearch = true;
@@ -2775,8 +2651,8 @@ public class AccessMethodUtils {
                         }
                     }
 
-                    if (keyPairType.first.getTypeTag() == ATypeTag.POINT
-                            || keyPairType.first.getTypeTag() == ATypeTag.RECTANGLE) {
+                    if (keyPairType.getLeft().getTypeTag() == ATypeTag.POINT
+                            || keyPairType.getLeft().getTypeTag() == ATypeTag.RECTANGLE) {
                         // If the given field from the other join branch is a POINT or a RECTANGLE,
                         // we don't need to verify it again using SELECT operator since there will be
                         // no false positive results.
@@ -2881,18 +2757,39 @@ public class AccessMethodUtils {
             case UNNEST_MAP:
             case LEFT_OUTER_UNNEST_MAP:
                 return topOp;
-            case UNIONALL:
+            case SELECT:
                 dataSourceOp = dataSourceOp.getInputs().get(0).getValue();
-                // Index-only plan case:
-                // The order of operators: 7 unionall <- 6 select <- 5 assign?
-                // <- 4 unnest-map (PIdx) <- 3 split <- 2 unnest-map (SIdx) <- ...
-                // We do this to skip the primary index-search since we are looking for a secondary index-search here.
+
+                while (dataSourceOp.getOperatorTag() != LogicalOperatorTag.WINDOW && dataSourceOp.hasInputs()) {
+                    dataSourceOp = dataSourceOp.getInputs().get(0).getValue();
+                }
+
+                if (dataSourceOp.getOperatorTag() != LogicalOperatorTag.WINDOW) {
+                    return null;
+                }
+
                 do {
                     dataSourceOp = dataSourceOp.getInputs().get(0).getValue();
-                } while (dataSourceOp.getOperatorTag() != LogicalOperatorTag.SPLIT && dataSourceOp.hasInputs());
+                } while (dataSourceOp.getOperatorTag() != LogicalOperatorTag.UNNEST_MAP
+                        && dataSourceOp.getOperatorTag() != LogicalOperatorTag.LEFT_OUTER_UNNEST_MAP
+                        && dataSourceOp.hasInputs());
 
-                if (dataSourceOp.getOperatorTag() != LogicalOperatorTag.SPLIT) {
-                    // The current operator should be SPLIT. Otherwise, this is not an index-only plan.
+                // Should be unnest-map now
+                if (dataSourceOp.getOperatorTag() == LogicalOperatorTag.UNNEST_MAP
+                        || dataSourceOp.getOperatorTag() == LogicalOperatorTag.LEFT_OUTER_UNNEST_MAP) {
+                    return dataSourceOp;
+                } else {
+                    // Otherwise, this is not an index-only plan. So, returns null.
+                    return null;
+                }
+            case DISTINCT:
+                dataSourceOp = dataSourceOp.getInputs().get(0).getValue();
+
+                while (dataSourceOp.getOperatorTag() != LogicalOperatorTag.ORDER && dataSourceOp.hasInputs()) {
+                    dataSourceOp = dataSourceOp.getInputs().get(0).getValue();
+                }
+
+                if (dataSourceOp.getOperatorTag() != LogicalOperatorTag.ORDER) {
                     return null;
                 }
 
@@ -2914,105 +2811,6 @@ public class AccessMethodUtils {
                 return null;
         }
 
-    }
-
-    /**
-     * Resets the variable mapping in an UNIONALL Operator in an index-only plan
-     * in case of group-by Missing expression in Left-Outer-Join (LOJ).
-     *
-     * @throws AlgebricksException
-     */
-    public static ILogicalOperator resetVariableMappingInUnionOpInIndexOnlyPlan(boolean lojVarExist,
-            List<LogicalVariable> lojMissingNullVariables, ILogicalOperator unionAllOp,
-            List<Mutable<ILogicalOperator>> aboveTopRefs, IOptimizationContext context) throws AlgebricksException {
-        // For an index-only plan, if newMissingNullPlaceHolderVar is not in the variable map of the UNIONALL operator,
-        // we need to add this variable to the map.
-        // Also, we need to delete replaced variables in the map if it was used only in the group-by operator.
-        if (unionAllOp.getOperatorTag() != LogicalOperatorTag.UNIONALL) {
-            return unionAllOp;
-        }
-
-        // First, check whether the given old variable can be deleted. If it is used somewhere else
-        // except the group-by operator, we can't delete it since we need to propagate it.
-        boolean lojVarCanBeDeleted = true;
-        if (lojVarExist) {
-            List<LogicalVariable> usedVars = new ArrayList<>();
-            for (int i = 0; i < aboveTopRefs.size(); i++) {
-                usedVars.clear();
-                ILogicalOperator lOp = aboveTopRefs.get(i).getValue();
-                VariableUtilities.getUsedVariables(lOp, usedVars);
-                if (usedVars.containsAll(lojMissingNullVariables) && lOp.getOperatorTag() != LogicalOperatorTag.GROUP) {
-                    lojVarCanBeDeleted = false;
-                    break;
-                }
-            }
-        }
-
-        List<Triple<LogicalVariable, LogicalVariable, LogicalVariable>> varMap =
-                ((UnionAllOperator) unionAllOp).getVariableMappings();
-
-        if (lojVarExist && lojVarCanBeDeleted) {
-            // Delete old variables from the map.
-            for (Iterator<Triple<LogicalVariable, LogicalVariable, LogicalVariable>> it = varMap.iterator(); it
-                    .hasNext();) {
-                Triple<LogicalVariable, LogicalVariable, LogicalVariable> tripleVars = it.next();
-                if (tripleVars.first.equals(lojMissingNullVariables.get(0))
-                        || tripleVars.second.equals(lojMissingNullVariables.get(0))
-                        || tripleVars.third.equals(lojMissingNullVariables.get(0))) {
-                    it.remove();
-                }
-            }
-        }
-
-        if (lojVarExist && lojVarCanBeDeleted) {
-            UnionAllOperator newUnionAllOp = new UnionAllOperator(varMap);
-            newUnionAllOp.getInputs()
-                    .add(new MutableObject<ILogicalOperator>(unionAllOp.getInputs().get(0).getValue()));
-            newUnionAllOp.getInputs()
-                    .add(new MutableObject<ILogicalOperator>(unionAllOp.getInputs().get(1).getValue()));
-            context.computeAndSetTypeEnvironmentForOperator(newUnionAllOp);
-            return newUnionAllOp;
-        } else {
-            return unionAllOp;
-        }
-    }
-
-    /**
-     * Checks whether a LogicalVariable exists in a list of Triple<LogicalVariable, LogicalVariable, LogicalVariable>.
-     *
-     * @param varsList       list that contains triples of LogicalVariable.
-     * @param varToFind      a LogicalVariable to find
-     * @param checkOnlyFirst specifies whether it is required to check only the first variable in the given triple.
-     * @return
-     */
-    public static boolean findVarInTripleVarList(
-            List<Triple<LogicalVariable, LogicalVariable, LogicalVariable>> varsList, LogicalVariable varToFind,
-            boolean checkOnlyFirst) {
-        for (Iterator<Triple<LogicalVariable, LogicalVariable, LogicalVariable>> it = varsList.iterator(); it
-                .hasNext();) {
-            Triple<LogicalVariable, LogicalVariable, LogicalVariable> itVars = it.next();
-            if (varToFind == itVars.first) {
-                return true;
-            }
-            if (!checkOnlyFirst) {
-                if (varToFind == itVars.second || varToFind == itVars.third) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Finds an output variable for the given input variable of UnionAllOperator.
-     */
-    static LogicalVariable findUnionAllOutputVariable(UnionAllOperator unionAllOp, LogicalVariable inputVar) {
-        for (Triple<LogicalVariable, LogicalVariable, LogicalVariable> t : unionAllOp.getVariableMappings()) {
-            if (t.first.equals(inputVar) || t.second.equals(inputVar)) {
-                return t.third;
-            }
-        }
-        return null;
     }
 
     static boolean skipSecondaryIndexRequestedByAnnotation(Index index, IOptimizableFuncExpr optFuncExpr) {
@@ -3184,14 +2982,13 @@ public class AccessMethodUtils {
                     }
                 }
 
-                // Otherwise... recurse.
                 Pair<List<String>, Integer> parentFieldNames =
                         !isIndexOnFunction
                                 ? getFieldNameAndStepsFromSubTree(optFuncExpr, subTree, assignAndExpressionIndexes[0],
                                         assignAndExpressionIndexes[1], funcVarIndex, parentFuncExpr, context)
                                 : NO_FIELD_NAME;
 
-                if (parentFieldNames.first.isEmpty() && !isIndexOnFunction) {
+                if (parentFieldNames.getLeft().isEmpty() && !isIndexOnFunction) {
                     //Nested assign was not a field access.
                     //We will not use index
                     return NO_FIELD_NAME;
@@ -3217,17 +3014,17 @@ public class AccessMethodUtils {
                 if (!isIndexOnFunction) {
                     //add fieldName to the nested fieldName, return
                     if (nestedAccessFieldName != null) {
-                        parentFieldNames.first.addAll(nestedAccessFieldName);
+                        parentFieldNames.getLeft().addAll(nestedAccessFieldName);
                     } else {
-                        parentFieldNames.first.add(fieldName);
+                        parentFieldNames.getLeft().add(fieldName);
                     }
                     return (parentFieldNames);
 
                 } else {
                     if (nestedAccessFieldName != null) {
-                        return new Pair<>(nestedAccessFieldName, sourceIndicator.getValue());
+                        return Pair.of(nestedAccessFieldName, sourceIndicator.getValue());
                     } else {
-                        return new Pair<>(new ArrayList<>(List.of(fieldName)), sourceIndicator.getValue());
+                        return Pair.of(new ArrayList<>(List.of(fieldName)), sourceIndicator.getValue());
                     }
                 }
             }
@@ -3239,11 +3036,11 @@ public class AccessMethodUtils {
             OptimizableOperatorSubTree.RecordTypeSource recType = subTree.getRecordTypeFor(sourceVar);
             if (isByName) {
                 if (nestedAccessFieldName != null) {
-                    return new Pair<>(nestedAccessFieldName, recType.sourceIndicator);
+                    return Pair.of(nestedAccessFieldName, recType.sourceIndicator);
                 }
-                return new Pair<>(new ArrayList<>(List.of(fieldName)), recType.sourceIndicator);
+                return Pair.of(new ArrayList<>(List.of(fieldName)), recType.sourceIndicator);
             }
-            return new Pair<>(new ArrayList<>(List.of(recType.recordType.getFieldNames()[fieldIndex])),
+            return Pair.of(new ArrayList<>(List.of(recType.recordType.getFieldNames()[fieldIndex])),
                     recType.sourceIndicator);
         }
 
@@ -3303,7 +3100,7 @@ public class AccessMethodUtils {
             IOptimizableFuncExpr optFuncExpr, OptimizableOperatorSubTree subTree, IOptimizationContext context,
             LogicalVariable assignVar, AccessMethodAnalysisContext analysisCtx) throws AlgebricksException {
         // Set the logical expression we are working with.
-        final int lastMatchedDataSourceVar = subTree.getLastMatchedDataSourceVars().second;
+        final int lastMatchedDataSourceVar = subTree.getLastMatchedDataSourceVars().getRight();
         if (lastMatchedDataSourceVar < 0) {
             return null;
         }
@@ -3434,5 +3231,162 @@ public class AccessMethodUtils {
             }
         }
         return isDataSourceVariableFound;
+    }
+
+    private static void splitIntoConjuncts(ILogicalExpression condition, List<Mutable<ILogicalExpression>> conjuncts) {
+        if (condition.getExpressionTag() != LogicalExpressionTag.FUNCTION_CALL) {
+            return;
+        }
+        AbstractFunctionCallExpression funcExpr = (AbstractFunctionCallExpression) condition;
+        if (funcExpr.getFunctionIdentifier() == BuiltinFunctions.AND) {
+            for (Mutable<ILogicalExpression> arg : funcExpr.getArguments()) {
+                splitIntoConjuncts(arg.getValue(), conjuncts);
+            }
+        } else {
+            conjuncts.add(new MutableObject<>(condition));
+        }
+    }
+
+    protected static ILogicalExpression filterCondition(ILogicalExpression condition,
+            Set<LogicalVariable> listOfAcceptableVAR) {
+        List<Mutable<ILogicalExpression>> conjuncts = new ArrayList<>();
+        List<Mutable<ILogicalExpression>> filteredConjuncts = new ArrayList<>();
+        splitIntoConjuncts(condition, conjuncts);
+        for (Mutable<ILogicalExpression> conjunct : conjuncts) {
+            if (containsOnlyAllowedVariables(conjunct.getValue(), listOfAcceptableVAR)) {
+                filteredConjuncts.add(conjunct);
+            }
+        }
+
+        if (filteredConjuncts.size() == 1) {
+            return filteredConjuncts.get(0).getValue();
+        } else if (!filteredConjuncts.isEmpty()) {
+            ScalarFunctionCallExpression combinedCondition =
+                    new ScalarFunctionCallExpression(BuiltinFunctions.getBuiltinFunctionInfo(BuiltinFunctions.AND));
+            combinedCondition.getArguments().addAll(filteredConjuncts);
+            combinedCondition.setSourceLocation(condition.getSourceLocation());
+            return combinedCondition;
+        } else {
+            return null;
+        }
+    }
+
+    private static boolean containsOnlyAllowedVariables(ILogicalExpression expression,
+            Set<LogicalVariable> allowedVars) {
+
+        Set<LogicalVariable> usedVars = new HashSet<>();
+        expression.getUsedVariables(usedVars);
+        for (LogicalVariable var : usedVars) {
+            if (!allowedVars.contains(var)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static ILogicalOperator additionalSelectForHeterogeneousIndex(List<List<String>> chosenIndexFieldNames,
+            List<Mutable<ILogicalOperator>> afterTopOpRefs, Dataset dataset, ILogicalOperator inputOp,
+            IOptimizationContext context, boolean retainMissing, IAlgebricksConstantValue leftOuterMissingValue,
+            ARecordType recordType, ARecordType metaRecordType, OptimizableOperatorSubTree subTree,
+            Index secondaryIndex, Mutable<ILogicalOperator> topOpRef,
+            List<Mutable<ILogicalOperator>> assignsBeforeTopOpRef, Mutable<ILogicalExpression> conditionRef,
+            LogicalVariable newMissingPlaceHolderForLOJ,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions)
+            throws AlgebricksException {
+        List<LogicalVariable> skVarsFromSIdxUnnestMap = AccessMethodUtils.getKeyVarsFromSecondaryUnnestMap(dataset,
+                recordType, metaRecordType, inputOp, secondaryIndex, SecondaryUnnestMapOutputVarType.SECONDARY_KEY);
+
+        List<LogicalVariable> usedVarsInConditionOp = new ArrayList<>();
+        // Constructs the variable mapping between newly constructed secondary
+        // key search (SK, PK) and those in the original plan (datasource scan).
+        LinkedHashMap<LogicalVariable, LogicalVariable> origVarToSIdxUnnestMapOpVarMap = new LinkedHashMap<>();
+        VariableUtilities.getUsedVariables(topOpRef.getValue(), usedVarsInConditionOp);
+        // Gets all variables from the right (inner) branch.
+        List<LogicalVariable> liveVarsInInnerBranch = new ArrayList<>();
+        VariableUtilities.getLiveVariables(subTree.getRootRef().getValue(), liveVarsInInnerBranch);
+        for (Iterator<LogicalVariable> iterator = usedVarsInConditionOp.iterator(); iterator.hasNext();) {
+            LogicalVariable v = iterator.next();
+            if (!liveVarsInInnerBranch.contains(v)) {
+                iterator.remove();
+            }
+        }
+        List<LogicalVariable> uniqueUsedVarsInConditionOp = new ArrayList<>();
+        copyVarsToAnotherList(usedVarsInConditionOp, uniqueUsedVarsInConditionOp);
+
+        List<LogicalVariable> producedVarsInAssignsBeforeCondtionOp = new ArrayList<>();
+        List<LogicalVariable> varsTmpList = new ArrayList<>();
+        if (assignsBeforeTopOpRef != null && !assignsBeforeTopOpRef.isEmpty()) {
+            for (int i = 0; i < assignsBeforeTopOpRef.size(); i++) {
+                ILogicalOperator assignBeforeTopOp = assignsBeforeTopOpRef.get(i).getValue();
+                varsTmpList.clear();
+                VariableUtilities.getProducedVariables(assignBeforeTopOp, varsTmpList);
+                copyVarsToAnotherList(varsTmpList, producedVarsInAssignsBeforeCondtionOp);
+            }
+        }
+        List<LogicalVariable> usedVarsAfterSelect = new ArrayList<>();
+        HashSet<LogicalVariable> varsTmpSet = new HashSet<>();
+        if (afterTopOpRefs != null) {
+            for (Mutable<ILogicalOperator> afterTopOpRef : afterTopOpRefs) {
+                varsTmpSet.clear();
+                OperatorPropertiesUtil.getFreeVariablesInOp(afterTopOpRef.getValue(), varsTmpSet);
+                copyVarsToAnotherList(varsTmpSet, usedVarsAfterSelect);
+            }
+        }
+
+        for (LogicalVariable tVar : usedVarsAfterSelect) {
+
+            int sIndexIdx = chosenIndexFieldNames.indexOf(subTree.getVarsToFieldNameMap().get(tVar));
+            if (sIndexIdx == -1) {
+                continue;
+            }
+            // Constructs the mapping between the PK from the original data-scan to the PK
+            // from the secondary index search since they are different logical variables.
+            origVarToSIdxUnnestMapOpVarMap.put(tVar, skVarsFromSIdxUnnestMap.get(sIndexIdx));
+        }
+
+        List<LogicalVariable> varsUsedInTopOpButNotAfterwards = new ArrayList<>();
+        copyVarsToAnotherList(uniqueUsedVarsInConditionOp, varsUsedInTopOpButNotAfterwards);
+        varsUsedInTopOpButNotAfterwards.removeAll(usedVarsAfterSelect);
+        // For B-Tree case: if the given secondary key field variable is used only in the select or
+        // join condition, we were not able to catch the mapping between the SK from the original
+        // data-scan and the SK from the secondary index search since they are different logical variables.
+        // (E.g., we are sending a query on a composite index but returns only one field.)
+        for (LogicalVariable v : varsUsedInTopOpButNotAfterwards) {
+            int sIndexIdx = chosenIndexFieldNames.indexOf(subTree.getVarsToFieldNameMap().get(v));
+            if (sIndexIdx == -1) {
+                continue;
+            }
+            origVarToSIdxUnnestMapOpVarMap.put(v, skVarsFromSIdxUnnestMap.get(sIndexIdx));
+        }
+
+        // The additional select which will be added after the secondary index search
+        // only the conditions which include the variables used before or in secondary index search
+        // any other predicates which includes other variables should not be added here.
+        List<LogicalVariable> usedVarInInput = new ArrayList<>();
+        VariableUtilities.getUsedVariables(inputOp, usedVarInInput);
+        Set<LogicalVariable> skAcceptableVars = new HashSet<>();
+        skAcceptableVars.addAll(origVarToSIdxUnnestMapOpVarMap.keySet());
+        skAcceptableVars.addAll(usedVarInInput);
+
+        ILogicalExpression clonedExpr = conditionRef.getValue().cloneExpression();
+        Mutable<ILogicalExpression> mutableClonedExpr = new MutableObject<>(clonedExpr);
+        BTreeAccessMethod.optimizeSelectCondition(mutableClonedExpr, optimizableDisjunctionConditions);
+
+        ILogicalExpression conditionRefExpr = filterCondition(mutableClonedExpr.get(), skAcceptableVars);
+        if (conditionRefExpr != null) {
+            LogicalVariable newMissingPlaceHolderVar = null;
+            SelectOperator newSelectOp =
+                    retainMissing
+                            ? new SelectOperator(new MutableObject<>(conditionRefExpr), leftOuterMissingValue,
+                                    newMissingPlaceHolderVar)
+                            : new SelectOperator(new MutableObject<>(conditionRefExpr));
+            newSelectOp.setSourceLocation(conditionRefExpr.getSourceLocation());
+            newSelectOp.getInputs().add(new MutableObject(inputOp));
+            VariableUtilities.substituteVariables(newSelectOp, origVarToSIdxUnnestMapOpVarMap, context);
+            newSelectOp.setExecutionMode(ExecutionMode.PARTITIONED);
+            context.computeAndSetTypeEnvironmentForOperator(newSelectOp);
+            return newSelectOp;
+        }
+        return null;
     }
 }

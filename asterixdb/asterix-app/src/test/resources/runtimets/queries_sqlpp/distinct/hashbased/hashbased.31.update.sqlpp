@@ -1,0 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+/*
+ * Loads the open (schemaless) dataset used by 32-34. 40000 rows, each with an undeclared field `v`
+ * (distinct per row) and an undeclared field `g` (two groups of 20000). Both resolve to ANY at
+ * compile time.
+ *
+ * Sizing: with the test frame size of 32KB, a 512KB budget is 16 frames, and the in-memory table
+ * crosses it at roughly 11500 distinct values. 40000 ungrouped, and 20000 per group, both clear
+ * that comfortably, so every query below is guaranteed to reach the spill path.
+ */
+
+use test;
+
+INSERT INTO emp_open (
+  SELECT VALUE { "id": i, "v": i, "g": i % 2 }
+  FROM range(1, 40000) AS i
+);

@@ -42,7 +42,6 @@ import org.apache.asterix.metadata.declared.MetadataProvider;
 import org.apache.asterix.om.base.IAObject;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.translator.CompiledStatements.ICompiledDmlStatement;
-import org.apache.commons.lang3.tuple.Triple;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.api.client.IClusterInfoCollector;
 import org.apache.hyracks.api.client.IHyracksClientConnection;
@@ -95,18 +94,168 @@ public interface IStatementExecutor {
     }
 
     class ResultMetadata implements Serializable {
-        private static final long serialVersionUID = 1L;
+        private static final long serialVersionUID = 3L;
 
-        private final List<Triple<JobId, ResultSetId, ARecordType>> resultSets = new ArrayList<>();
+        private final List<ResultSetInfo> resultSets = new ArrayList<>();
 
-        public List<Triple<JobId, ResultSetId, ARecordType>> getResultSets() {
+        private final List<StatementInfo> statements = new ArrayList<>();
+
+        public List<ResultSetInfo> getResultSets() {
             return resultSets;
         }
 
+        /** One entry per statement that ran, in execution order, including statements with no result. */
+        public List<StatementInfo> getStatements() {
+            return statements;
+        }
+    }
+
+    /**
+     * EXPLAIN and ADVISE are flags the parser sets on a query rather than kinds of their own, so a statement that only
+     * explains its plan is a {@link Statement.Kind#QUERY} like any other. Whatever reports a statement has to ask.
+     */
+    static boolean isExplainQuery(Statement stmt) {
+        return stmt.getKind() == Statement.Kind.QUERY && ((Query) stmt).isExplain();
+    }
+
+    /** Whether this statement is a query that only advises on indexes; see {@link #isExplainQuery(Statement)}. */
+    static boolean isAdviseQuery(Statement stmt) {
+        return stmt.getKind() == Statement.Kind.QUERY && ((Query) stmt).isAdvise();
+    }
+
+    /** What one statement produced. Filled in on the CC, carried to the NC on the request's result metadata. */
+    class StatementInfo implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        /** Position among the statements the client sent, counting from 1. */
+        private final int position;
+        private final Statement.Kind kind;
+        /** Names an extension statement, whose kind does not; null otherwise. */
+        private final String name;
+        private ResultSetInfo resultSet;
+        private ExecutionPlans plans;
+        /** The statement's own text */
+        private String text;
+        private Stats stats;
+        private Throwable error;
+        /** Records whether this statement only explains or advises, which its kind does not say. */
+        private final boolean explain;
+        private final boolean advise;
+        private final List<Warning> warnings = new ArrayList<>();
+
+        public StatementInfo(int position, Statement.Kind kind, String name, boolean explain, boolean advise) {
+            this.position = position;
+            this.kind = kind;
+            this.name = name;
+            this.explain = explain;
+            this.advise = advise;
+        }
+
+        public int getPosition() {
+            return position;
+        }
+
+        public Statement.Kind getKind() {
+            return kind;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public boolean isExplain() {
+            return explain;
+        }
+
+        public boolean isAdvise() {
+            return advise;
+        }
+
+        public String getText() {
+            return text;
+        }
+
+        public void setText(String text) {
+            this.text = text;
+        }
+
+        public ResultSetInfo getResultSet() {
+            return resultSet;
+        }
+
+        public void setResultSet(ResultSetInfo resultSet) {
+            this.resultSet = resultSet;
+        }
+
+        public ExecutionPlans getPlans() {
+            return plans;
+        }
+
+        public void setPlans(ExecutionPlans plans) {
+            this.plans = plans;
+        }
+
+        public Stats getStats() {
+            return stats;
+        }
+
+        public void setStats(Stats stats) {
+            this.stats = stats;
+        }
+
+        public Throwable getError() {
+            return error;
+        }
+
+        public void setError(Throwable error) {
+            this.error = error;
+        }
+
+        /** The warnings this statement raised, up to its max-warnings budget: the parser's first. */
+        public List<Warning> getWarnings() {
+            return warnings;
+        }
+
+        public void addWarnings(Collection<Warning> statementWarnings) {
+            warnings.addAll(statementWarnings);
+        }
+
+        @Override
+        public String toString() {
+            return "StatementInfo{position=" + position + ", kind=" + kind + ", name=" + name + ", resultSet="
+                    + resultSet + ", error="
+                    + (error != null ? error.getClass().getName() + ": " + error.getMessage() : "null") + '}';
+        }
+    }
+
+    class ResultSetInfo implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        private final JobId jobId;
+        private final ResultSetId resultSetId;
+        private final ARecordType recordType;
+
+        public ResultSetInfo(JobId jobId, ResultSetId resultSetId, ARecordType recordType) {
+            this.jobId = jobId;
+            this.resultSetId = resultSetId;
+            this.recordType = recordType;
+        }
+
+        public JobId getJobId() {
+            return jobId;
+        }
+
+        public ResultSetId getResultSetId() {
+            return resultSetId;
+        }
+
+        public ARecordType getRecordType() {
+            return recordType;
+        }
     }
 
     class Stats implements Serializable {
-        private static final long serialVersionUID = 5885273238208454612L;
+        private static final long serialVersionUID = 6834062614264666810L;
 
         public enum ProfileType {
             COUNTS("counts"),
@@ -143,6 +292,7 @@ public interface IStatementExecutor {
         private long cloudReadRequestsCount;
         private long cloudPagesReadCount;
         private long cloudPagesPersistedCount;
+        private boolean cachedPlan;
 
         public long getCount() {
             return count;
@@ -160,7 +310,7 @@ public interface IStatementExecutor {
             this.size = size;
         }
 
-        public long getQueueWaitTime() {
+        public long getQueueWaitTimeNanos() {
             return queueWaitTime;
         }
 
@@ -176,14 +326,19 @@ public interface IStatementExecutor {
             return totalWarningsCount;
         }
 
+        /** Replaces the count, for a caller that knows the request's warnings better than its running total. */
+        public void setTotalWarningsCount(long totalWarningsCount) {
+            this.totalWarningsCount = totalWarningsCount;
+        }
+
         public void updateTotalWarningsCount(long delta) {
             if (delta <= Long.MAX_VALUE - totalWarningsCount) {
                 totalWarningsCount += delta;
             }
         }
 
-        public void setQueueWaitTime(long queueWaitTime) {
-            this.queueWaitTime = queueWaitTime;
+        public void setQueueWaitTimeNanos(long queueWaitTimeNanos) {
+            this.queueWaitTime = queueWaitTimeNanos;
         }
 
         public void setJobProfile(ObjectNode profile) {
@@ -202,11 +357,11 @@ public interface IStatementExecutor {
             this.profileType = profileType;
         }
 
-        public void setCompileTime(long compileTime) {
-            this.compileTime = compileTime;
+        public void setCompileTimeNanos(long compileTimeNanos) {
+            this.compileTime = compileTimeNanos;
         }
 
-        public long getCompileTime() {
+        public long getCompileTimeNanos() {
             return compileTime;
         }
 
@@ -246,8 +401,65 @@ public interface IStatementExecutor {
             this.cloudPagesPersistedCount = cloudPagesPersistedCount;
         }
 
+        /** A copy, to hold the figures reached before a statement ran while this instance goes on accumulating. */
+        public Stats snapshot() {
+            Stats copy = new Stats();
+            copy.count = count;
+            copy.size = size;
+            copy.processedObjects = processedObjects;
+            copy.queueWaitTime = queueWaitTime;
+            copy.profile = profile;
+            copy.profileType = profileType;
+            copy.totalWarningsCount = totalWarningsCount;
+            copy.compileTime = compileTime;
+            copy.bufferCacheHitRatio = bufferCacheHitRatio;
+            copy.bufferCachePageReadCount = bufferCachePageReadCount;
+            copy.cloudReadRequestsCount = cloudReadRequestsCount;
+            copy.cloudPagesReadCount = cloudPagesReadCount;
+            copy.cloudPagesPersistedCount = cloudPagesPersistedCount;
+            return copy;
+        }
+
+        /**
+         * What the statement that ran since {@code before} contributed. Only the row count, size and warning count
+         * accumulate over a request; every other figure describes one job, so it is already this statement's - or,
+         * where it has not changed, belongs to an earlier statement and this one produced none of its own.
+         */
+        public Stats since(Stats before) {
+            Stats delta = snapshot();
+            delta.count -= before.count;
+            delta.size -= before.size;
+            delta.totalWarningsCount -= before.totalWarningsCount;
+            delta.compileTime = ownOrNone(compileTime, before.compileTime);
+            delta.queueWaitTime = ownOrNone(queueWaitTime, before.queueWaitTime);
+            delta.processedObjects = ownOrNone(processedObjects, before.processedObjects);
+            delta.cloudReadRequestsCount = ownOrNone(cloudReadRequestsCount, before.cloudReadRequestsCount);
+            delta.cloudPagesReadCount = ownOrNone(cloudPagesReadCount, before.cloudPagesReadCount);
+            delta.cloudPagesPersistedCount = ownOrNone(cloudPagesPersistedCount, before.cloudPagesPersistedCount);
+            if (bufferCachePageReadCount == before.bufferCachePageReadCount) {
+                delta.bufferCachePageReadCount = 0;
+                delta.bufferCacheHitRatio = Double.NaN;
+            }
+            if (profile == before.profile) {
+                delta.profile = null; // unchanged means the previous statement's profile, not this one's
+            }
+            return delta;
+        }
+
+        private static long ownOrNone(long now, long before) {
+            return now == before ? 0 : now;
+        }
+
         public long getCloudPagesPersistedCount() {
             return cloudPagesPersistedCount;
+        }
+
+        public boolean isCachedPlan() {
+            return cachedPlan;
+        }
+
+        public void setCachedPlan(boolean cachedPlan) {
+            this.cachedPlan = cachedPlan;
         }
     }
 
@@ -283,6 +495,9 @@ public interface IStatementExecutor {
 
         private Statement.Kind kind;
         private String name;
+        private boolean explain;
+        private boolean advise;
+        private int categories;
 
         public Statement.Kind getKind() {
             return kind;
@@ -300,8 +515,38 @@ public interface IStatementExecutor {
             this.name = name;
         }
 
+        public boolean isExplain() {
+            return explain;
+        }
+
+        public boolean isAdvise() {
+            return advise;
+        }
+
+        /** Records whether this statement only explains or advises, which its kind does not say. */
+        public void setQueryFlags(Statement stmt) {
+            setQueryFlags(isExplainQuery(stmt), isAdviseQuery(stmt));
+        }
+
+        public void setQueryFlags(boolean explain, boolean advise) {
+            this.explain = explain;
+            this.advise = advise;
+        }
+
         public boolean isValid() {
             return kind != null && (kind != Statement.Kind.EXTENSION || name != null);
+        }
+
+        /**
+         * @return the {@link Statement.Category} of each of the request's statements, OR-ed together; 0 when the
+         *         request's statements were never parsed
+         */
+        public int getCategories() {
+            return categories;
+        }
+
+        public void setCategories(int categories) {
+            this.categories = categories;
         }
 
         @Override

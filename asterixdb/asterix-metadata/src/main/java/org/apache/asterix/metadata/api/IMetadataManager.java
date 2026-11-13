@@ -26,9 +26,12 @@ import org.apache.asterix.common.exceptions.ACIDException;
 import org.apache.asterix.common.functions.FunctionSignature;
 import org.apache.asterix.common.metadata.DataverseName;
 import org.apache.asterix.common.metadata.IMetadataBootstrap;
+import org.apache.asterix.common.transactions.TxnId;
 import org.apache.asterix.external.indexing.ExternalFile;
 import org.apache.asterix.metadata.MetadataTransactionContext;
+import org.apache.asterix.metadata.entities.Catalog;
 import org.apache.asterix.metadata.entities.CompactionPolicy;
+import org.apache.asterix.metadata.entities.CoordinateReferenceSystem;
 import org.apache.asterix.metadata.entities.Database;
 import org.apache.asterix.metadata.entities.Dataset;
 import org.apache.asterix.metadata.entities.DatasourceAdapter;
@@ -919,4 +922,24 @@ public interface IMetadataManager extends IMetadataBootstrap {
             String feedName) throws AlgebricksException;
 
     long getMaxTxnId();
+
+    List<Dataset> getAllDatasets(MetadataTransactionContext ctx) throws AlgebricksException;
+
+    boolean isActive(TxnId txnId) throws AlgebricksException;
+
+    void addCatalog(MetadataTransactionContext ctx, Catalog catalog) throws AlgebricksException;
+
+    List<Catalog> getCatalogs(MetadataTransactionContext ctx) throws AlgebricksException;
+
+    Catalog getCatalog(MetadataTransactionContext ctx, String catalogName) throws AlgebricksException;
+
+    void dropCatalog(MetadataTransactionContext ctx, String catalogName) throws AlgebricksException;
+
+    void addCRS(MetadataTransactionContext ctx, CoordinateReferenceSystem crs) throws AlgebricksException;
+
+    CoordinateReferenceSystem getCRS(MetadataTransactionContext ctx, String database, DataverseName dataverseName,
+            int srid) throws AlgebricksException;
+
+    void dropCRS(MetadataTransactionContext ctx, String database, DataverseName dataverseName, int srid)
+            throws AlgebricksException;
 }

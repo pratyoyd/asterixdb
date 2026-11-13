@@ -19,6 +19,7 @@
 package org.apache.asterix.optimizer.rules.pushdown.processor;
 
 import static org.apache.asterix.metadata.utils.PushdownUtil.getConstant;
+import static org.apache.asterix.metadata.utils.PushdownUtil.getTypeEnv;
 import static org.apache.asterix.metadata.utils.PushdownUtil.isAnd;
 import static org.apache.asterix.metadata.utils.PushdownUtil.isCompare;
 import static org.apache.asterix.metadata.utils.PushdownUtil.isConstant;
@@ -29,15 +30,21 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
 
 import org.apache.asterix.om.base.IAObject;
+import org.apache.asterix.om.types.ATypeTag;
+import org.apache.asterix.om.types.AUnionType;
+import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.optimizer.rules.pushdown.PushdownContext;
 import org.apache.asterix.optimizer.rules.pushdown.descriptor.DefineDescriptor;
 import org.apache.asterix.optimizer.rules.pushdown.descriptor.ScanDefineDescriptor;
 import org.apache.asterix.optimizer.rules.pushdown.descriptor.UseDescriptor;
+import org.apache.asterix.optimizer.rules.pushdown.schema.IExpectedSchemaNode;
 import org.apache.asterix.optimizer.rules.pushdown.visitor.FilterExpressionInlineVisitor;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
@@ -55,6 +62,7 @@ abstract class AbstractFilterPushdownProcessor extends AbstractPushdownProcessor
     private final Map<ILogicalOperator, List<UseDescriptor>> subplanSelects;
     private final List<UseDescriptor> scanCandidateFilters;
     private final Set<LogicalVariable> subplanProducedVariables;
+    private final Queue<ILogicalOperator> subplanOpsQueue;
 
     public AbstractFilterPushdownProcessor(PushdownContext pushdownContext, IOptimizationContext context) {
         super(pushdownContext, context);
@@ -62,6 +70,7 @@ abstract class AbstractFilterPushdownProcessor extends AbstractPushdownProcessor
         subplanSelects = new HashMap<>();
         scanCandidateFilters = new ArrayList<>();
         subplanProducedVariables = new HashSet<>();
+        subplanOpsQueue = new LinkedList<>();
     }
 
     @Override
@@ -117,11 +126,12 @@ abstract class AbstractFilterPushdownProcessor extends AbstractPushdownProcessor
     /**
      * Handle a compare function
      *
-     * @param expression compare expression
+     * @param expression        compare expression
+     * @param currentDescriptor
      * @return true if the pushdown should continue, false otherwise
      */
-    protected abstract boolean handleCompare(AbstractFunctionCallExpression expression, int depth)
-            throws AlgebricksException;
+    protected abstract FilterBranch handleCompare(AbstractFunctionCallExpression expression, int depth,
+            UseDescriptor currentDescriptor) throws AlgebricksException;
 
     /**
      * Handle a value access path expression
@@ -129,7 +139,26 @@ abstract class AbstractFilterPushdownProcessor extends AbstractPushdownProcessor
      * @param expression path expression
      * @return true if the pushdown should continue, false otherwise
      */
-    protected abstract boolean handlePath(AbstractFunctionCallExpression expression) throws AlgebricksException;
+    protected final FilterBranch handlePath(AbstractFunctionCallExpression expression) throws AlgebricksException {
+        IExpectedSchemaNode node = getPathNode(expression);
+        if (node == null) {
+            return FilterBranch.NA;
+        }
+        return handlePath(expression, node);
+    }
+
+    /**
+     * Handle a value access path expression
+     *
+     * @param expression path expression
+     * @param node       expected schema node (never null)
+     * @return true if the pushdown should continue, false otherwise
+     */
+    protected abstract FilterBranch handlePath(AbstractFunctionCallExpression expression, IExpectedSchemaNode node)
+            throws AlgebricksException;
+
+    protected abstract IExpectedSchemaNode getPathNode(AbstractFunctionCallExpression expression)
+            throws AlgebricksException;
 
     /**
      * Put the filter expression to data-scan
@@ -191,8 +220,10 @@ abstract class AbstractFilterPushdownProcessor extends AbstractPushdownProcessor
      * @param scanDescriptor data-scan descriptor
      */
     private void putPotentialSelects(ScanDefineDescriptor scanDescriptor) throws AlgebricksException {
-        for (Map.Entry<ILogicalOperator, List<UseDescriptor>> selects : subplanSelects.entrySet()) {
-            ILogicalOperator subplan = selects.getKey();
+        subplanOpsQueue.clear();
+        subplanOpsQueue.addAll(subplanSelects.keySet());
+        while (!subplanOpsQueue.isEmpty()) {
+            ILogicalOperator subplan = subplanOpsQueue.poll();
             subplanProducedVariables.clear();
             VariableUtilities.getProducedVariables(subplan, subplanProducedVariables);
             for (LogicalVariable producedVar : subplanProducedVariables) {
@@ -207,7 +238,7 @@ abstract class AbstractFilterPushdownProcessor extends AbstractPushdownProcessor
         }
     }
 
-    private boolean pushdownFilter(ScanDefineDescriptor scanDescriptor) throws AlgebricksException {
+    protected boolean pushdownFilter(ScanDefineDescriptor scanDescriptor) throws AlgebricksException {
         boolean changed = false;
         for (UseDescriptor candidate : scanCandidateFilters) {
             changed |= inlineAndPushdownFilter(candidate, scanDescriptor);
@@ -236,8 +267,13 @@ abstract class AbstractFilterPushdownProcessor extends AbstractPushdownProcessor
         boolean inSubplan = useDescriptor.inSubplan();
         if (inSubplan && useOperator.getOperatorTag() == LogicalOperatorTag.SELECT) {
             ILogicalOperator subplanOp = useDescriptor.getSubplanOperator();
-            List<UseDescriptor> selects = subplanSelects.computeIfAbsent(subplanOp, k -> new ArrayList<>());
-            selects.add(useDescriptor);
+            List<UseDescriptor> selects = subplanSelects.get(subplanOp);
+            if (selects == null) {
+                subplanOpsQueue.add(subplanOp);
+                subplanSelects.computeIfAbsent(subplanOp, k -> new ArrayList<>()).add(useDescriptor);
+            } else {
+                selects.add(useDescriptor);
+            }
         }
 
         // Finally, push down if not in subplan
@@ -254,7 +290,7 @@ abstract class AbstractFilterPushdownProcessor extends AbstractPushdownProcessor
 
         // Prepare for pushdown
         preparePushdown(useDescriptor, scanDefineDescriptor);
-        if (pushdownFilterExpression(inlinedExpr, 0)) {
+        if (pushdownFilterExpression(inlinedExpr, useDescriptor, 0) != FilterBranch.NA) {
             putFilterInformation(scanDefineDescriptor, inlinedExpr);
             changed = true;
         }
@@ -262,57 +298,88 @@ abstract class AbstractFilterPushdownProcessor extends AbstractPushdownProcessor
         return changed;
     }
 
-    protected final boolean pushdownFilterExpression(ILogicalExpression expression, int depth)
-            throws AlgebricksException {
-        boolean pushdown = false;
+    public enum FilterBranch {
+        CONSTANT,
+        AND,
+        COMPARE,
+        FILTER_PATH,
+        FUNCTION,
+        NA;
+
+        public static FilterBranch andOutput(FilterBranch leftBranch, FilterBranch rightBranch,
+                FilterBranch parentBranch) {
+            if (leftBranch == FilterBranch.NA || rightBranch == FilterBranch.NA) {
+                return FilterBranch.NA;
+            }
+            return parentBranch;
+        }
+    };
+
+    protected final FilterBranch pushdownFilterExpression(ILogicalExpression expression, UseDescriptor useDescriptor,
+            int depth) throws AlgebricksException {
         if (isConstant(expression)) {
             IAObject constantValue = getConstant(expression);
             // Only non-derived types are allowed
-            pushdown = !constantValue.getType().getTypeTag().isDerivedType();
+            if (!constantValue.getType().getTypeTag().isDerivedType()) {
+                return FilterBranch.CONSTANT;
+            }
+            return FilterBranch.NA;
         } else if (isAnd(expression)) {
-            pushdown = handleAnd((AbstractFunctionCallExpression) expression, depth);
+            return handleAnd((AbstractFunctionCallExpression) expression, depth, useDescriptor);
         } else if (isCompare(expression)) {
-            pushdown = handleCompare((AbstractFunctionCallExpression) expression, depth);
+            return handleCompare((AbstractFunctionCallExpression) expression, depth, useDescriptor);
         } else if (isFilterPath(expression)) {
-            pushdown = handlePath((AbstractFunctionCallExpression) expression);
+            return handlePath((AbstractFunctionCallExpression) expression);
         } else if (expression.getExpressionTag() == LogicalExpressionTag.FUNCTION_CALL) {
             // All functions including OR
-            pushdown = handleFunction((AbstractFunctionCallExpression) expression, depth);
+            return handleFunction((AbstractFunctionCallExpression) expression, depth, useDescriptor);
         }
         // PK variable should have (pushdown = false) as we should not involve the PK (at least currently)
-        return pushdown;
+        return FilterBranch.NA;
     }
 
-    private boolean handleAnd(AbstractFunctionCallExpression expression, int depth) throws AlgebricksException {
+    private FilterBranch handleAnd(AbstractFunctionCallExpression expression, int depth, UseDescriptor useDescriptor)
+            throws AlgebricksException {
         List<Mutable<ILogicalExpression>> args = expression.getArguments();
         Iterator<Mutable<ILogicalExpression>> argIter = args.iterator();
         while (argIter.hasNext()) {
             ILogicalExpression arg = argIter.next().getValue();
             // Allow for partial pushdown of AND operands
-            if (!pushdownFilterExpression(arg, depth + 1)) {
+            if (pushdownFilterExpression(arg, useDescriptor, depth + 1) == FilterBranch.NA) {
                 if (depth == 0) {
                     // Remove the expression that cannot be pushed down
                     argIter.remove();
                 } else {
-                    return false;
+                    return FilterBranch.NA;
                 }
             }
         }
-        return !args.isEmpty();
+        return !args.isEmpty() ? FilterBranch.AND : FilterBranch.NA;
     }
 
-    private boolean handleFunction(AbstractFunctionCallExpression expression, int depth) throws AlgebricksException {
+    protected boolean expressionReturnsArray(ILogicalExpression expression, ILogicalOperator operator)
+            throws AlgebricksException {
+        IAType expressionType = (IAType) context.getExpressionTypeComputer().getType(expression,
+                context.getMetadataProvider(), getTypeEnv(operator, context));
+        if (ATypeTag.UNION == expressionType.getTypeTag()) {
+            expressionType = ((AUnionType) expressionType).getActualType();
+        }
+        return ATypeTag.ARRAY == expressionType.getTypeTag() || ATypeTag.ANY == expressionType.getTypeTag();
+    }
+
+    private FilterBranch handleFunction(AbstractFunctionCallExpression expression, int depth,
+            UseDescriptor useDescriptor) throws AlgebricksException {
         if (!expression.getFunctionInfo().isFunctional() || isNotPushable(expression)) {
-            return false;
+            return FilterBranch.NA;
         }
 
         for (Mutable<ILogicalExpression> argRef : expression.getArguments()) {
             ILogicalExpression arg = argRef.getValue();
             // Either all arguments are pushable or none
-            if (!pushdownFilterExpression(arg, depth + 1)) {
-                return false;
+            if (pushdownFilterExpression(arg, useDescriptor, depth + 1) == FilterBranch.NA) {
+                return FilterBranch.NA;
             }
         }
-        return true;
+        return FilterBranch.FUNCTION;
     }
 }

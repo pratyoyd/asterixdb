@@ -52,10 +52,11 @@ import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.optype.JoinType;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationInput;
+import org.apache.asterix.lang.sqlpp.struct.TimeTravelSpec;
 import org.apache.asterix.lang.sqlpp.util.SqlppRewriteUtil;
 import org.apache.asterix.lang.sqlpp.util.SqlppVariableUtil;
 import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppSimpleExpressionVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 
 /**
@@ -104,8 +105,8 @@ public final class SqlppRightJoinRewriteVisitor extends AbstractSqlppSimpleExpre
                 FromTerm fromTerm = fromTerms.get(0);
                 if (canRewriteFromTerm(fromTerm)) {
                     Pair<FromTerm, List<LetClause>> newFromLetPair = rewriteFromTerm(fromTerm);
-                    fromTerms.set(0, newFromLetPair.first);
-                    selectBlock.getLetWhereList().addAll(0, newFromLetPair.second);
+                    fromTerms.set(0, newFromLetPair.getLeft());
+                    selectBlock.getLetWhereList().addAll(0, newFromLetPair.getRight());
                 }
             }
         }
@@ -149,6 +150,7 @@ public final class SqlppRightJoinRewriteVisitor extends AbstractSqlppSimpleExpre
         Expression fromExpr = fromTerm.getLeftExpression();
         VariableExpr fromVar = fromTerm.getLeftVariable();
         VariableExpr fromPosVar = fromTerm.getPositionalVariable();
+        TimeTravelSpec fromTimeTravel = fromTerm.getTimeTravel();
 
         List<AbstractBinaryCorrelateClause> correlateClauses = fromTerm.getCorrelateClauses();
         for (int i = 0; i < correlateClauses.size(); i++) {
@@ -161,16 +163,18 @@ public final class SqlppRightJoinRewriteVisitor extends AbstractSqlppSimpleExpre
                 Expression rightExpr = joinClause.getRightExpression();
                 VariableExpr rightVar = joinClause.getRightVariable();
                 VariableExpr rightPosVar = joinClause.getPositionalVariable();
+                TimeTravelSpec rightTimeTravel = joinClause.getTimeTravel();
                 Expression condExpr = joinClause.getConditionExpression();
                 Literal.Type outerMissingValueType = joinClause.getOuterJoinMissingValueType();
                 if (i == 0) {
                     JoinClause newJoinClause = new JoinClause(JoinType.LEFTOUTER, fromExpr, fromVar, fromPosVar,
-                            condExpr, outerMissingValueType);
+                            condExpr, outerMissingValueType, fromTimeTravel);
                     newJoinClause.setSourceLocation(joinClauseSourceLoc);
 
                     fromExpr = rightExpr;
                     fromVar = rightVar;
                     fromPosVar = rightPosVar;
+                    fromTimeTravel = rightTimeTravel;
                     correlateClauses.set(i, newJoinClause);
                 } else {
                     VarIdentifier newRightVar = context.newVariable();
@@ -247,11 +251,11 @@ public final class SqlppRightJoinRewriteVisitor extends AbstractSqlppSimpleExpre
                                 newPrecedingClause = new JoinClause(joinPrecedingClause.getJoinType(),
                                         joinPrecedingClause.getRightExpression(),
                                         newVariableExpr(newPrecedingClauseRightVar, precedingClauseRightVarSourceLoc),
-                                        newPrecedingClauseRightPosVar != null
-                                                ? newVariableExpr(newPrecedingClauseRightPosVar,
-                                                        precedingClauseRightPosVarSourceLoc)
+                                        newPrecedingClauseRightPosVar != null ? newVariableExpr(
+                                                newPrecedingClauseRightPosVar, precedingClauseRightPosVarSourceLoc)
                                                 : null,
-                                        newCondExpr, joinPrecedingClause.getOuterJoinMissingValueType());
+                                        newCondExpr, joinPrecedingClause.getOuterJoinMissingValueType(),
+                                        joinPrecedingClause.getTimeTravel());
                                 newPrecedingClause.setSourceLocation(precedingClauseSourceLoc);
                                 break;
                             case UNNEST_CLAUSE:
@@ -276,7 +280,7 @@ public final class SqlppRightJoinRewriteVisitor extends AbstractSqlppSimpleExpre
                     }
 
                     Expression newRightExpr = createRightSelectExpression(fromExpr, newFromVar, newFromPosVar,
-                            newPrecedingClauseList, projectList, joinClauseSourceLoc);
+                            newPrecedingClauseList, fromTimeTravel, projectList, joinClauseSourceLoc);
 
                     VariableExpr newRightVarExpr = newVariableExpr(newRightVar, rightVar.getSourceLocation());
                     newRightVarExpr.addHint(ExcludeFromSelectStarAnnotation.INSTANCE);
@@ -300,6 +304,7 @@ public final class SqlppRightJoinRewriteVisitor extends AbstractSqlppSimpleExpre
                     fromExpr = rightExpr;
                     fromVar = rightVar;
                     fromPosVar = rightPosVar;
+                    fromTimeTravel = rightTimeTravel;
 
                     correlateClauses.subList(0, i).clear();
                     correlateClauses.set(0, newJoinClause);
@@ -330,7 +335,7 @@ public final class SqlppRightJoinRewriteVisitor extends AbstractSqlppSimpleExpre
             }
         }
 
-        FromTerm newFromTerm = new FromTerm(fromExpr, fromVar, fromPosVar, correlateClauses);
+        FromTerm newFromTerm = new FromTerm(fromExpr, fromVar, fromPosVar, correlateClauses, fromTimeTravel);
         newFromTerm.setSourceLocation(fromTerm.getSourceLocation());
 
         List<LetClause> newLetClauses = new ArrayList<>(substMapOuterFinal.size());
@@ -342,14 +347,14 @@ public final class SqlppRightJoinRewriteVisitor extends AbstractSqlppSimpleExpre
             newLetClauses.add(newLetClause);
         }
 
-        return new Pair<>(newFromTerm, newLetClauses);
+        return Pair.of(newFromTerm, newLetClauses);
     }
 
     private Expression createRightSelectExpression(Expression fromExpr, VarIdentifier fromVar, VarIdentifier fromPosVar,
-            List<AbstractBinaryCorrelateClause> correlateClauseList, List<Projection> projectList,
-            SourceLocation sourceLoc) {
+            List<AbstractBinaryCorrelateClause> correlateClauseList, TimeTravelSpec timeTravel,
+            List<Projection> projectList, SourceLocation sourceLoc) {
         FromTerm newFromTerm = new FromTerm(fromExpr, newVariableExpr(fromVar, sourceLoc),
-                fromPosVar != null ? newVariableExpr(fromPosVar, sourceLoc) : null, correlateClauseList);
+                fromPosVar != null ? newVariableExpr(fromPosVar, sourceLoc) : null, correlateClauseList, timeTravel);
         List<FromTerm> newFromTermList = new ArrayList<>(1);
         newFromTermList.add(newFromTerm);
         FromClause newFromClause = new FromClause(newFromTermList);

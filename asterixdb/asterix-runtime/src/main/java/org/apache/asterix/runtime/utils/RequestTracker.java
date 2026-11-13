@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -43,6 +44,7 @@ public class RequestTracker implements IRequestTracker {
     private final Map<String, IClientRequest> runningRequests = new ConcurrentHashMap<>();
     private final Map<String, IClientRequest> clientIdRequests = new ConcurrentHashMap<>();
     private final Map<String, IClientRequest> completedRequests;
+    private final Map<String, IClientRequest> asyncRequests = new ConcurrentHashMap<>();
     private final ICcApplicationContext ccAppCtx;
     private final AtomicLong numRequests;
     private final AtomicLong numOfFailedRequests;
@@ -83,15 +85,44 @@ public class RequestTracker implements IRequestTracker {
     }
 
     @Override
-    public void cancel(String requestId) throws HyracksDataException {
-        final IClientRequest request = runningRequests.get(requestId);
-        if (request == null) {
+    public void trackAsyncOrDeferredRequest(IClientRequest request) {
+        asyncRequests.put(request.getId(), request);
+    }
+
+    @Override
+    public void removeAsyncOrDeferredRequest(String requestId) {
+        if (requestId != null) {
+            asyncRequests.remove(requestId);
+        }
+    }
+
+    public Optional<IClientRequest> getAsyncOrDeferredRequest(String requestId) {
+        return Optional.ofNullable(requestId).map(asyncRequests::get);
+    }
+
+    @Override
+    public void notifyResultSweep(JobId jobId, String requestId) {
+        if (requestId == null) {
             return;
         }
-        if (!request.isCancellable()) {
-            throw new IllegalStateException("Request " + request.getId() + " cannot be cancelled");
+        IClientRequest request = asyncRequests.get(requestId);
+        if (request != null) {
+            request.resultSwept(jobId);
+            if (request.hasPendingResults()) {
+                // kept as long as the client can still fetch any of its results
+                return;
+            }
         }
-        cancel(request);
+        removeAsyncOrDeferredRequest(requestId);
+    }
+
+    @Override
+    public boolean cancel(String requestId) throws HyracksDataException {
+        final IClientRequest request = runningRequests.get(requestId);
+        if (request == null) {
+            return false;
+        }
+        return cancel(request);
     }
 
     @Override
@@ -113,9 +144,17 @@ public class RequestTracker implements IRequestTracker {
         return Collections.unmodifiableCollection(new ArrayList<>(completedRequests.values()));
     }
 
-    private void cancel(IClientRequest request) throws HyracksDataException {
-        request.cancel(ccAppCtx);
-        untrack(request);
+    @Override
+    public synchronized Collection<IClientRequest> getAsyncRequests() {
+        return Collections.unmodifiableCollection(asyncRequests.values());
+    }
+
+    private boolean cancel(IClientRequest request) throws HyracksDataException {
+        boolean cancelled = request.cancel(ccAppCtx);
+        if (cancelled) {
+            untrack(request);
+        }
+        return cancelled;
     }
 
     private void untrack(IClientRequest request) {
@@ -126,6 +165,7 @@ public class RequestTracker implements IRequestTracker {
                 clientIdRequests.remove(completedRequest.getClientContextId());
             }
             archive(completedRequest);
+            completedRequest.archived();
         }
     }
 

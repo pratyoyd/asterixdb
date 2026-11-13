@@ -18,13 +18,19 @@
  */
 package org.apache.asterix.test.cloud_storage;
 
+import static org.apache.asterix.api.common.LocalCloudUtilAdobeMock.fillConfigTemplate;
+import static org.apache.asterix.test.cloud_storage.CloudStorageTest.CONFIG_FILE_TEMPLATE;
+import static org.apache.asterix.test.cloud_storage.CloudStorageTest.MOCK_SERVER_HOSTNAME_FRAGMENT;
+
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Random;
 
 import org.apache.asterix.api.common.LocalCloudUtilAdobeMock;
 import org.apache.asterix.common.config.GlobalConfig;
+import org.apache.asterix.test.common.TestConstants;
 import org.apache.asterix.test.common.TestExecutor;
 import org.apache.asterix.test.runtime.LangExecutionUtil;
 import org.apache.asterix.testframework.context.TestCaseContext;
@@ -43,6 +49,8 @@ import org.junit.runners.MethodSorters;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
+import com.adobe.testing.s3mock.testcontainers.S3MockContainer;
+
 /**
  * Run tests in cloud deployment environment with simulated unstable connection
  */
@@ -58,6 +66,9 @@ public class CloudStorageUnstableTest {
     private static final String CONFIG_FILE_NAME = "src/test/resources/cc-cloud-storage.conf";
     private static final String DELTA_RESULT_PATH = "results_cloud";
     private static final String EXCLUDED_TESTS = "MP";
+    // Tests excluded from unstable cloud runs because simulated I/O failures (UnstableCloudClient)
+    // cause non-deterministic LSM disk component layouts, making exact sample counts unpredictable.
+    private static final String[] UNSTABLE_DENY_LIST = { "ddl: analyze-dataset-1" };
 
     public CloudStorageUnstableTest(TestCaseContext tcCtx) {
         this.tcCtx = tcCtx;
@@ -66,7 +77,14 @@ public class CloudStorageUnstableTest {
     @BeforeClass
     public static void setUp() throws Exception {
         System.setProperty(CloudRetryableRequestUtil.CLOUD_UNSTABLE_MODE, "true");
-        LocalCloudUtilAdobeMock.startS3CloudEnvironment(true, true);
+        SimulatedCloudFailureLogFilter.install();
+        S3MockContainer s3Mock = LocalCloudUtilAdobeMock.startS3CloudEnvironment(true, true);
+        fillConfigTemplate(MOCK_SERVER_HOSTNAME_FRAGMENT + s3Mock.getHttpServerPort(), CONFIG_FILE_TEMPLATE,
+                CONFIG_FILE_NAME);
+        // the mock listens on a random published port; without this the %template% placeholder falls back to the
+        // fixed default endpoint (port 8001), where nothing is listening
+        System.setProperty(TestConstants.S3_SERVICE_ENDPOINT_KEY,
+                MOCK_SERVER_HOSTNAME_FRAGMENT + s3Mock.getHttpServerPort());
         TestExecutor testExecutor = new TestExecutor(DELTA_RESULT_PATH);
         testExecutor.executorId = "cloud";
         testExecutor.stripSubstring = "//DB:";
@@ -78,6 +96,8 @@ public class CloudStorageUnstableTest {
     public static void tearDown() throws Exception {
         System.clearProperty(CloudRetryableRequestUtil.CLOUD_UNSTABLE_MODE);
         LangExecutionUtil.tearDown();
+        SimulatedCloudFailureLogFilter.uninstall();
+        LocalCloudUtilAdobeMock.shutdownSilently();
     }
 
     @Parameters(name = "CloudStorageUnstableTest {index}: {0}")
@@ -99,7 +119,8 @@ public class CloudStorageUnstableTest {
     @Test
     public void test() throws Exception {
         List<TestCase.CompilationUnit> cu = tcCtx.getTestCase().getCompilationUnit();
-        Assume.assumeTrue(cu.size() > 1 || !EXCLUDED_TESTS.equals(getText(cu.get(0).getDescription())));
+        Assume.assumeTrue(cu.size() > 1 || (!EXCLUDED_TESTS.equals(getText(cu.get(0).getDescription()))
+                && !Arrays.stream(UNSTABLE_DENY_LIST).anyMatch(s -> tcCtx.toString().contains(s))));
         LangExecutionUtil.test(tcCtx);
     }
 

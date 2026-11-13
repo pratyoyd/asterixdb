@@ -39,8 +39,8 @@ import org.apache.asterix.metadata.utils.IndexUtil;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.om.types.IAType;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.data.IBinaryComparatorFactoryProvider;
 import org.apache.hyracks.algebricks.data.ITypeTraitProvider;
 import org.apache.hyracks.api.compression.ICompressorDecompressorFactory;
@@ -57,7 +57,6 @@ import org.apache.hyracks.storage.am.lsm.common.api.ILSMOperationTrackerFactory;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMPageWriteCallbackFactory;
 import org.apache.hyracks.storage.common.IResourceFactory;
 import org.apache.hyracks.storage.common.IStorageManager;
-import org.apache.hyracks.storage.common.compression.NoOpCompressorDecompressorFactory;
 
 public class BTreeResourceFactoryProvider implements IResourceFactoryProvider {
 
@@ -95,13 +94,8 @@ public class BTreeResourceFactoryProvider implements IResourceFactoryProvider {
                 AsterixVirtualBufferCacheProvider vbcProvider =
                         new AsterixVirtualBufferCacheProvider(dataset.getDatasetId());
 
-                final ICompressorDecompressorFactory compDecompFactory;
-                if (index.isPrimaryIndex()) {
-                    //Compress only primary index
-                    compDecompFactory = mdProvider.getCompressionManager().getFactory(dataset.getCompressionScheme());
-                } else {
-                    compDecompFactory = NoOpCompressorDecompressorFactory.INSTANCE;
-                }
+                final ICompressorDecompressorFactory compDecompFactory = mdProvider.getCompressionManager().getFactory(
+                        index.isPrimaryIndex() ? dataset.getCompressionScheme() : index.getCompressionScheme());
 
                 boolean isSecondaryNoIncrementalMaintenance = index.getIndexType() == DatasetConfig.IndexType.SAMPLE;
 
@@ -146,22 +140,30 @@ public class BTreeResourceFactoryProvider implements IResourceFactoryProvider {
                 && index.getIndexName().equals(IndexingConstants.getFilesIndexName(dataset.getDatasetName()))) {
             return new ITypeTraits[0];
         }
-        Index.ValueIndexDetails indexDetails = (Index.ValueIndexDetails) index.getIndexDetails();
+
         int numPrimaryKeys = dataset.getPrimaryKeys().size();
-        int numSecondaryKeys = indexDetails.getKeyFieldNames().size();
+        int numSecondaryKeys;
+        List<List<String>> keyFieldNames;
+        List<IAType> keyFieldTypes;
+        List<Integer> keySourceIndicators;
+
+        Index.ValueIndexDetails indexDetails = (Index.ValueIndexDetails) index.getIndexDetails();
+        numSecondaryKeys = indexDetails.getKeyFieldNames().size();
+        keyFieldNames = indexDetails.getKeyFieldNames();
+        keyFieldTypes = indexDetails.getKeyFieldTypes();
+        keySourceIndicators = indexDetails.getKeyFieldSourceIndicators();
         ITypeTraitProvider typeTraitProvider = metadataProvider.getStorageComponentProvider().getTypeTraitProvider();
         ITypeTraits[] secondaryTypeTraits = new ITypeTraits[numSecondaryKeys + numPrimaryKeys];
         for (int i = 0; i < numSecondaryKeys; i++) {
             ARecordType sourceType;
-            List<Integer> keySourceIndicators = indexDetails.getKeyFieldSourceIndicators();
             if (keySourceIndicators == null || keySourceIndicators.get(i) == 0) {
                 sourceType = recordType;
             } else {
                 sourceType = metaType;
             }
-            Pair<IAType, Boolean> keyTypePair = Index.getNonNullableOpenFieldType(index,
-                    indexDetails.getKeyFieldTypes().get(i), indexDetails.getKeyFieldNames().get(i), sourceType);
-            IAType keyType = keyTypePair.first;
+            Pair<IAType, Boolean> keyTypePair =
+                    Index.getNonNullableOpenFieldType(index, keyFieldTypes.get(i), keyFieldNames.get(i), sourceType);
+            IAType keyType = keyTypePair.getLeft();
             secondaryTypeTraits[i] = typeTraitProvider.getTypeTrait(keyType);
         }
         // Add serializers and comparators for primary index fields.
@@ -179,24 +181,32 @@ public class BTreeResourceFactoryProvider implements IResourceFactoryProvider {
                 && index.getIndexName().equals(IndexingConstants.getFilesIndexName(dataset.getDatasetName()))) {
             return new IBinaryComparatorFactory[0];
         }
-        Index.ValueIndexDetails indexDetails = (Index.ValueIndexDetails) index.getIndexDetails();
+
         int numPrimaryKeys = dataset.getPrimaryKeys().size();
-        int numSecondaryKeys = indexDetails.getKeyFieldNames().size();
+        int numSecondaryKeys;
+        List<List<String>> keyFieldNames;
+        List<IAType> keyFieldTypes;
+        List<Integer> keySourceIndicators;
+
+        Index.ValueIndexDetails indexDetails = (Index.ValueIndexDetails) index.getIndexDetails();
+        numSecondaryKeys = indexDetails.getKeyFieldNames().size();
+        keyFieldNames = indexDetails.getKeyFieldNames();
+        keyFieldTypes = indexDetails.getKeyFieldTypes();
+        keySourceIndicators = indexDetails.getKeyFieldSourceIndicators();
         IBinaryComparatorFactoryProvider cmpFactoryProvider =
                 metadataProvider.getStorageComponentProvider().getComparatorFactoryProvider();
         IBinaryComparatorFactory[] secondaryCmpFactories =
                 new IBinaryComparatorFactory[numSecondaryKeys + numPrimaryKeys];
         for (int i = 0; i < numSecondaryKeys; i++) {
             ARecordType sourceType;
-            List<Integer> keySourceIndicators = indexDetails.getKeyFieldSourceIndicators();
             if (keySourceIndicators == null || keySourceIndicators.get(i) == 0) {
                 sourceType = recordType;
             } else {
                 sourceType = metaType;
             }
-            Pair<IAType, Boolean> keyTypePair = Index.getNonNullableOpenFieldType(index,
-                    indexDetails.getKeyFieldTypes().get(i), indexDetails.getKeyFieldNames().get(i), sourceType);
-            IAType keyType = keyTypePair.first;
+            Pair<IAType, Boolean> keyTypePair =
+                    Index.getNonNullableOpenFieldType(index, keyFieldTypes.get(i), keyFieldNames.get(i), sourceType);
+            IAType keyType = keyTypePair.getLeft();
             secondaryCmpFactories[i] = cmpFactoryProvider.getBinaryComparatorFactory(keyType, true);
         }
         // Add serializers and comparators for primary index fields.
@@ -221,7 +231,7 @@ public class BTreeResourceFactoryProvider implements IResourceFactoryProvider {
         switch (index.getIndexType()) {
             case BTREE:
             case RTREE:
-                // secondary btrees and rtrees do not have bloom filters
+                // Secondary btrees and rtrees do not have bloom filters.
                 return null;
             case LENGTH_PARTITIONED_NGRAM_INVIX:
             case LENGTH_PARTITIONED_WORD_INVIX:

@@ -24,6 +24,7 @@ import java.util.ArrayList;
 
 import org.apache.hyracks.api.comm.IFrameTupleAccessor;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
+import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.dataflow.std.sort.util.DeletableFrameTupleAppender;
 import org.apache.hyracks.dataflow.std.sort.util.IAppendDeletableFrameTupleAccessor;
@@ -86,11 +87,19 @@ public class VariableDeletableTupleMemoryManager implements IDeletableTupleBuffe
                 return false;
             }
         }
-        assert frameId >= 0;
+        if (frameId < 0) {
+            return false;
+        }
         accessor.reset(frames.get(frameId));
-        assert accessor.getContiguousFreeSpace() >= requiredFreeSpace;
+        if (accessor.getContiguousFreeSpace() < requiredFreeSpace) {
+            // the appender writes this tuple's slot over the tuple's own data if this does not hold.
+            // returning false would be wrong: the caller reads that as "out of memory"
+            throw HyracksDataException.create(ErrorCode.ILLEGAL_STATE,
+                    "a frame with " + accessor.getContiguousFreeSpace()
+                            + " bytes of contiguous free space cannot hold a tuple requiring " + requiredFreeSpace
+                            + " bytes");
+        }
         int tid = accessor.append(fta, idx);
-        assert tid >= 0;
         tuplePointer.reset(frameId, tid);
         if (accessor.getContiguousFreeSpace() > minFreeSpace) {
             policy.pushNewFrame(frameId, accessor.getContiguousFreeSpace());
@@ -135,7 +144,8 @@ public class VariableDeletableTupleMemoryManager implements IDeletableTupleBuffe
     }
 
     private static int calculateMinFrameSizeToPlaceTuple(int requiredFreeSpace, int minFrameSize) {
-        return (1 + (requiredFreeSpace + 4 - 1) / minFrameSize) * minFrameSize;
+        return (1 + (requiredFreeSpace + DeletableFrameTupleAppender.FRAME_META_SIZE - 1) / minFrameSize)
+                * minFrameSize;
     }
 
     private static int calculatePhysicalSpace(IFrameTupleAccessor fta, int idx) {
@@ -161,9 +171,7 @@ public class VariableDeletableTupleMemoryManager implements IDeletableTupleBuffe
         policy.close();
         frames.clear();
         numTuples = 0;
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("VariableTupleMemoryManager has reorganized " + statsReOrg + " times");
-        }
+        LOG.trace("VariableTupleMemoryManager has reorganized {} times", statsReOrg);
         statsReOrg = 0;
     }
 

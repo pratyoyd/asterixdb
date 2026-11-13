@@ -23,6 +23,7 @@ import java.util.Collection;
 import java.util.List;
 
 import org.apache.asterix.common.exceptions.CompilationException;
+import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.lang.common.base.ILangExpression;
 import org.apache.asterix.lang.common.clause.GroupbyClause;
 import org.apache.asterix.lang.common.clause.LetClause;
@@ -47,6 +48,7 @@ import org.apache.asterix.lang.common.statement.CopyToStatement;
 import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.struct.QuantifiedPair;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateClause;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.HavingClause;
@@ -60,10 +62,12 @@ import org.apache.asterix.lang.sqlpp.clause.SelectRegular;
 import org.apache.asterix.lang.sqlpp.clause.SelectSetOperation;
 import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.CaseExpression;
+import org.apache.asterix.lang.sqlpp.expression.ChangeExpression;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationRight;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.asterix.lang.sqlpp.struct.TimeTravelSpec;
+import org.apache.commons.lang3.tuple.Pair;
 
 /**
  * Base class for visitors that search for expressions having certain properties and return a boolean value
@@ -87,6 +91,9 @@ public abstract class AbstractSqlppContainsExpressionVisitor<T>
         if (visit(fromTerm.getLeftExpression(), arg)) {
             return true;
         }
+        if (visitTimeTravel(fromTerm.getTimeTravel(), arg)) {
+            return true;
+        }
         if (fromTerm.hasCorrelateClauses()) {
             for (AbstractBinaryCorrelateClause correlateClause : fromTerm.getCorrelateClauses()) {
                 if (correlateClause.accept(this, arg)) {
@@ -99,7 +106,8 @@ public abstract class AbstractSqlppContainsExpressionVisitor<T>
 
     @Override
     public Boolean visit(JoinClause joinClause, T arg) throws CompilationException {
-        return visit(joinClause.getRightExpression(), arg) || visit(joinClause.getConditionExpression(), arg);
+        return visit(joinClause.getRightExpression(), arg) || visitTimeTravel(joinClause.getTimeTravel(), arg)
+                || visit(joinClause.getConditionExpression(), arg);
     }
 
     @Override
@@ -175,6 +183,12 @@ public abstract class AbstractSqlppContainsExpressionVisitor<T>
     public Boolean visit(CaseExpression caseExpression, T arg) throws CompilationException {
         return visit(caseExpression.getConditionExpr(), arg) || visitExprList(caseExpression.getWhenExprs(), arg)
                 || visitExprList(caseExpression.getThenExprs(), arg) || visit(caseExpression.getElseExpr(), arg);
+    }
+
+    @Override
+    public Boolean visit(ChangeExpression changeExpr, T arg) throws CompilationException {
+        // Change expressions are changed to select expressions before getting to this visitor.
+        throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE, changeExpr.getSourceLocation());
     }
 
     @Override
@@ -332,10 +346,25 @@ public abstract class AbstractSqlppContainsExpressionVisitor<T>
     private <E extends ILangExpression> boolean visitFieldList(Collection<Pair<E, Identifier>> fieldList, T arg)
             throws CompilationException {
         for (Pair<E, Identifier> p : fieldList) {
-            if (visit(p.first, arg)) {
+            if (visit(p.getLeft(), arg)) {
                 return true;
             }
         }
         return false;
+    }
+
+    @Override
+    public Boolean visit(ClusterbyClause cc, T arg) throws CompilationException {
+        if (visit(cc.getClusteringExpression(), arg)) {
+            return true;
+        }
+        if (cc.hasClusterFieldList() && visitFieldList(cc.getClusterFieldList(), arg)) {
+            return true;
+        }
+        return cc.hasWithOptions() && visit(cc.getWithOptions(), arg);
+    }
+
+    protected Boolean visitTimeTravel(TimeTravelSpec timeTravel, T arg) throws CompilationException {
+        return timeTravel != null && visit(timeTravel.getValueExpression(), arg);
     }
 }

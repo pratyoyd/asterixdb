@@ -23,13 +23,16 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
 import org.apache.avro.generic.GenericData;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hyracks.api.util.IoUtil;
 import org.apache.parquet.avro.AvroParquetWriter;
@@ -46,6 +49,7 @@ import io.delta.standalone.types.IntegerType;
 import io.delta.standalone.types.StringType;
 import io.delta.standalone.types.StructField;
 import io.delta.standalone.types.StructType;
+import io.delta.standalone.types.TimestampType;
 
 public class DeltaTableGenerator {
     public static final String DELTA_GEN_BASEDIR = "target" + File.separatorChar + "generated_delta_files";
@@ -59,6 +63,10 @@ public class DeltaTableGenerator {
             "target" + File.separatorChar + "generated_delta_files" + File.separatorChar + "delta_file_size_one";
     public static final String DELTA_FILE_SIZE_NINE =
             "target" + File.separatorChar + "generated_delta_files" + File.separatorChar + "delta_file_size_nine";
+    public static final String DELTA_PARTITIONED_TABLE =
+            "target" + File.separatorChar + "generated_delta_files" + File.separatorChar + "partitioned_delta_table";
+    public static final String DELTA_TIMESTAMP_PARTITIONED_TABLE = "target" + File.separatorChar
+            + "generated_delta_files" + File.separatorChar + "timestamp_partitioned_delta_table";
 
     public static void prepareDeltaTableContainer(Configuration conf) {
         File basePath = new File(".");
@@ -68,6 +76,8 @@ public class DeltaTableGenerator {
         prepareEmptyTable(conf);
         prepareFileSizeOne(conf);
         prepareFileSizeNine(conf);
+        preparePartitionedTable(conf);
+        prepareTimestampPartitionedTable(conf);
     }
 
     public static void cleanBinaryDirectory(File localDataRoot, String binaryFilesPath) {
@@ -124,8 +134,9 @@ public class DeltaTableGenerator {
                 writer.write(record);
             }
 
-            long size = writer.getDataSize();
+            FileSystem fs = FileSystem.getLocal(conf);
             writer.close();
+            long size = fs.getFileStatus(path).getLen();
 
             List<Action> actions = List.of(new AddFile("firstFile.parquet", new HashMap<>(), size,
                     System.currentTimeMillis(), true, null, null));
@@ -145,8 +156,8 @@ public class DeltaTableGenerator {
             for (GenericData.Record record : fileSecondSnapshotRecords) {
                 writer2.write(record);
             }
-            long size2 = writer2.getDataSize();
             writer2.close();
+            long size2 = fs.getFileStatus(path2).getLen();
             AddFile addFile = new AddFile("firstFile.parquet", new HashMap<>(), size, System.currentTimeMillis(), true,
                     null, null);
             RemoveFile removeFile = addFile.remove();
@@ -192,8 +203,9 @@ public class DeltaTableGenerator {
                 writer.write(record);
             }
 
-            long size = writer.getDataSize();
+            FileSystem fs = FileSystem.getLocal(conf);
             writer.close();
+            long size = fs.getFileStatus(path).getLen();
 
             List<Action> actions = List.of(new AddFile("firstFile.parquet", new HashMap<>(), size,
                     System.currentTimeMillis(), true, null, null));
@@ -215,8 +227,8 @@ public class DeltaTableGenerator {
                 writer2.write(record);
             }
 
-            long size2 = writer2.getDataSize();
             writer2.close();
+            long size2 = fs.getFileStatus(path2).getLen();
 
             List<Action> actions2 = List.of(new AddFile("secondFile.parquet", new HashMap<>(), size2,
                     System.currentTimeMillis(), true, null, null));
@@ -243,9 +255,9 @@ public class DeltaTableGenerator {
             for (GenericData.Record record : fileFirstSnapshotRecords) {
                 writer.write(record);
             }
-
-            long size = writer.getDataSize();
+            FileSystem fs = FileSystem.getLocal(conf);
             writer.close();
+            long size = fs.getFileStatus(path).getLen();
 
             List<Action> actions = List.of(new AddFile("firstFile.parquet", new HashMap<>(), size,
                     System.currentTimeMillis(), true, null, null));
@@ -316,8 +328,9 @@ public class DeltaTableGenerator {
                 writer.write(record);
             }
 
-            long size = writer.getDataSize();
+            FileSystem fs = FileSystem.getLocal(conf);
             writer.close();
+            long size = fs.getFileStatus(path).getLen();
 
             List<Action> actions = List.of(new AddFile("firstFile.parquet", new HashMap<>(), size,
                     System.currentTimeMillis(), true, null, null));
@@ -339,8 +352,8 @@ public class DeltaTableGenerator {
                     writer2.write(record);
                 }
 
-                long size2 = writer2.getDataSize();
                 writer2.close();
+                long size2 = fs.getFileStatus(path2).getLen();
 
                 List<Action> actions2 = List.of(new AddFile("File" + i + ".parquet", new HashMap<>(), size2,
                         System.currentTimeMillis(), true, null, null));
@@ -348,6 +361,274 @@ public class DeltaTableGenerator {
                 OptimisticTransaction txn2 = log.startTransaction();
                 txn2.commit(actions2, new Operation(Operation.Name.WRITE), "deltalake-table-create");
             }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static void preparePartitionedTable(Configuration conf) {
+        Schema schema = SchemaBuilder.record("MyRecord").fields().requiredInt("id").requiredString("name")
+                .requiredString("date").requiredString("hour").endRecord();
+        try {
+            List<GenericData.Record> fileFirstSnapshotRecords = List.of(new GenericData.Record(schema),
+                    new GenericData.Record(schema), new GenericData.Record(schema));
+            List<GenericData.Record> fileSecondSnapshotRecords =
+                    List.of(new GenericData.Record(schema), new GenericData.Record(schema));
+            List<GenericData.Record> fileThirdSnapshotRecords =
+                    List.of(new GenericData.Record(schema), new GenericData.Record(schema));
+            List<GenericData.Record> fileFourthSnapshotRecords =
+                    List.of(new GenericData.Record(schema), new GenericData.Record(schema));
+
+            fileFirstSnapshotRecords.get(0).put("id", 0);
+            fileFirstSnapshotRecords.get(0).put("name", "Order 1");
+            fileFirstSnapshotRecords.get(0).put("date", "01-01-2025");
+            fileFirstSnapshotRecords.get(0).put("hour", 10);
+
+            fileFirstSnapshotRecords.get(1).put("id", 1);
+            fileFirstSnapshotRecords.get(1).put("name", "Order 2");
+            fileFirstSnapshotRecords.get(1).put("date", "01-01-2025");
+            fileFirstSnapshotRecords.get(1).put("hour", 10);
+
+            fileFirstSnapshotRecords.get(2).put("id", 2);
+            fileFirstSnapshotRecords.get(2).put("name", "Order 3");
+            fileFirstSnapshotRecords.get(2).put("date", "01-01-2025");
+            fileFirstSnapshotRecords.get(2).put("hour", 10);
+
+            fileSecondSnapshotRecords.get(0).put("id", 3);
+            fileSecondSnapshotRecords.get(0).put("name", "Order 10");
+            fileSecondSnapshotRecords.get(0).put("date", "01-01-2025");
+            fileSecondSnapshotRecords.get(0).put("hour", 15);
+
+            fileSecondSnapshotRecords.get(1).put("id", 4);
+            fileSecondSnapshotRecords.get(1).put("name", "Order 11");
+            fileSecondSnapshotRecords.get(1).put("date", "01-01-2025");
+            fileSecondSnapshotRecords.get(1).put("hour", 15);
+
+            fileThirdSnapshotRecords.get(0).put("id", 5);
+            fileThirdSnapshotRecords.get(0).put("name", "Order 21");
+            fileThirdSnapshotRecords.get(0).put("date", "01-02-2025");
+            fileThirdSnapshotRecords.get(0).put("hour", 12);
+
+            fileThirdSnapshotRecords.get(1).put("id", 6);
+            fileThirdSnapshotRecords.get(1).put("name", "Order 22");
+            fileThirdSnapshotRecords.get(1).put("date", "01-02-2025");
+            fileThirdSnapshotRecords.get(1).put("hour", 12);
+
+            fileFourthSnapshotRecords.get(0).put("id", 7);
+            fileFourthSnapshotRecords.get(0).put("name", "Order 30");
+            fileFourthSnapshotRecords.get(0).put("date", "01-02-2025");
+            fileFourthSnapshotRecords.get(0).put("hour", 16);
+
+            fileFourthSnapshotRecords.get(1).put("id", 8);
+            fileFourthSnapshotRecords.get(1).put("name", "Order 31");
+            fileFourthSnapshotRecords.get(1).put("date", "01-02-2025");
+            fileFourthSnapshotRecords.get(1).put("hour", 16);
+
+            Path path = new Path(DELTA_PARTITIONED_TABLE, "firstFile.parquet");
+            ParquetWriter<GenericData.Record> writer =
+                    AvroParquetWriter.<GenericData.Record> builder(path).withConf(conf).withSchema(schema).build();
+            for (GenericData.Record record : fileFirstSnapshotRecords) {
+                writer.write(record);
+            }
+            FileSystem fs = FileSystem.getLocal(conf);
+            writer.close();
+            long size = fs.getFileStatus(path).getLen();
+
+            Path path2 = new Path(DELTA_PARTITIONED_TABLE, "secondFile.parquet");
+            ParquetWriter<GenericData.Record> writer2 =
+                    AvroParquetWriter.<GenericData.Record> builder(path2).withConf(conf).withSchema(schema).build();
+            for (GenericData.Record record : fileSecondSnapshotRecords) {
+                writer2.write(record);
+            }
+            writer2.close();
+            long size2 = fs.getFileStatus(path2).getLen();
+
+            Path path3 = new Path(DELTA_PARTITIONED_TABLE, "thirdFile.parquet");
+            ParquetWriter<GenericData.Record> writer3 =
+                    AvroParquetWriter.<GenericData.Record> builder(path3).withConf(conf).withSchema(schema).build();
+            for (GenericData.Record record : fileThirdSnapshotRecords) {
+                writer3.write(record);
+            }
+            writer3.close();
+            long size3 = fs.getFileStatus(path3).getLen();
+
+            Path path4 = new Path(DELTA_PARTITIONED_TABLE, "fourthFile.parquet");
+            ParquetWriter<GenericData.Record> writer4 =
+                    AvroParquetWriter.<GenericData.Record> builder(path4).withConf(conf).withSchema(schema).build();
+            for (GenericData.Record record : fileFourthSnapshotRecords) {
+                writer4.write(record);
+            }
+            writer4.close();
+            long size4 = fs.getFileStatus(path4).getLen();
+
+            DeltaLog log = DeltaLog.forTable(conf, DELTA_PARTITIONED_TABLE);
+            OptimisticTransaction txn = log.startTransaction();
+            Metadata metaData = txn.metadata().copyBuilder().partitionColumns(Arrays.asList("date", "hour"))
+                    .schema(new StructType().add(new StructField("id", new IntegerType(), true))
+                            .add(new StructField("name", new StringType(), true))
+                            .add(new StructField("date", new StringType(), true))
+                            .add(new StructField("hour", new IntegerType(), true)))
+                    .build();
+
+            Map<String, String> partitionValues = new HashMap<>();
+            partitionValues.put("date", "01-01-2025");
+            partitionValues.put("hour", "10");
+            List<Action> actions = List.of(new AddFile("firstFile.parquet", partitionValues, size,
+                    System.currentTimeMillis(), true, null, null));
+            txn.updateMetadata(metaData);
+            txn.commit(actions, new Operation(Operation.Name.CREATE_TABLE), "deltalake-table-create");
+
+            txn = log.startTransaction();
+            partitionValues.clear();
+            partitionValues.put("date", "01-01-2025");
+            partitionValues.put("hour", "15");
+            actions = List.of(new AddFile("secondFile.parquet", partitionValues, size2, System.currentTimeMillis(),
+                    true, null, null));
+            txn.commit(actions, new Operation(Operation.Name.WRITE), "deltalake-table-create");
+
+            txn = log.startTransaction();
+            partitionValues.clear();
+            partitionValues.put("date", "01-02-2025");
+            partitionValues.put("hour", "12");
+            actions = List.of(new AddFile("thirdFile.parquet", partitionValues, size3, System.currentTimeMillis(), true,
+                    null, null));
+            txn.commit(actions, new Operation(Operation.Name.WRITE), "deltalake-table-create");
+
+            txn = log.startTransaction();
+            partitionValues.clear();
+            partitionValues.put("date", "01-02-2025");
+            partitionValues.put("hour", "16");
+            actions = List.of(new AddFile("fourthFile.parquet", partitionValues, size4, System.currentTimeMillis(),
+                    true, null, null));
+            txn.commit(actions, new Operation(Operation.Name.WRITE), "deltalake-table-create");
+
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static void prepareTimestampPartitionedTable(Configuration conf) {
+        Schema schema = SchemaBuilder.record("MyRecord").fields().requiredInt("id").requiredString("name")
+                .requiredString("timestamp").endRecord();
+        try {
+            List<GenericData.Record> fileFirstSnapshotRecords = List.of(new GenericData.Record(schema),
+                    new GenericData.Record(schema), new GenericData.Record(schema));
+            List<GenericData.Record> fileSecondSnapshotRecords =
+                    List.of(new GenericData.Record(schema), new GenericData.Record(schema));
+            List<GenericData.Record> fileThirdSnapshotRecords =
+                    List.of(new GenericData.Record(schema), new GenericData.Record(schema));
+            List<GenericData.Record> fileFourthSnapshotRecords =
+                    List.of(new GenericData.Record(schema), new GenericData.Record(schema));
+
+            fileFirstSnapshotRecords.get(0).put("id", 0);
+            fileFirstSnapshotRecords.get(0).put("name", "Order 1");
+            fileFirstSnapshotRecords.get(0).put("timestamp", "2025-01-01 00:01:20");
+
+            fileFirstSnapshotRecords.get(1).put("id", 1);
+            fileFirstSnapshotRecords.get(1).put("name", "Order 2");
+            fileFirstSnapshotRecords.get(1).put("timestamp", "2025-01-01 00:01:20.00");
+
+            fileFirstSnapshotRecords.get(2).put("id", 2);
+            fileFirstSnapshotRecords.get(2).put("name", "Order 3");
+            fileFirstSnapshotRecords.get(2).put("timestamp", "2025-01-01 00:01:20.000000");
+
+            fileSecondSnapshotRecords.get(0).put("id", 3);
+            fileSecondSnapshotRecords.get(0).put("name", "Order 10");
+            fileSecondSnapshotRecords.get(0).put("timestamp", "2025-01-01T00:01:30Z");
+
+            fileSecondSnapshotRecords.get(1).put("id", 4);
+            fileSecondSnapshotRecords.get(1).put("name", "Order 11");
+            fileSecondSnapshotRecords.get(1).put("timestamp", "2025-01-01T00T01:30.000000Z");
+
+            fileThirdSnapshotRecords.get(0).put("id", 5);
+            fileThirdSnapshotRecords.get(0).put("name", "Order 21");
+            fileThirdSnapshotRecords.get(0).put("timestamp", "2025-01-02 00:02:20.100");
+
+            fileThirdSnapshotRecords.get(1).put("id", 6);
+            fileThirdSnapshotRecords.get(1).put("name", "Order 22");
+            fileThirdSnapshotRecords.get(1).put("timestamp", "2025-01-02 00:02:20.100");
+
+            fileFourthSnapshotRecords.get(0).put("id", 7);
+            fileFourthSnapshotRecords.get(0).put("name", "Order 30");
+            fileFourthSnapshotRecords.get(0).put("timestamp", "2025-01-02T00:02:30.100000Z");
+
+            fileFourthSnapshotRecords.get(1).put("id", 8);
+            fileFourthSnapshotRecords.get(1).put("name", "Order 31");
+            fileFourthSnapshotRecords.get(1).put("timestamp", "2025-01-02T00:02:30.100000Z");
+
+            Path path = new Path(DELTA_TIMESTAMP_PARTITIONED_TABLE, "firstFile.parquet");
+            ParquetWriter<GenericData.Record> writer =
+                    AvroParquetWriter.<GenericData.Record> builder(path).withConf(conf).withSchema(schema).build();
+            for (GenericData.Record record : fileFirstSnapshotRecords) {
+                writer.write(record);
+            }
+            FileSystem fs = FileSystem.getLocal(conf);
+            writer.close();
+            long size = fs.getFileStatus(path).getLen();
+
+            Path path2 = new Path(DELTA_TIMESTAMP_PARTITIONED_TABLE, "secondFile.parquet");
+            ParquetWriter<GenericData.Record> writer2 =
+                    AvroParquetWriter.<GenericData.Record> builder(path2).withConf(conf).withSchema(schema).build();
+            for (GenericData.Record record : fileSecondSnapshotRecords) {
+                writer2.write(record);
+            }
+            writer2.close();
+            long size2 = fs.getFileStatus(path2).getLen();
+
+            Path path3 = new Path(DELTA_TIMESTAMP_PARTITIONED_TABLE, "thirdFile.parquet");
+            ParquetWriter<GenericData.Record> writer3 =
+                    AvroParquetWriter.<GenericData.Record> builder(path3).withConf(conf).withSchema(schema).build();
+            for (GenericData.Record record : fileThirdSnapshotRecords) {
+                writer3.write(record);
+            }
+            writer3.close();
+            long size3 = fs.getFileStatus(path3).getLen();
+
+            Path path4 = new Path(DELTA_TIMESTAMP_PARTITIONED_TABLE, "fourthFile.parquet");
+            ParquetWriter<GenericData.Record> writer4 =
+                    AvroParquetWriter.<GenericData.Record> builder(path4).withConf(conf).withSchema(schema).build();
+            for (GenericData.Record record : fileFourthSnapshotRecords) {
+                writer4.write(record);
+            }
+            writer4.close();
+            long size4 = fs.getFileStatus(path4).getLen();
+
+            DeltaLog log = DeltaLog.forTable(conf, DELTA_TIMESTAMP_PARTITIONED_TABLE);
+            OptimisticTransaction txn = log.startTransaction();
+            Metadata metaData = txn.metadata().copyBuilder().partitionColumns(Arrays.asList("timestamp"))
+                    .schema(new StructType().add(new StructField("id", new IntegerType(), true))
+                            .add(new StructField("name", new StringType(), true))
+                            .add(new StructField("timestamp", new TimestampType(), true)))
+                    .build();
+
+            Map<String, String> partitionValues = new HashMap<>();
+            partitionValues.put("timestamp", "2025-01-01 00:01:20");
+            List<Action> actions = List.of(new AddFile("firstFile.parquet", partitionValues, size,
+                    System.currentTimeMillis(), true, null, null));
+            txn.updateMetadata(metaData);
+            txn.commit(actions, new Operation(Operation.Name.CREATE_TABLE), "deltalake-table-create");
+
+            txn = log.startTransaction();
+            partitionValues.clear();
+            partitionValues.put("timestamp", "2025-01-01T00:01:30Z");
+            actions = List.of(new AddFile("secondFile.parquet", partitionValues, size2, System.currentTimeMillis(),
+                    true, null, null));
+            txn.commit(actions, new Operation(Operation.Name.WRITE), "deltalake-table-create");
+
+            txn = log.startTransaction();
+            partitionValues.clear();
+            partitionValues.put("timestamp", "2025-01-02 00:02:20.100");
+            actions = List.of(new AddFile("thirdFile.parquet", partitionValues, size3, System.currentTimeMillis(), true,
+                    null, null));
+            txn.commit(actions, new Operation(Operation.Name.WRITE), "deltalake-table-create");
+
+            txn = log.startTransaction();
+            partitionValues.clear();
+            partitionValues.put("timestamp", "2025-01-02T00:02:30.100000Z");
+            actions = List.of(new AddFile("fourthFile.parquet", partitionValues, size4, System.currentTimeMillis(),
+                    true, null, null));
+            txn.commit(actions, new Operation(Operation.Name.WRITE), "deltalake-table-create");
+
         } catch (IOException e) {
             throw new RuntimeException(e);
         }

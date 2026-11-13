@@ -21,11 +21,14 @@ package org.apache.hyracks.control.common.controllers;
 import static org.apache.hyracks.control.common.config.OptionTypes.BOOLEAN;
 import static org.apache.hyracks.control.common.config.OptionTypes.INTEGER;
 import static org.apache.hyracks.control.common.config.OptionTypes.INTEGER_BYTE_UNIT;
-import static org.apache.hyracks.control.common.config.OptionTypes.LONG;
 import static org.apache.hyracks.control.common.config.OptionTypes.NONNEGATIVE_INTEGER;
 import static org.apache.hyracks.control.common.config.OptionTypes.POSITIVE_INTEGER;
+import static org.apache.hyracks.control.common.config.OptionTypes.POSITIVE_LONG;
+import static org.apache.hyracks.control.common.config.OptionTypes.POSITIVE_LONG_BYTE_UNIT;
 import static org.apache.hyracks.control.common.config.OptionTypes.STRING;
 import static org.apache.hyracks.control.common.config.OptionTypes.STRING_ARRAY;
+import static org.apache.hyracks.control.common.config.OptionTypes.getRangedIntegerType;
+import static org.apache.hyracks.control.common.utils.ConfigurationUtil.JAVA_IO_TMPDIR;
 
 import java.net.InetAddress;
 import java.util.ArrayList;
@@ -50,7 +53,7 @@ public class NCConfig extends ControllerConfig {
         CLUSTER_LISTEN_ADDRESS(STRING, ADDRESS),
         CLUSTER_LISTEN_PORT(NONNEGATIVE_INTEGER, 0),
         NCSERVICE_ADDRESS(STRING, PUBLIC_ADDRESS),
-        NCSERVICE_PORT(INTEGER, 9090),
+        NCSERVICE_PORT(getRangedIntegerType(-1, 65535), 9090),
         CLUSTER_ADDRESS(STRING, (String) null),
         CLUSTER_PORT(NONNEGATIVE_INTEGER, 1099),
         CLUSTER_PUBLIC_ADDRESS(STRING, PUBLIC_ADDRESS),
@@ -81,8 +84,8 @@ public class NCConfig extends ControllerConfig {
                 "<value of " + ControllerConfig.Option.DEFAULT_DIR.cmdline() + ">/iodevice"),
         NET_THREAD_COUNT(POSITIVE_INTEGER, 1),
         NET_BUFFER_COUNT(POSITIVE_INTEGER, 1),
-        RESULT_TTL(LONG, 86400000L),
-        RESULT_SWEEP_THRESHOLD(LONG, 60000L),
+        RESULT_TTL(POSITIVE_LONG, 3600000L),
+        RESULT_SWEEP_THRESHOLD(POSITIVE_LONG, 60000L),
         RESULT_MANAGER_MEMORY(INTEGER_BYTE_UNIT, -1),
         @SuppressWarnings("RedundantCast") // not redundant- false positive from IDEA
         APP_CLASS(STRING, (String) null),
@@ -102,11 +105,21 @@ public class NCConfig extends ControllerConfig {
         PYTHON_ARGS(STRING_ARRAY, (String[]) null),
         PYTHON_ENV(STRING_ARRAY, (String[]) null),
         PYTHON_DS_PATH(STRING, (String) null),
+        UDF_API_DS_PATH(
+                STRING,
+                appConfig -> FileUtil.joinPath(System.getProperty(JAVA_IO_TMPDIR), "asterixdb_udf",
+                        appConfig.getString(NODE_ID) + "_udf.sock"),
+                "Defaults to temporary directory/asterixdb_udf/{$NODE_ID}_udf.sock. Path must be <100 characters"),
+        LIBRARY_MAX_FILE_SIZE(POSITIVE_LONG_BYTE_UNIT, 250L * 1024 * 1024), //250MB
+        LIBRARY_MAX_EXTRACTED_SIZE(POSITIVE_LONG_BYTE_UNIT, 1000L * 1024 * 1024), //1GB
+        LIBRARY_MAX_ARCHIVE_ENTRIES(INTEGER, 4096),
         CREDENTIAL_FILE(
                 OptionTypes.STRING,
-                (Function<IApplicationConfig, String>) appConfig -> FileUtil
-                        .joinPath(appConfig.getString(ControllerConfig.Option.DEFAULT_DIR), "passwd"),
-                ControllerConfig.Option.DEFAULT_DIR.cmdline() + "/passwd");
+                appConfig -> FileUtil.joinPath(appConfig.getString(ControllerConfig.Option.DEFAULT_DIR), "passwd"),
+                ControllerConfig.Option.DEFAULT_DIR.cmdline() + "/passwd"),
+        STORAGE_MAX_COLUMNS_IN_ZEROTH_SEGMENT(INTEGER_BYTE_UNIT, 5000),
+        STORAGE_PAGE_ZERO_WRITER(STRING, "default"),
+        STORAGE_LSM_THETA_SKETCH_K(INTEGER, 1024);
 
         private final IOptionType parser;
         private final String defaultValueDescription;
@@ -239,6 +252,8 @@ public class NCConfig extends ControllerConfig {
                     return "Number of threads per partition used to write and read from storage";
                 case IO_QUEUE_SIZE:
                     return "Length of the queue used for requests to write and read";
+                case UDF_API_DS_PATH:
+                    return "Path and name for domain socket used to deploy UDFs to the cluster";
                 case PYTHON_CMD:
                     return "Absolute path to python interpreter";
                 case PYTHON_ADDITIONAL_PACKAGES:
@@ -253,10 +268,24 @@ public class NCConfig extends ControllerConfig {
                     return "List of environment variables to set when invoking the Python interpreter for Python UDFs. E.g. FOO=1";
                 case PYTHON_DS_PATH:
                     return "Path to systemd socket for fenced Python UDFs. Requires JDK17+, *nix operating system, and ";
+                case LIBRARY_MAX_FILE_SIZE:
+                    return "Maximum file size for any one given file in a zip archive";
+                case LIBRARY_MAX_EXTRACTED_SIZE:
+                    return "Maximum overall extracted size for a library";
+                case LIBRARY_MAX_ARCHIVE_ENTRIES:
+                    return "Maximum number of files and directories allowed within a library";
                 case CREDENTIAL_FILE:
                     return "Path to HTTP basic credentials";
                 case ABORT_TASKS_TIMEOUT:
                     return "The maximum time to wait for the tasks to be aborted";
+                case STORAGE_MAX_COLUMNS_IN_ZEROTH_SEGMENT:
+                    return "The maximum number of columns in zero segment (default: 5000).";
+                case STORAGE_PAGE_ZERO_WRITER:
+                    return "The config to choose between writers for page zero. (Possible values: default, sparse, adaptive), "
+                            + "(default value: default)";
+                case STORAGE_LSM_THETA_SKETCH_K:
+                    return "The K parameter (number of retained minimum hash values) for the LSM theta-sketch "
+                            + "sampler used in cardinality estimation (default: 1024).";
                 default:
                     throw new IllegalStateException("Not yet implemented: " + this);
             }
@@ -283,7 +312,13 @@ public class NCConfig extends ControllerConfig {
 
         @Override
         public boolean hidden() {
-            return this == KEY_STORE_PASSWORD;
+            switch (this) {
+                case KEY_STORE_PASSWORD:
+                case STORAGE_LSM_THETA_SKETCH_K:
+                    return true;
+                default:
+                    return false;
+            }
         }
     }
 
@@ -552,12 +587,12 @@ public class NCConfig extends ControllerConfig {
         configManager.set(nodeId, Option.NET_BUFFER_COUNT, netBufferCount);
     }
 
-    public long getResultTTL() {
+    public long getResultTTLMillis() {
         return appConfig.getLong(Option.RESULT_TTL);
     }
 
-    public void setResultTTL(long resultTTL) {
-        configManager.set(nodeId, Option.RESULT_TTL, resultTTL);
+    public void setResultTTLMillis(long resultTTLMillis) {
+        configManager.set(nodeId, Option.RESULT_TTL, resultTTLMillis);
     }
 
     public long getResultSweepThreshold() {
@@ -634,6 +669,30 @@ public class NCConfig extends ControllerConfig {
 
     public int getAbortedTasksTimeout() {
         return appConfig.getInt(Option.ABORT_TASKS_TIMEOUT);
+    }
+
+    public int getStorageMaxColumnsInZerothSegment() {
+        return appConfig.getInt(Option.STORAGE_MAX_COLUMNS_IN_ZEROTH_SEGMENT);
+    }
+
+    public String getStoragePageZeroWriter() {
+        return appConfig.getString(Option.STORAGE_PAGE_ZERO_WRITER);
+    }
+
+    public int getStorageLsmThetaSketchK() {
+        return appConfig.getInt(Option.STORAGE_LSM_THETA_SKETCH_K);
+    }
+
+    public long getLibraryMaxFileSize() {
+        return appConfig.getLong(Option.LIBRARY_MAX_FILE_SIZE);
+    }
+
+    public long getLibraryMaxExtractedSize() {
+        return appConfig.getLong(Option.LIBRARY_MAX_EXTRACTED_SIZE);
+    }
+
+    public int getLibraryMaxArchiveEntries() {
+        return appConfig.getInt(Option.LIBRARY_MAX_ARCHIVE_ENTRIES);
     }
 
 }

@@ -93,7 +93,7 @@ public class ComponentUtils {
                     // was not found in all in-memory components, search in the disk components
                     fromDiskComponents(index, key, value);
                     if (value.getLength() == 0) {
-                        LOGGER.debug("{} was NOT found", key);
+                        LOGGER.debug("{} was NOT found for index {}", key, index);
                     }
                 }
             } else {
@@ -166,6 +166,22 @@ public class ComponentUtils {
         // If the index is not durable, then the flush is not necessary.
         if (forceToDisk) {
             bufferCache.force(fileId, true);
+        }
+    }
+
+    public static void returnPages(ITreeIndex treeIndex) {
+        treeIndex.getPageManager().returnAllPages();
+        IBufferCache bufferCache = treeIndex.getBufferCache();
+        // We need to return all pages to the buffer cache in case of a failure
+        try {
+            bufferCache.getCompressedPageWriter(treeIndex.getFileId()).abort();
+        } catch (IllegalStateException | NullPointerException ignored) {
+            // Since we call this method in multiple places, it is possible that the writer
+            // is not in the State.WRITABLE, which would throw an IllegalStateException.
+            // This means the writer has already written all the pages.
+            //
+            // We also catch NullPointerException in case the writer is not initialized.
+            // Or if the compressed page writer is not applicable to this case
         }
     }
 

@@ -18,11 +18,11 @@
  */
 package org.apache.asterix.formats.nontagged;
 
-import static org.apache.asterix.dataflow.data.nontagged.printers.csv.CSVUtils.KEY_DELIMITER;
-import static org.apache.asterix.dataflow.data.nontagged.printers.csv.CSVUtils.KEY_ESCAPE;
-import static org.apache.asterix.dataflow.data.nontagged.printers.csv.CSVUtils.KEY_FORCE_QUOTE;
-import static org.apache.asterix.dataflow.data.nontagged.printers.csv.CSVUtils.KEY_NULL;
-import static org.apache.asterix.dataflow.data.nontagged.printers.csv.CSVUtils.KEY_QUOTE;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_DELIMITER;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_ESCAPE;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_FORCE_QUOTE;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_NULL_STR;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_QUOTE;
 
 import java.util.Collections;
 import java.util.Map;
@@ -64,22 +64,24 @@ import org.apache.hyracks.algebricks.data.IPrinterFactoryProvider;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 
 public class CSVPrinterFactoryProvider implements IPrinterFactoryProvider {
-    private ARecordType itemType;
-    private Map<String, String> configuration;
-    private SourceLocation sourceLocation;
+    private final ARecordType itemType;
+    private final Map<String, String> configuration;
+    private final Map<String, String> formatConfigs;
+    private final SourceLocation sourceLocation;
 
     public static final CSVPrinterFactoryProvider INSTANCE =
-            new CSVPrinterFactoryProvider(null, Collections.emptyMap(), null);
+            new CSVPrinterFactoryProvider(null, Collections.emptyMap(), null, null);
 
-    public static final CSVPrinterFactoryProvider createInstance(ARecordType itemType,
-            Map<String, String> configuration, SourceLocation sourceLocation) {
-        return new CSVPrinterFactoryProvider(itemType, configuration, sourceLocation);
+    public static CSVPrinterFactoryProvider createInstance(ARecordType itemType, Map<String, String> configuration,
+            Map<String, String> formatConfigs, SourceLocation sourceLocation) {
+        return new CSVPrinterFactoryProvider(itemType, configuration, formatConfigs, sourceLocation);
     }
 
     private CSVPrinterFactoryProvider(ARecordType itemType, Map<String, String> configuration,
-            SourceLocation sourceLocation) {
+            Map<String, String> formatConfigs, SourceLocation sourceLocation) {
         this.itemType = itemType;
         this.configuration = configuration;
+        this.formatConfigs = formatConfigs;
         this.sourceLocation = sourceLocation;
     }
 
@@ -99,7 +101,7 @@ public class CSVPrinterFactoryProvider implements IPrinterFactoryProvider {
                     return AInt64PrinterFactory.INSTANCE;
                 case MISSING:
                 case NULL:
-                    ANullPrinterFactory.createInstance(configuration.get(KEY_NULL));
+                    return ANullPrinterFactory.createInstance(configuration.get(KEY_NULL_STR));
                 case BOOLEAN:
                     return ABooleanPrinterFactory.INSTANCE;
                 case FLOAT:
@@ -137,7 +139,7 @@ public class CSVPrinterFactoryProvider implements IPrinterFactoryProvider {
                             configuration.get(KEY_FORCE_QUOTE), configuration.get(KEY_ESCAPE),
                             configuration.get(KEY_DELIMITER));
                 case OBJECT:
-                    return new ARecordPrinterFactory((ARecordType) type, itemType, configuration);
+                    return new ARecordPrinterFactory((ARecordType) type, itemType, formatConfigs, configuration);
                 case ARRAY:
                     throw new NotImplementedException("'OrderedList' type unsupported for CSV output");
                 case MULTISET:
@@ -167,7 +169,7 @@ public class CSVPrinterFactoryProvider implements IPrinterFactoryProvider {
                     break;
             }
         }
-        return AObjectPrinterFactory.createInstance(itemType, configuration);
+        return AObjectPrinterFactory.createInstance(itemType, formatConfigs, configuration);
 
     }
 }

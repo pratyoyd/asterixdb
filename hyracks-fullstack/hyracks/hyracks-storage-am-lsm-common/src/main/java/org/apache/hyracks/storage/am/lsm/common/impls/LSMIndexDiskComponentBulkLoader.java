@@ -19,6 +19,7 @@
 package org.apache.hyracks.storage.am.lsm.common.impls;
 
 import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.control.common.controllers.NCConfig;
 import org.apache.hyracks.dataflow.common.data.accessors.ITupleReference;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMDiskComponent;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMDiskComponentBulkLoader;
@@ -34,12 +35,13 @@ public class LSMIndexDiskComponentBulkLoader implements IIndexBulkLoader {
     private final ILSMIndexOperationContext opCtx;
     private boolean failed = false;
 
-    public LSMIndexDiskComponentBulkLoader(AbstractLSMIndex lsmIndex, ILSMIndexOperationContext opCtx, float fillFactor,
-            boolean verifyInput, long numElementsHint) throws HyracksDataException {
+    public LSMIndexDiskComponentBulkLoader(NCConfig storageConfig, AbstractLSMIndex lsmIndex,
+            ILSMIndexOperationContext opCtx, float fillFactor, boolean verifyInput, long numElementsHint)
+            throws HyracksDataException {
         this.lsmIndex = lsmIndex;
         this.opCtx = opCtx;
-        this.componentBulkLoader = opCtx.getIoOperation().getNewComponent().createBulkLoader(opCtx.getIoOperation(),
-                fillFactor, verifyInput, numElementsHint, false, true, true,
+        this.componentBulkLoader = opCtx.getIoOperation().getNewComponent().createBulkLoader(storageConfig,
+                opCtx.getIoOperation(), fillFactor, verifyInput, numElementsHint, false, true, true,
                 lsmIndex.getPageWriteCallbackFactory().createPageWriteCallback());
     }
 
@@ -53,7 +55,7 @@ public class LSMIndexDiskComponentBulkLoader implements IIndexBulkLoader {
         try {
             componentBulkLoader.add(tuple);
         } catch (Throwable th) {
-            opCtx.getIoOperation().setFailure(th);
+            fail(th);
             throw th;
         }
     }
@@ -63,7 +65,7 @@ public class LSMIndexDiskComponentBulkLoader implements IIndexBulkLoader {
         try {
             componentBulkLoader.delete(tuple);
         } catch (Throwable th) {
-            opCtx.getIoOperation().setFailure(th);
+            fail(th);
             throw th;
         }
     }
@@ -82,8 +84,9 @@ public class LSMIndexDiskComponentBulkLoader implements IIndexBulkLoader {
 
     @Override
     public void abort() throws HyracksDataException {
-        opCtx.getIoOperation().setStatus(LSMIOOperationStatus.FAILURE);
         try {
+            opCtx.getIoOperation().setStatus(LSMIOOperationStatus.FAILURE);
+            fail(null);
             try {
                 componentBulkLoader.abort();
             } finally {
@@ -115,6 +118,7 @@ public class LSMIndexDiskComponentBulkLoader implements IIndexBulkLoader {
             componentBulkLoader.end();
         } catch (Throwable th) { // NOSONAR Must not call afterFinalize without setting failure
             fail(th);
+            componentBulkLoader.abort();
             throw th;
         } finally {
             lsmIndex.getIOOperationCallback().afterFinalize(opCtx.getIoOperation());

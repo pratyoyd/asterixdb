@@ -65,6 +65,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import it.unimi.dsi.fastutil.ints.IntArrayList;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 
 /**
  * Flush column metadata belongs to a flushing {@link ILSMMemoryComponent}
@@ -72,6 +73,7 @@ import it.unimi.dsi.fastutil.ints.IntArrayList;
  */
 public class FlushColumnMetadata extends AbstractColumnMetadata {
     private static final Logger LOGGER = LogManager.getLogger();
+    public final IntOpenHashSet orderedColumns;
     protected final Map<AbstractSchemaNestedNode, RunLengthIntArray> definitionLevels;
     private final Mutable<IColumnWriteMultiPageOp> multiPageOpRef;
     private final IFieldNamesDictionary fieldNamesDictionary;
@@ -80,19 +82,24 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
     private final IColumnValuesWriterFactory columnWriterFactory;
     protected final List<IColumnValuesWriter> columnWriters;
     private final ArrayBackedValueStorage serializedMetadata;
+    private final ArrayBackedValueStorage tempSerializedMetadata;
     private final PathInfoSerializer pathInfoSerializer;
     protected final IntArrayList nullWriterIndexes;
     private final boolean metaContainsKeys;
     private boolean changed;
+    private boolean schemaEvolved;
     protected int level;
     protected int repeated;
+    protected int requiredTemporaryBuffersCount;
 
     public FlushColumnMetadata(ARecordType datasetType, ARecordType metaType, List<List<String>> primaryKeys,
             List<Integer> keySourceIndicator, IColumnValuesWriterFactory columnWriterFactory,
             Mutable<IColumnWriteMultiPageOp> multiPageOpRef) throws HyracksDataException {
         super(datasetType, metaType, primaryKeys.size());
+        this.requiredTemporaryBuffersCount = 0;
         this.multiPageOpRef = multiPageOpRef;
         this.columnWriterFactory = columnWriterFactory;
+        this.orderedColumns = new IntOpenHashSet();
         definitionLevels = new HashMap<>();
         columnWriters = new ArrayList<>();
         level = -1;
@@ -120,19 +127,24 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
         }
 
         serializedMetadata = new ArrayBackedValueStorage();
+        tempSerializedMetadata = new ArrayBackedValueStorage();
+        schemaEvolved = false;
         changed = true;
         serializeColumnsMetadata();
+        swapSerializedColumnsMetadata();
     }
 
     public FlushColumnMetadata(ARecordType datasetType, ARecordType metaType, int numPrimaryKeys,
             boolean metaContainsKeys, IColumnValuesWriterFactory columnWriterFactory,
             Mutable<IColumnWriteMultiPageOp> multiPageOpRef, List<IColumnValuesWriter> columnWriters,
-            IFieldNamesDictionary fieldNamesDictionary, ObjectSchemaNode root, ObjectSchemaNode metaRoot,
-            Map<AbstractSchemaNestedNode, RunLengthIntArray> definitionLevels,
+            int requiredTemporaryBuffers, IFieldNamesDictionary fieldNamesDictionary, ObjectSchemaNode root,
+            ObjectSchemaNode metaRoot, Map<AbstractSchemaNestedNode, RunLengthIntArray> definitionLevels,
             ArrayBackedValueStorage serializedMetadata) {
         super(datasetType, metaType, numPrimaryKeys);
+        this.requiredTemporaryBuffersCount = requiredTemporaryBuffers;
         this.multiPageOpRef = multiPageOpRef;
         this.columnWriterFactory = columnWriterFactory;
+        this.orderedColumns = new IntOpenHashSet();
         this.definitionLevels = definitionLevels;
         this.columnWriters = columnWriters;
         level = -1;
@@ -146,6 +158,8 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
         //Add definition levels for the root
         addDefinitionLevelsAndGet(root);
         this.serializedMetadata = serializedMetadata;
+        this.tempSerializedMetadata = new ArrayBackedValueStorage();
+        this.schemaEvolved = false;
         changed = false;
     }
 
@@ -171,17 +185,20 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
             try {
                 serializeChanges();
                 logSchema(root, metaRoot, fieldNamesDictionary);
+                schemaEvolved = true;
                 changed = false;
             } catch (IOException e) {
                 throw HyracksDataException.create(e);
             }
+        } else if (!schemaEvolved) {
+            return serializedMetadata;
         }
-        return serializedMetadata;
+        return tempSerializedMetadata;
     }
 
     private void serializeChanges() throws IOException {
-        serializedMetadata.reset();
-        DataOutput output = serializedMetadata.getDataOutput();
+        tempSerializedMetadata.reset();
+        DataOutput output = tempSerializedMetadata.getDataOutput();
 
         int writersOffsetPointer = reserveInt(output);
         int fieldNamesOffsetPointer = reserveInt(output);
@@ -215,15 +232,24 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
         pathInfoSerializer.serialize(output, getNumberOfColumns());
     }
 
+    @Override
+    public void swapSerializedColumnsMetadata() {
+        if (schemaEvolved) {
+            ArrayBackedValueStorage.swap(serializedMetadata, tempSerializedMetadata);
+            tempSerializedMetadata.reset();
+            schemaEvolved = false;
+        }
+    }
+
     private int reserveInt(DataOutput output) throws IOException {
-        int offset = serializedMetadata.getLength();
+        int offset = tempSerializedMetadata.getLength();
         output.writeInt(-1);
         return offset;
     }
 
     private void setOffset(int pointer) {
-        int offset = serializedMetadata.getLength();
-        IntegerPointable.setInteger(serializedMetadata.getByteArray(), pointer, offset);
+        int offset = tempSerializedMetadata.getLength();
+        IntegerPointable.setInteger(tempSerializedMetadata.getByteArray(), pointer, offset);
     }
 
     public static FlushColumnMetadata create(ARecordType datasetType, ARecordType metaType, int numPrimaryKeys,
@@ -249,7 +275,7 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
 
         //ColumnWriter
         List<IColumnValuesWriter> writers = new ArrayList<>();
-        deserializeWriters(input, writers, columnWriterFactory);
+        int requiredTemporaryBuffers = deserializeWriters(input, writers, columnWriterFactory);
 
         //FieldNames
         IFieldNamesDictionary fieldNamesDictionary = AbstractFieldNamesDictionary.deserialize(input);
@@ -266,20 +292,25 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
         schemaStorage.append(serializedMetadata);
         logSchema(root, metaRoot, fieldNamesDictionary);
         return new FlushColumnMetadata(datasetType, metaType, numPrimaryKeys, metaContainsKeys, columnWriterFactory,
-                multiPageOpRef, writers, fieldNamesDictionary, root, metaRoot, definitionLevels, schemaStorage);
+                multiPageOpRef, writers, requiredTemporaryBuffers, fieldNamesDictionary, root, metaRoot,
+                definitionLevels, schemaStorage);
     }
 
     @Override
     public void abort() throws HyracksDataException {
-        DataInputStream input = new DataInputStream(new ByteArrayInputStream(serializedMetadata.getByteArray()));
+        DataInputStream input = new DataInputStream(new ByteArrayInputStream(serializedMetadata.getByteArray(),
+                serializedMetadata.getStartOffset(), serializedMetadata.getLength()));
         try {
             abort(input);
+            schemaEvolved = false;
+            changed = false;
         } catch (IOException e) {
             throw HyracksDataException.create(e);
         }
     }
 
     private void abort(DataInputStream input) throws IOException {
+        input.skipBytes(OFFSETS_SIZE);
         level = -1;
         repeated = 0;
         changed = false;
@@ -290,14 +321,22 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
         fieldNamesDictionary.abort(input);
         definitionLevels.clear();
         root.abort(input, definitionLevels);
+        if (metaRoot != null) {
+            metaRoot.abort(input, definitionLevels);
+        }
     }
 
-    public static void deserializeWriters(DataInput input, List<IColumnValuesWriter> writers,
+    public static int deserializeWriters(DataInput input, List<IColumnValuesWriter> writers,
             IColumnValuesWriterFactory columnWriterFactory) throws IOException {
+        int numberOfRequiredTemporaryBuffers = 0;
         int numberOfWriters = input.readInt();
         for (int i = 0; i < numberOfWriters; i++) {
-            writers.add(AbstractColumnValuesWriter.deserialize(input, columnWriterFactory));
+            IColumnValuesWriter writer = AbstractColumnValuesWriter.deserialize(input, columnWriterFactory);
+            numberOfRequiredTemporaryBuffers += writer.getRequiredTemporaryBuffersCount();
+            writers.add(writer);
         }
+
+        return numberOfRequiredTemporaryBuffers;
     }
 
     /* ********************************************************
@@ -337,15 +376,28 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
         return columnWriters.size();
     }
 
-    public AbstractSchemaNode getOrCreateChild(AbstractSchemaNode child, ATypeTag childTypeTag)
-            throws HyracksDataException {
+    public AbstractSchemaNode getOrCreateChild(AbstractSchemaNode child, ATypeTag childTypeTag,
+            boolean replaceObjectDummyField) throws HyracksDataException {
         AbstractSchemaNode currentChild = child;
         ATypeTag normalizedTypeTag = getNormalizedTypeTag(childTypeTag);
-        if (currentChild == null || normalizedTypeTag != ATypeTag.MISSING && normalizedTypeTag != ATypeTag.NULL
-                && currentChild.getTypeTag() != ATypeTag.UNION
-                && getNormalizedTypeTag(currentChild.getTypeTag()) != normalizedTypeTag) {
+        boolean newChild = currentChild == null;
+        if (currentChild == null
+                // special case(ASTERIXDB-3652): where initially the object has no child
+                // hence an empty object was added, see ColumnTransformer.
+                // but in later documents, object got a child with value NULL.
+                // we need to record both NULL with the dummy MISSING in the union to maintain the structure.
+                || (replaceObjectDummyField && normalizedTypeTag == ATypeTag.NULL)
+                || normalizedTypeTag != ATypeTag.MISSING && normalizedTypeTag != ATypeTag.NULL
+                        && currentChild.getTypeTag() != ATypeTag.UNION
+                        && getNormalizedTypeTag(currentChild.getTypeTag()) != normalizedTypeTag) {
             //Create a new child or union type if required type is different from the current child type
+            int visitedBatchVersion = newChild ? -1 : currentChild.getVisitedBatchVersion();
             currentChild = createChild(child, childTypeTag);
+            //Missing will become UNION, hence only NULL and NULL will be replaced
+            if (!newChild && (child.getTypeTag() == ATypeTag.NULL)) {
+                //This will be a replaced child
+                currentChild.setFormerChildNull(visitedBatchVersion);
+            }
             //Flag that the schema has changed
             changed = true;
         }
@@ -416,35 +468,44 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
 
     public void flushDefinitionLevels(int level, AbstractSchemaNestedNode parent, AbstractSchemaNode node)
             throws HyracksDataException {
+        flushDefinitionLevels(level, parent, node, false);
+    }
+
+    public void addNestedNull(AbstractSchemaNestedNode parent, AbstractSchemaNestedNode node,
+            boolean includeChildColumns) throws HyracksDataException {
+        //Flush all definition levels from parent to the current node
+        flushDefinitionLevels(level, parent, node, includeChildColumns);
+        //Add null value (+2) to say that both the parent and the child are present
+        //A null is represented by the (childMask | (level which is not NULL))
+        //{ "x": { "a": NULL } } --> In here, the nullLevel stored will be nullMask(2) | 1 (level of x)
+        definitionLevels.get(node).add(ColumnValuesUtil.getNullMask(level + 2) | level);
+        node.incrementCounter();
+    }
+
+    private void flushDefinitionLevels(int level, AbstractSchemaNestedNode parent, AbstractSchemaNode node,
+            boolean includeChildColumns) throws HyracksDataException {
         if (parent != null) {
             RunLengthIntArray parentDefLevels = definitionLevels.get(parent);
             if (node.getCounter() < parentDefLevels.getSize()) {
                 int parentMask = ColumnValuesUtil.getNullMask(level);
                 int childMask = ColumnValuesUtil.getNullMask(level + 1);
-                flushDefinitionLevels(parentMask, childMask, parentDefLevels, node);
+                flushDefinitionLevels(parentMask, childMask, parentDefLevels, node, includeChildColumns);
             }
         }
     }
 
-    public void addNestedNull(AbstractSchemaNestedNode parent, AbstractSchemaNestedNode node)
-            throws HyracksDataException {
-        //Flush all definition levels from parent to the current node
-        flushDefinitionLevels(level, parent, node);
-        //Add null value (+2) to say that both the parent and the child are present
-        definitionLevels.get(node).add(ColumnValuesUtil.getNullMask(level + 2) | level);
-        node.incrementCounter();
-    }
-
     public void close() {
-        //Dereference multiPageOp
-        multiPageOpRef.setValue(null);
         for (int i = 0; i < columnWriters.size(); i++) {
             columnWriters.get(i).close();
         }
+        // In close, there is a rest call, where the buffer is being returned to @link ColumnBufferPool
+        // hence, we should dereference the multiPageOp after close().
+        //Dereference multiPageOp
+        multiPageOpRef.setValue(null);
     }
 
     protected void flushDefinitionLevels(int parentMask, int childMask, RunLengthIntArray parentDefLevels,
-            AbstractSchemaNode node) throws HyracksDataException {
+            AbstractSchemaNode node, boolean includeChildColumns) throws HyracksDataException {
         int startIndex = node.getCounter();
         if (node.isNested()) {
             RunLengthIntArray childDefLevels = definitionLevels.get((AbstractSchemaNestedNode) node);
@@ -514,7 +575,7 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
                 nullWriterIndexes.add(columnIndex);
                 createdChild = createChild(normalizedTypeTag);
                 int mask = ColumnValuesUtil.getNullMask(level);
-                flushDefinitionLevels(mask, mask, defLevels, createdChild);
+                flushDefinitionLevels(mask, mask, defLevels, createdChild, false);
             } else {
                 //Different type. Make union
                 createdChild = addDefinitionLevelsAndGet(new UnionSchemaNode(child, createChild(normalizedTypeTag)));
@@ -544,6 +605,13 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
             case BIGINT:
             case STRING:
             case UUID:
+            case DATE:
+            case TIME:
+            case DURATION:
+            case DATETIME:
+            case INTERVAL:
+            case YEARMONTHDURATION:
+            case DAYTIMEDURATION:
                 int columnIndex = nullWriterIndexes.isEmpty() ? columnWriters.size() : nullWriterIndexes.removeInt(0);
                 boolean primaryKey = columnIndex < getNumberOfPrimaryKeys();
                 ATypeTag normalizedTypeTag = primaryKey ? childTypeTag : getNormalizedTypeTag(childTypeTag);
@@ -555,10 +623,11 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
                 if (multiPageOpRef.getValue() != null) {
                     writer.reset();
                 }
+                requiredTemporaryBuffersCount += writer.getRequiredTemporaryBuffersCount();
                 addColumn(columnIndex, writer);
                 return new PrimitiveSchemaNode(columnIndex, normalizedTypeTag, primaryKey);
             default:
-                throw new IllegalStateException("Unsupported type " + childTypeTag);
+                throw new IllegalArgumentException("Unsupported type " + childTypeTag);
 
         }
     }
@@ -595,4 +664,7 @@ public class FlushColumnMetadata extends AbstractColumnMetadata {
         return metaContainsKeys;
     }
 
+    public int getRequiredTemporaryBuffersCount() {
+        return requiredTemporaryBuffersCount;
+    }
 }

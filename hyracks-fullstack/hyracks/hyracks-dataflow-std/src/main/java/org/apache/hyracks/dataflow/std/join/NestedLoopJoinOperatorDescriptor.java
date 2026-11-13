@@ -21,6 +21,7 @@ package org.apache.hyracks.dataflow.std.join;
 
 import java.nio.ByteBuffer;
 
+import org.apache.hyracks.api.comm.VSizeFrame;
 import org.apache.hyracks.api.context.IHyracksJobletContext;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.dataflow.ActivityId;
@@ -135,6 +136,7 @@ public class NestedLoopJoinOperatorDescriptor extends AbstractOperatorDescriptor
 
             return new AbstractUnaryInputSinkOperatorNodePushable() {
                 private JoinCacheTaskState state;
+                private VSizeFrame inFrame;
 
                 @Override
                 public void open() throws HyracksDataException {
@@ -144,11 +146,13 @@ public class NestedLoopJoinOperatorDescriptor extends AbstractOperatorDescriptor
                     state.joiner = new NestedLoopJoin(jobletCtx, new FrameTupleAccessor(rd0),
                             new FrameTupleAccessor(rd1), memSize, isLeftOuter, nullWriters1, false, mw,
                             eagerBatchSize);
+                    inFrame = new VSizeFrame(ctx);
                 }
 
                 @Override
                 public void nextFrame(ByteBuffer buffer) throws HyracksDataException {
-                    ByteBuffer copyBuffer = jobletCtx.allocateFrame(buffer.capacity());
+                    inFrame.resize(buffer.capacity());
+                    ByteBuffer copyBuffer = inFrame.getBuffer();
                     FrameUtils.copyAndFlip(buffer, copyBuffer);
                     state.joiner.cache(copyBuffer);
                 }

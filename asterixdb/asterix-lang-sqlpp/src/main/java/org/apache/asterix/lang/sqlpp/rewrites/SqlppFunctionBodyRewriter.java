@@ -82,8 +82,14 @@ public class SqlppFunctionBodyRewriter extends SqlppQueryRewriter {
         // Resolves function calls
         resolveFunctionCalls();
 
+        // Rewrites vector_distance(vec1, vec2, metric) into concrete 2-arg vector builtins.
+        rewriteVectorDistanceCalls();
+
         // Generates column names.
         generateColumnNames();
+
+        // Cluster-by rewrites, before the group-by rewrites for the same reason as in SqlppQueryRewriter.
+        rewriteClusterBys();
 
         // Substitutes group-by key expressions.
         substituteGroupbyKeyExpression();

@@ -23,11 +23,14 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import org.apache.asterix.cloud.IWriteBufferProvider;
 import org.apache.asterix.cloud.clients.profiler.IRequestProfilerLimiter;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.FileReference;
+import org.apache.hyracks.cloud.io.ICloudProperties;
+import org.apache.hyracks.cloud.io.request.ICloudRetryPredicate;
 import org.apache.hyracks.control.nc.io.IOManager;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -65,7 +68,7 @@ public interface ICloudClient {
      * @param filter filter to apply
      * @return file names returned after applying the file name filter
      */
-    Set<CloudFile> listObjects(String bucket, String path, FilenameFilter filter);
+    Set<CloudFile> listObjects(String bucket, String path, FilenameFilter filter) throws HyracksDataException;
 
     /**
      * Performs a range-read from the specified bucket and path starting at the offset. The amount read is equal to the
@@ -107,7 +110,7 @@ public interface ICloudClient {
      * @param path   path
      * @param data   data
      */
-    void write(String bucket, String path, byte[] data);
+    void write(String bucket, String path, byte[] data) throws HyracksDataException;
 
     /**
      * Copies an object from the source path to the destination path
@@ -116,7 +119,16 @@ public interface ICloudClient {
      * @param srcPath  source path
      * @param destPath destination path
      */
-    void copy(String bucket, String srcPath, FileReference destPath);
+    void copy(String bucket, String srcPath, FileReference destPath) throws HyracksDataException;
+
+    /**
+     * Deletes an object at the specified bucket and path
+     *
+     * @param bucket bucket
+     * @param path   path of object
+     * @throws HyracksDataException HyracksDataException
+     */
+    void deleteObject(String bucket, String path) throws HyracksDataException;
 
     /**
      * Deletes all objects at the specified bucket and paths
@@ -162,10 +174,18 @@ public interface ICloudClient {
      * @param bucket       bucket name
      * @return {@link JsonNode} with stored objects' information
      */
-    JsonNode listAsJson(ObjectMapper objectMapper, String bucket);
+    JsonNode listAsJson(ObjectMapper objectMapper, String bucket) throws HyracksDataException;
 
     /**
      * Performs any necessary closing and cleaning up
      */
     void close() throws HyracksDataException;
+
+    Predicate<Exception> getObjectNotFoundExceptionPredicate();
+
+    default ICloudRetryPredicate getRetryUnlessNotFound() {
+        return ex -> Predicate.not(getObjectNotFoundExceptionPredicate()).test(ex);
+    }
+
+    void reloadConfiguration(ICloudProperties newProperties) throws HyracksDataException;
 }

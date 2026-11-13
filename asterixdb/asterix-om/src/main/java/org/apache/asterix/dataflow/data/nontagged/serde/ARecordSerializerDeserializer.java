@@ -301,6 +301,16 @@ public class ARecordSerializerDeserializer implements ISerializerDeserializer<AR
 
     public static int getFieldOffsetByName(byte[] serRecord, int start, int len, byte[] fieldName, int nstart,
             IBinaryHashFunction nameHashFunction, IBinaryComparator nameComparator) throws HyracksDataException {
+        int fieldUtflength = UTF8StringUtil.getUTFLength(fieldName, nstart + 1);
+        int fieldUtfMetaLen = UTF8StringUtil.getNumBytesToStoreLength(fieldUtflength);
+        int fieldNameHashCode = nameHashFunction.hash(fieldName, nstart + 1, fieldUtflength + fieldUtfMetaLen);
+        return getFieldOffsetByName(serRecord, start, len, fieldName, nstart, fieldUtflength, fieldUtfMetaLen,
+                fieldNameHashCode, nameComparator);
+    }
+
+    public static int getFieldOffsetByName(byte[] serRecord, int start, int len, byte[] fieldName, int nstart,
+            int fieldUtflength, int fieldUtfMetaLen, int fieldNameHash, IBinaryComparator nameComparator)
+            throws HyracksDataException {
         // 5 is the index of the byte that determines whether the record is expanded or not, i.e. it has an open part.
         if (hasNoFields(serRecord, start, len) || serRecord[start + 5] != 1) {
             return -1;
@@ -308,9 +318,6 @@ public class ARecordSerializerDeserializer implements ISerializerDeserializer<AR
         // 6 is the index of the first byte of the openPartOffset value.
         int openPartOffset = start + AInt32SerializerDeserializer.getInt(serRecord, start + 6);
         int numberOfOpenField = AInt32SerializerDeserializer.getInt(serRecord, openPartOffset);
-        int fieldUtflength = UTF8StringUtil.getUTFLength(fieldName, nstart + 1);
-        int fieldUtfMetaLen = UTF8StringUtil.getNumBytesToStoreLength(fieldUtflength);
-        int fieldNameHashCode = nameHashFunction.hash(fieldName, nstart + 1, fieldUtflength + fieldUtfMetaLen);
 
         int offset = openPartOffset + 4;
         int fieldOffset = -1;
@@ -321,7 +328,7 @@ public class ARecordSerializerDeserializer implements ISerializerDeserializer<AR
             mid = (high + low) / 2;
             // 8 = hash code (4) + offset to the (name + tag + value ) of the field (4).
             int h = AInt32SerializerDeserializer.getInt(serRecord, offset + (8 * mid));
-            if (h == fieldNameHashCode) {
+            if (h == fieldNameHash) {
                 fieldOffset = start + AInt32SerializerDeserializer.getInt(serRecord, offset + (8 * mid) + 4);
                 // the utf8 comparator do not require to put the precise length, we can just pass a estimated limit.
                 if (nameComparator.compare(serRecord, fieldOffset, len, fieldName, nstart + 1,
@@ -331,7 +338,7 @@ public class ARecordSerializerDeserializer implements ISerializerDeserializer<AR
                 } else { // this else part has not been tested yet
                     for (int j = mid + 1; j < numberOfOpenField; j++) {
                         h = AInt32SerializerDeserializer.getInt(serRecord, offset + (8 * j));
-                        if (h == fieldNameHashCode) {
+                        if (h == fieldNameHash) {
                             fieldOffset = start + AInt32SerializerDeserializer.getInt(serRecord, offset + (8 * j) + 4);
                             if (nameComparator.compare(serRecord, fieldOffset, len, fieldName, nstart + 1,
                                     fieldUtflength) == 0) {
@@ -343,12 +350,11 @@ public class ARecordSerializerDeserializer implements ISerializerDeserializer<AR
                     }
                 }
             }
-            if (fieldNameHashCode > h) {
+            if (fieldNameHash > h) {
                 low = mid + 1;
             } else {
                 high = mid - 1;
             }
-
         }
         return -1; // no field with this name.
     }

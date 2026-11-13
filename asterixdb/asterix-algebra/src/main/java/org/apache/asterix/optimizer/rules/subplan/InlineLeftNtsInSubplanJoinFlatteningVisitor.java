@@ -26,8 +26,8 @@ import java.util.Set;
 
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -211,8 +211,7 @@ class InlineLeftNtsInSubplanJoinFlatteningVisitor implements IQueryOperatorVisit
         for (LogicalVariable liveVar : liveVarsFromSubplanInput) {
             VariableReferenceExpression liveVarRef = new VariableReferenceExpression(liveVar);
             liveVarRef.setSourceLocation(op.getSourceLocation());
-            orderExprList.add(new Pair<IOrder, Mutable<ILogicalExpression>>(OrderOperator.ASC_ORDER,
-                    new MutableObject<ILogicalExpression>(liveVarRef)));
+            orderExprList.add(Pair.of(OrderOperator.ASC_ORDER, new MutableObject<ILogicalExpression>(liveVarRef)));
         }
         orderExprList.addAll(op.getOrderExpressions());
 
@@ -296,6 +295,17 @@ class InlineLeftNtsInSubplanJoinFlatteningVisitor implements IQueryOperatorVisit
     public ILogicalOperator visitIntersectOperator(IntersectOperator op, Void arg) throws AlgebricksException {
         throw new UnsupportedOperationException(
                 "Nested subplans with a intersect operator should have been disqualified for this rewriting!");
+    }
+
+    @Override
+    public ILogicalOperator visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+        return visitSingleInputOperator(op);
+    }
+
+    @Override
+    public ILogicalOperator visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
+        throw new UnsupportedOperationException(
+                "Nested subplans with a cluster-by operator should have been disqualified for this rewriting!");
     }
 
     @Override

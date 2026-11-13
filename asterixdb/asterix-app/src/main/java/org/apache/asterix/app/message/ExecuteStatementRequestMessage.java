@@ -24,6 +24,7 @@ import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.asterix.algebra.base.ILangExtension;
@@ -47,6 +48,7 @@ import org.apache.asterix.lang.common.base.Statement;
 import org.apache.asterix.messaging.CCMessageBroker;
 import org.apache.asterix.metadata.MetadataManager;
 import org.apache.asterix.om.base.IAObject;
+import org.apache.asterix.translator.ExecutionPlans;
 import org.apache.asterix.translator.IRequestParameters;
 import org.apache.asterix.translator.IStatementExecutor;
 import org.apache.asterix.translator.IStatementExecutor.Stats.ProfileType;
@@ -90,6 +92,7 @@ public class ExecuteStatementRequestMessage implements ICcAddressedMessage {
     private final boolean forceDropDataset;
     private final boolean skipAdmissionPolicy;
     private boolean sqlCompatMode;
+    private boolean skipQueryPlanCache;
 
     public ExecuteStatementRequestMessage(String requestNodeId, long requestMessageId, ILangExtension.Language lang,
             String statementsText, SessionConfig sessionConfig, ResultProperties resultProperties,
@@ -135,6 +138,10 @@ public class ExecuteStatementRequestMessage implements ICcAddressedMessage {
         this.sqlCompatMode = sqlCompatMode;
     }
 
+    public void setSkipQueryPlanCache(boolean skipQueryPlanCache) {
+        this.skipQueryPlanCache = skipQueryPlanCache;
+    }
+
     @Override
     public void handle(ICcApplicationContext ccAppCtx) throws HyracksDataException, InterruptedException {
         ICCServiceContext ccSrvContext = ccAppCtx.getServiceContext();
@@ -143,7 +150,7 @@ public class ExecuteStatementRequestMessage implements ICcAddressedMessage {
         CCMessageBroker messageBroker = (CCMessageBroker) ccSrvContext.getMessageBroker();
         final RuntimeDataException rejectionReason = getRejectionReason(ccSrv, requestNodeId);
         if (rejectionReason != null) {
-            sendRejection(rejectionReason, messageBroker, requestMessageId, requestNodeId);
+            sendRejection(rejectionReason, messageBroker);
             return;
         }
         CCExtensionManager ccExtMgr = (CCExtensionManager) ccAppCtx.getExtensionManager();
@@ -154,6 +161,14 @@ public class ExecuteStatementRequestMessage implements ICcAddressedMessage {
                 new ExecuteStatementResponseMessage(requestMessageId, clientContextID, requestReference.getUuid());
         final IStatementExecutor.StatementProperties statementProperties = new IStatementExecutor.StatementProperties();
         responseMsg.setStatementProperties(statementProperties);
+        final IStatementExecutor.ResultMetadata outMetadata = new IStatementExecutor.ResultMetadata();
+        responseMsg.setMetadata(outMetadata);
+        final IStatementExecutor.Stats stats = new IStatementExecutor.Stats();
+        stats.setProfileType(profileType);
+        responseMsg.setStats(stats);
+        // set before the statements run: a response reporting them is served even when a later one failed
+        responseMsg.setExecutionPlans(new ExecutionPlans());
+        responseMsg.setWarnings(new ArrayList<>());
         try {
             List<Warning> warnings = new ArrayList<>();
             IParser parser = compilationProvider.getParserFactory().createParser(statementsText);
@@ -169,22 +184,22 @@ public class ExecuteStatementRequestMessage implements ICcAddressedMessage {
             SessionOutput.ResultAppender appendStatus = ResultUtil.createResultStatusAppender();
             SessionOutput sessionOutput = new SessionOutput(sessionConfig, outPrinter, resultPrefix, resultPostfix,
                     appendHandle, appendStatus);
-            IStatementExecutor.ResultMetadata outMetadata = new IStatementExecutor.ResultMetadata();
             MetadataManager.INSTANCE.init();
             IStatementExecutor translator = statementExecutorFactory.create(ccAppCtx, statements, sessionOutput,
                     compilationProvider, storageComponentProvider, new ResponsePrinter(sessionOutput));
-            final IStatementExecutor.Stats stats = new IStatementExecutor.Stats();
-            stats.setProfileType(profileType);
             Map<String, IAObject> stmtParams = RequestParameters.deserializeParameterValues(statementParameters);
             final IRequestParameters requestParameters =
                     createRequestParameters(statementProperties, stmtParams, outMetadata, stats);
-            translator.compileAndExecute(ccApp.getHcc(), requestParameters);
+            try {
+                translator.compileAndExecute(ccApp.getHcc(), requestParameters);
+            } finally {
+                // the parser's warnings belong to their statement whether or not the request went on to fail
+                addParserResultsToStatements(outMetadata, parser, maxWarnings);
+            }
             translator.getWarnings(warnings, maxWarnings - warnings.size());
             stats.updateTotalWarningsCount(parserTotalWarningsCount);
             outPrinter.close();
             responseMsg.setResult(outWriter.toString());
-            responseMsg.setMetadata(outMetadata);
-            responseMsg.setStats(stats);
             responseMsg.setExecutionPlans(translator.getExecutionPlans());
             responseMsg.setWarnings(warnings);
         } catch (AlgebricksException | HyracksException | org.apache.asterix.lang.sqlpp.parser.TokenMgrError pe) {
@@ -195,10 +210,37 @@ public class ExecuteStatementRequestMessage implements ICcAddressedMessage {
             GlobalConfig.ASTERIX_LOGGER.log(Level.ERROR, "Unexpected exception", e);
             responseMsg.setError(e);
         }
-        try {
-            messageBroker.sendApplicationMessageToNC(responseMsg, requestNodeId);
-        } catch (Exception e) {
-            LOGGER.log(Level.WARN, e.toString(), e);
+        sendResponseToNc(messageBroker, responseMsg);
+    }
+
+    /**
+     * Adds what the parser knows about a statement - its text, and the warnings it raised - to what that statement
+     * reports, matching them by position. Every warning is counted, and {@code maxWarnings} of them reported, per
+     * statement.
+     */
+    private static void addParserResultsToStatements(IStatementExecutor.ResultMetadata outMetadata, IParser parser,
+            long maxWarnings) {
+        if (outMetadata.getStatements().isEmpty()) {
+            // nothing reports the statements of this request, so their text is not worth building
+            return;
+        }
+        List<Set<Warning>> warningsPerStatement = parser.getWarningsPerStatement();
+        List<String> texts = parser.getStatementTexts();
+        for (IStatementExecutor.StatementInfo statement : outMetadata.getStatements()) {
+            int parsedAt = statement.getPosition() - 1;
+            if (parsedAt < 0) {
+                continue;
+            }
+            if (parsedAt < texts.size()) {
+                statement.setText(texts.get(parsedAt));
+            }
+            if (parsedAt < warningsPerStatement.size()) {
+                Set<Warning> parserWarnings = warningsPerStatement.get(parsedAt);
+                statement.addWarnings(parserWarnings.stream().limit(maxWarnings).toList());
+                if (statement.getStats() != null) {
+                    statement.getStats().updateTotalWarningsCount(parserWarnings.size());
+                }
+            }
         }
     }
 
@@ -210,6 +252,7 @@ public class ExecuteStatementRequestMessage implements ICcAddressedMessage {
                 optionalParameters, stmtParams, multiStatement, statementCategoryRestrictionMask, forceDropDataset,
                 skipAdmissionPolicy);
         requestParameters.setSQLCompatMode(sqlCompatMode);
+        requestParameters.setSkipQueryPlanCache(skipQueryPlanCache);
         return requestParameters;
     }
 
@@ -231,16 +274,30 @@ public class ExecuteStatementRequestMessage implements ICcAddressedMessage {
         return null;
     }
 
-    protected void sendRejection(Exception reason, CCMessageBroker messageBroker, long requestMessageId,
-            String requestNodeId) {
-        ExecuteStatementResponseMessage responseMsg =
-                new ExecuteStatementResponseMessage(requestMessageId, clientContextID, requestReference.getUuid());
-        responseMsg.setError(reason);
+    protected void sendRejection(Exception reason, CCMessageBroker messageBroker) {
+        ExecuteStatementResponseMessage responseMsg = createFailureMessage(reason);
         try {
             messageBroker.sendApplicationMessageToNC(responseMsg, requestNodeId);
         } catch (Exception e) {
             LOGGER.log(Level.WARN, e.toString(), e);
         }
+    }
+
+    private void sendResponseToNc(CCMessageBroker messageBroker, ExecuteStatementResponseMessage responseMsg) {
+        try {
+            messageBroker.sendApplicationMessageToNC(responseMsg, requestNodeId);
+        } catch (Exception e) {
+            LOGGER.error("unexpected exception sending message to node {}", requestNodeId, e);
+            ExecuteStatementResponseMessage failureMessage = createFailureMessage(new Exception(e.getMessage()));
+            messageBroker.sendMessageQuietly(failureMessage, requestNodeId);
+        }
+    }
+
+    private ExecuteStatementResponseMessage createFailureMessage(Exception reason) {
+        ExecuteStatementResponseMessage responseMsg =
+                new ExecuteStatementResponseMessage(requestMessageId, clientContextID, requestReference.getUuid());
+        responseMsg.setError(reason);
+        return responseMsg;
     }
 
     @Override

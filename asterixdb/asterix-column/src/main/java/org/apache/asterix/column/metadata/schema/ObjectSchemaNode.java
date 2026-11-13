@@ -72,21 +72,29 @@ public final class ObjectSchemaNode extends AbstractSchemaNestedNode {
         }
 
         children = new ArrayList<>();
-        deserializeChildren(input, children, numberOfChildren, definitionLevels);
+        numberOfColumns = deserializeChildren(input, children, numberOfChildren, definitionLevels);
+        previousNumberOfColumns = numberOfColumns;
     }
 
     public AbstractSchemaNode getOrCreateChild(IValueReference fieldName, ATypeTag childTypeTag,
             FlushColumnMetadata columnMetadata) throws HyracksDataException {
         int numberOfChildren = children.size();
         int fieldNameIndex = columnMetadata.getFieldNamesDictionary().getOrCreateFieldNameIndex(fieldName);
+        boolean previouslyMissing = isEmptyMissingObject();
         int childIndex = fieldNameIndexToChildIndexMap.getOrDefault(fieldNameIndex, nextIndex.apply(fieldNameIndex));
         AbstractSchemaNode currentChild = childIndex == numberOfChildren ? null : children.get(childIndex);
-        AbstractSchemaNode newChild = columnMetadata.getOrCreateChild(currentChild, childTypeTag);
+        AbstractSchemaNode newChild = columnMetadata.getOrCreateChild(currentChild, childTypeTag, previouslyMissing);
         if (currentChild == null) {
             children.add(childIndex, newChild);
             fieldNameIndexToChildIndexMap.put(fieldNameIndex, childIndex);
         } else if (currentChild != newChild) {
+            numberOfColumns -= currentChild.getNumberOfColumns();
             children.set(childIndex, newChild);
+            newChild.getDeltaColumnsChanged();
+            numberOfColumns += newChild.getNumberOfColumns();
+        } else {
+            // If the child is the same, we just update the number of columns
+            numberOfColumns += currentChild.getDeltaColumnsChanged();
         }
 
         return newChild;
@@ -98,13 +106,19 @@ public final class ObjectSchemaNode extends AbstractSchemaNestedNode {
         children.add(child);
     }
 
-    public void setEmptyObject(FlushColumnMetadata columnMetadata) throws HyracksDataException {
+    public AbstractSchemaNode setEmptyObject(FlushColumnMetadata columnMetadata) throws HyracksDataException {
         if (!children.isEmpty()) {
-            return;
+            return null;
         }
-        AbstractSchemaNode emptyChild = columnMetadata.getOrCreateChild(null, ATypeTag.MISSING);
+
+        AbstractSchemaNode emptyChild = columnMetadata.getOrCreateChild(null, ATypeTag.MISSING, false);
         addChild(DUMMY_FIELD_NAME_INDEX, emptyChild);
         nextIndex = this::emptyColumnIndex;
+        return emptyChild;
+    }
+
+    public boolean isEmptyMissingObject() {
+        return children.size() == 1 && fieldNameIndexToChildIndexMap.containsKey(DUMMY_FIELD_NAME_INDEX);
     }
 
     public AbstractSchemaNode getChild(int fieldNameIndex) {
@@ -164,7 +178,10 @@ public final class ObjectSchemaNode extends AbstractSchemaNestedNode {
 
     public void abort(DataInputStream input, Map<AbstractSchemaNestedNode, RunLengthIntArray> definitionLevels)
             throws IOException {
-        definitionLevels.put(this, new RunLengthIntArray());
+        input.readByte(); // Skip the type tag, see ObjectSchemaNode#serialize
+        if (definitionLevels != null) {
+            definitionLevels.put(this, new RunLengthIntArray());
+        }
 
         int numberOfChildren = input.readInt();
 
@@ -184,11 +201,15 @@ public final class ObjectSchemaNode extends AbstractSchemaNestedNode {
         }
     }
 
-    private static void deserializeChildren(DataInput input, List<AbstractSchemaNode> children, int numberOfChildren,
+    private static int deserializeChildren(DataInput input, List<AbstractSchemaNode> children, int numberOfChildren,
             Map<AbstractSchemaNestedNode, RunLengthIntArray> definitionLevels) throws IOException {
+        int numberOfColumns = 0;
         for (int i = 0; i < numberOfChildren; i++) {
-            children.add(AbstractSchemaNode.deserialize(input, definitionLevels));
+            AbstractSchemaNode child = AbstractSchemaNode.deserialize(input, definitionLevels);
+            numberOfColumns += child.getNumberOfColumns();
+            children.add(child);
         }
+        return numberOfColumns;
     }
 
     private int nextIndex(int fieldNameIndex) {

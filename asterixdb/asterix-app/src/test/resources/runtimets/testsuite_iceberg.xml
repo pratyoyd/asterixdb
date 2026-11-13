@@ -1,0 +1,307 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+ ! Licensed to the Apache Software Foundation (ASF) under one
+ ! or more contributor license agreements.  See the NOTICE file
+ ! distributed with this work for additional information
+ ! regarding copyright ownership.  The ASF licenses this file
+ ! to you under the Apache License, Version 2.0 (the
+ ! "License"); you may not use this file except in compliance
+ ! with the License.  You may obtain a copy of the License at
+ !
+ !   http://www.apache.org/licenses/LICENSE-2.0
+ !
+ ! Unless required by applicable law or agreed to in writing,
+ ! software distributed under the License is distributed on an
+ ! "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ ! KIND, either express or implied.  See the License for the
+ ! specific language governing permissions and limitations
+ ! under the License.
+ !-->
+<test-suite xmlns="urn:xml.testframework.asterix.apache.org" ResultOffsetPath="results" QueryOffsetPath="queries_sqlpp" QueryFileExtension=".sqlpp">
+  <test-group name="data">
+    <test-case FilePath="iceberg">
+      <compilation-unit name="all-supported-catalog-types">
+        <output-dir compare="Text">all-supported-catalog-types</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="check-catalog-record">
+        <output-dir compare="Text">check-catalog-record</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="all-data-types">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">all-data-types</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="snapshots">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">snapshots</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-all-types">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-all-types</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-shredded">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-shredded</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-partially-shredded">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-partially-shredded</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-stats-pushdown">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-stats-pushdown</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-deletes">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-deletes</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="read-fallback-options">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">read-fallback-options</output-dir>
+        <expected-error>ASX0047: Invalid value for parameter 'useDeleteCache': ture</expected-error>
+        <expected-error>ASX0047: Invalid value for parameter 'useManifestFileSizes': ture</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-deletion-vectors">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-deletion-vectors</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-row-groups">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-row-groups</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-pushdown">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-pushdown</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="numeric-pushdown">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">numeric-pushdown</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-nested-in-struct">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-nested-in-struct</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-flags-off">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-flags-off</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg" check-warnings="true">
+      <compilation-unit name="variant-predicate-shapes">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-predicate-shapes</output-dir>
+        <expected-warn>Iceberg filter 'ref(name="nosuchcolumn") == 1' could not be pushed to the table scan and was skipped; the query is correct but reads more data than necessary</expected-warn>
+        <expected-warn>Iceberg filter 'ref(name="nosuchroot.deep") == 1' could not be pushed to the table scan and was skipped; the query is correct but reads more data than necessary</expected-warn>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-partitioned">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-partitioned</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-dotted-field-name">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-dotted-field-name</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-mixed-shredding">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-mixed-shredding</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="variant-two-columns">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-two-columns</output-dir>
+      </compilation-unit>
+    </test-case>
+  </test-group>
+  <test-group name="negative">
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="bad-catalog-endpoint">
+        <output-dir compare="Text">bad-catalog-endpoint</output-dir>
+        <expected-error>ASX0049: Parameter(s) uri must be specified</expected-error>
+        <expected-error>ASX1108: External source error. java.net.URISyntaxException: Expected authority at index 7: http://</expected-error>
+        <expected-error>ASX1108: External source error. missing URI scheme. received: hello</expected-error>
+        <expected-error>ASX1108: External source error. missing URI scheme. received: 127.0.0.1</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="bad-catalog-type">
+        <output-dir compare="Text">bad-catalog-type</output-dir>
+        <expected-error>ASX1228: Unsupported catalog type: 'FakeIcebergCatalog'</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="vended-credentials">
+        <output-dir compare="Text">vended-credentials</output-dir>
+        <!-- vending is part of the Iceberg REST protocol, so a catalog may only enable it on a REST source -->
+        <expected-error>ASX1262: Iceberg catalog source 'NESSIE' cannot vend credentials</expected-error>
+        <!-- the switch belongs to the catalog; a collection setting it is user error -->
+        <expected-error>ASX0050: Invalid parameter 'vendedCredentials'</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="bad-source-type">
+        <output-dir compare="Text">bad-source-type</output-dir>
+        <expected-error>ASX1230: Unsupported Iceberg catalog source: 'FAKE_AWS_GLUE'</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="missing-source-type">
+        <output-dir compare="Text">missing-source-type</output-dir>
+        <expected-error>ASX0049: Parameter(s) catalogSource must be specified</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="catalog-already-exists">
+        <output-dir compare="Text">catalog-already-exists</output-dir>
+        <expected-error>ASX1226: A catalog with this name myGlueCatalog already exists</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="drop-does-not-exist">
+        <output-dir compare="Text">drop-does-not-exist</output-dir>
+        <expected-error>ASX1227: Cannot find catalog with name myDoesNotExistGlueCatalog</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="drop-has-dependent-collections">
+        <output-dir compare="Text">drop-has-dependent-collections</output-dir>
+        <expected-error>ASX1148: Cannot drop catalog myGlueCatalog being used by collection Default.Default.test</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="bad-snapshot-format">
+        <output-dir compare="Text">bad-snapshot-format</output-dir>
+        <expected-error>ASX1108: External source error. unexpected TIMESTAMP snapshot format. Allow formats are: (milliseconds, yyyy-MM-dd, yyyy-MM-dd'T'HH:mm:ss or yyyy-MM-dd'T'HH:mm:ssXXX). Found: Hello!</expected-error>
+        <expected-error>ASX1108: External source error. unexpected TIMESTAMP snapshot format. Allow formats are: (milliseconds, yyyy-MM-dd, yyyy-MM-dd'T'HH:mm:ss or yyyy-MM-dd'T'HH:mm:ssXXX). Found: 2024-12-12 11:11:11</expected-error>
+        <expected-error>ASX1108: External source error. unexpected TIMESTAMP snapshot format. Allow formats are: (milliseconds, yyyy-MM-dd, yyyy-MM-dd'T'HH:mm:ss or yyyy-MM-dd'T'HH:mm:ssXXX). Found: Hello!</expected-error>
+        <expected-error>ASX1108: External source error. unexpected TIMESTAMP snapshot format. Allow formats are: (milliseconds, yyyy-MM-dd, yyyy-MM-dd'T'HH:mm:ss or yyyy-MM-dd'T'HH:mm:ssXXX). Found: 2024-12-12 11:11:11.123</expected-error>
+        <expected-error>ASX1239: Invalid Iceberg snapshot value</expected-error>
+        <expected-error>ASX1108: External source error. unexpected TIMESTAMP snapshot format. Allow formats are: (milliseconds, yyyy-MM-dd, yyyy-MM-dd'T'HH:mm:ss or yyyy-MM-dd'T'HH:mm:ssXXX). Found: </expected-error>
+        <expected-error>ASX1108: External source error. java.lang.IllegalArgumentException: Cannot find a snapshot older than</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="invalid-timezone">
+        <output-dir compare="Text">invalid-timezone</output-dir>
+        <expected-error>ASX1172: Provided timezone is invalid: 'GMT+Zft!'</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="invalid-boolean-option">
+        <output-dir compare="Text">invalid-boolean-option</output-dir>
+        <expected-error>ASX0047: Invalid value for parameter 'decimal-to-double': yes</expected-error>
+        <expected-error>ASX0047: Invalid value for parameter 'timestamp-to-long': 1</expected-error>
+        <expected-error>ASX0047: Invalid value for parameter 'date-to-int': ture</expected-error>
+        <expected-error>ASX0047: Invalid value for parameter 'time-to-int': abc</expected-error>
+        <expected-error>ASX0047: Invalid value for parameter 'splitScanTasks': 0</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg/negative">
+      <compilation-unit name="variant-negative">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">variant-negative</output-dir>
+        <expected-error>ASX0054: Parquet type 'DECIMAL16' is not supported by default. To enable type conversion, recreate the external dataset with the option 'decimal-to-double' enabled</expected-error>
+        <expected-error>ASX1108: External source error. Variant nesting depth exceeds the maximum supported depth of 2</expected-error>
+        <expected-error>ASX0047: Invalid value for parameter 'variantDepth': 0</expected-error>
+        <expected-error>ASX0047: Invalid value for parameter 'variantDepth': 1001</expected-error>
+        <expected-error>ASX0047: Invalid value for parameter 'variantProjectionPushdown': ture</expected-error>
+        <expected-error>ASX0047: Invalid value for parameter 'variantStatsPushdown': 1</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-d">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-d</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-t">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-t</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-tsz">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-tsz</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-tsz-long">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-tsz-long</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-tsn">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-tsn</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-tsnz">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-tsnz</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-tsnn">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-tsnn</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-overlap">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-overlap</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-gap">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-gap</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="iceberg">
+      <compilation-unit name="temporal-zone-boundary">
+        <placeholder name="adapter" value="S3" />
+        <output-dir compare="Text">temporal-zone-boundary</output-dir>
+      </compilation-unit>
+    </test-case>
+  </test-group>
+</test-suite>

@@ -18,6 +18,9 @@ package org.apache.asterix.external.library.msgpack;
 
 import static org.msgpack.core.MessagePack.Code.ARRAY16;
 import static org.msgpack.core.MessagePack.Code.ARRAY32;
+import static org.msgpack.core.MessagePack.Code.BIN16;
+import static org.msgpack.core.MessagePack.Code.BIN32;
+import static org.msgpack.core.MessagePack.Code.BIN8;
 import static org.msgpack.core.MessagePack.Code.FALSE;
 import static org.msgpack.core.MessagePack.Code.FIXARRAY_PREFIX;
 import static org.msgpack.core.MessagePack.Code.FIXMAP_PREFIX;
@@ -65,6 +68,7 @@ import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IMutableValueStorage;
 import org.apache.hyracks.data.std.primitive.IntegerPointable;
 import org.apache.hyracks.data.std.util.ArrayBackedValueStorage;
+import org.apache.hyracks.dataflow.common.data.marshalling.ByteArraySerializerDeserializer;
 import org.apache.hyracks.util.string.UTF8StringUtil;
 
 public class MessageUnpackerToADM {
@@ -140,6 +144,15 @@ public class MessageUnpackerToADM {
                     break;
                 case FLOAT64:
                     unpackDouble(in, out, tagged);
+                    break;
+                case BIN8:
+                    unpackBin(in, out, Byte.toUnsignedInt(in.get()), tagged);
+                    break;
+                case BIN16:
+                    unpackBin(in, out, Short.toUnsignedInt(in.getShort()), tagged);
+                    break;
+                case BIN32:
+                    unpackBin(in, out, Integer.toUnsignedLong(in.getInt()), tagged);
                     break;
                 case STR8:
                     unpackStr(in, out, Byte.toUnsignedInt(in.get()), tagged);
@@ -309,6 +322,18 @@ public class MessageUnpackerToADM {
         }
         IntegerPointable.setInteger(buildBuf.getByteArray(), totalSizeOffs, buildBuf.getLength());
         out.write(buildBuf.getByteArray(), buildBuf.getStartOffset(), buildBuf.getLength());
+    }
+
+    public void unpackBin(ByteBuffer in, DataOutput out, long uLen, boolean tag) throws IOException {
+        if (Long.compareUnsigned(uLen, Integer.MAX_VALUE) > 0) {
+            throw new UnsupportedOperationException("Binary is too long");
+        }
+        if (tag) {
+            out.writeByte(ATypeTag.SERIALIZED_BINARY_TYPE_TAG);
+        }
+        int len = (int) uLen;
+        ByteArraySerializerDeserializer.serialize(in.array(), in.arrayOffset() + in.position(), len, out);
+        in.position(in.position() + len);
     }
 
     public void unpackStr(ByteBuffer in, DataOutput out, long uLen, boolean tag) throws IOException {

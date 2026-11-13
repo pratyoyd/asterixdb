@@ -51,6 +51,13 @@ public class StringUtil {
         return sb.toString();
     }
 
+    /**
+     * Quotes a nullable string value with single quotes if non-null, otherwise returns null (no quotes).
+     */
+    public static String quoteNullableString(String value) {
+        return value == null ? "null" : "'" + value + "'";
+    }
+
     @FunctionalInterface
     public interface ICharAccessor<T> {
         char charAt(T input, int index);

@@ -136,15 +136,19 @@ public class TaskProfile extends AbstractProfile {
             if (!value.getOperatorId().equals(INVALID_ODID)) {
                 jpe.put("runtime-id", value.getOperatorId());
             }
-            if (value.getPageReads().get() > 0) {
-                jpe.put("pages-read", value.getPageReads().get());
+            if (value.getPageReadCounter().get() > 0) {
+                jpe.put("pages-read", value.getPageReadCounter().get());
                 jpe.put("pages-read-cold", value.coldReadCounter().get());
             }
             if (value.getTupleCounter().get() > 0) {
                 jpe.put("cardinality-out", value.getTupleCounter().get());
-                jpe.put("avg-tuple-size", value.getAverageTupleSz().get());
+                jpe.put("avg-tuple-size", (double) value.getTupleBytes().get() / value.getTupleCounter().get());
                 jpe.put("min-tuple-size", value.getMinTupleSz().get());
                 jpe.put("max-tuple-size", value.getMaxTupleSz().get());
+                jpe.put("tuple-bytes", value.getTupleBytes().get());
+                jpe.put("frames-processed", value.getTotalFrameCount().get());
+                jpe.put("avg-tuples-per-frame",
+                        (double) value.getTupleCounter().get() / value.getTotalFrameCount().get());
             }
             if (value.getLevel().get() > -1) {
                 jpe.put("level", value.getLevel().get());

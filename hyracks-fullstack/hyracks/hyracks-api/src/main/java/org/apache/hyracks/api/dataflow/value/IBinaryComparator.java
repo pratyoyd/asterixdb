@@ -24,4 +24,14 @@ import org.apache.hyracks.api.exceptions.HyracksDataException;
 public interface IBinaryComparator {
 
     int compare(byte[] b1, int s1, int l1, byte[] b2, int s2, int l2) throws HyracksDataException;
+
+    /**
+     * Tells whether a value encoded with different bytes can compare equal to the given one. Anything that looks a
+     * value up by its bytes, such as a bloom filter, cannot rule out such a value.
+     *
+     * @return true if the value has another encoding that this comparator finds equal to it
+     */
+    default boolean hasEquivalentEncoding(byte[] b, int s, int l) throws HyracksDataException {
+        return false;
+    }
 }

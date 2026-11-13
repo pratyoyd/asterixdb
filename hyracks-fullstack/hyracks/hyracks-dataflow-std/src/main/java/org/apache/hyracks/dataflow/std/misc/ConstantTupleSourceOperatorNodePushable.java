@@ -19,7 +19,6 @@
 
 package org.apache.hyracks.dataflow.std.misc;
 
-import org.apache.hyracks.api.comm.VSizeFrame;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.dataflow.common.comm.io.FrameTupleAppender;
@@ -43,18 +42,30 @@ public class ConstantTupleSourceOperatorNodePushable extends AbstractUnaryOutput
 
     @Override
     public void initialize() throws HyracksDataException {
-        FrameTupleAppender appender = new FrameTupleAppender(new VSizeFrame(ctx));
+        FrameTupleAppender appender = new FrameTupleAppender(ctx.allocateVSizeFrame());
         if (fieldSlots != null && tupleData != null && tupleSize > 0) {
             appender.append(fieldSlots, tupleData, 0, tupleSize);
         }
+        Throwable failure = null;
         try {
             writer.open();
             appender.write(writer, false);
         } catch (Throwable th) {
+            failure = th;
             writer.fail();
-            throw HyracksDataException.create(th);
         } finally {
-            writer.close();
+            try {
+                writer.close();
+            } catch (Throwable th) {
+                if (failure == null) {
+                    failure = th;
+                } else {
+                    failure.addSuppressed(th);
+                }
+            }
+        }
+        if (failure != null) {
+            throw HyracksDataException.create(failure);
         }
     }
 }

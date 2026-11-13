@@ -35,8 +35,8 @@
   </licenses>
   <properties>
     <root.dir>${basedir}/../..</root.dir>
-    <jnr-posix.version>3.1.19</jnr-posix.version>
-    <jnr-ffi.version>2.2.16</jnr-ffi.version>
+    <jnr-posix.version>3.2.5</jnr-posix.version>
+    <jnr-ffi.version>2.3.4</jnr-ffi.version>
   </properties>
   <dependencies>
     <dependency>
@@ -66,7 +66,7 @@
     </dependency>
     <dependency>
       <groupId>it.unimi.dsi</groupId>
-      <artifactId>fastutil-core</artifactId>
+      <artifactId>fastutil</artifactId>
     </dependency>
     <dependency>
       <groupId>com.github.jnr</groupId>
@@ -90,12 +90,15 @@
     <dependency>
       <groupId>com.google.cloud</groupId>
       <artifactId>google-cloud-core</artifactId>
-      <version>${gcsjavasdk.version}</version>
     </dependency>
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>sdk-core</artifactId>
       <version>${awsjavasdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.azure</groupId>
+      <artifactId>azure-core</artifactId>
     </dependency>
   </dependencies>
 </project>

@@ -6,6 +6,7 @@
 \s*\Q"results": [ {"F1":{"a":1},"F2":false},{"F1":{"a":1},"F2":null},{"F1":{"a":1},"F2":false},{"F1":{"a":1},"F2":null},{"F1":{"a":1},"F2":false},{"F1":{"a":1},"F2":null},{"F1":{"a":1},"F2":null},{"F1":{"a":1},"F2":null},{"F1":{"a":1},"F2":null},{"F1":{"a":1},"F2":null},{"F1":{"a":1},"F2":false},{"F1":{"a":1},"F2":null},{"F1":{"a":1},"F2":null},{"F1":{"a":1},"F2":null} ]\E
 \s*\Q,\E
 \s*\Q"plans":{},\E
+\s*\Q"cachedPlan": \E(true|false)\Q,\E
 \s*\Q"status": "success",\E
 \s*\Q"metrics": {\E
 \s*\Q"elapsedTime": "\E[^"]+\Q",\E

@@ -19,6 +19,8 @@
 package org.apache.hyracks.test.http;
 
 import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
@@ -27,16 +29,19 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
@@ -49,6 +54,8 @@ import org.apache.hyracks.http.server.InterruptOnCloseHandler;
 import org.apache.hyracks.http.server.WebManager;
 import org.apache.hyracks.test.http.servlet.ChattyServlet;
 import org.apache.hyracks.test.http.servlet.EchoServlet;
+import org.apache.hyracks.test.http.servlet.ErrorAfterHeaderServlet;
+import org.apache.hyracks.test.http.servlet.InterruptedWriteServlet;
 import org.apache.hyracks.test.http.servlet.SleepyServlet;
 import org.apache.hyracks.util.StorageUtil;
 import org.apache.logging.log4j.Level;
@@ -407,6 +414,76 @@ public class HttpServerTest {
                 final String responseBody = EntityUtils.toString(response.getEntity());
                 Assert.assertEquals(response.getStatusLine().getStatusCode(), HttpResponseStatus.OK.code());
                 Assert.assertEquals(responseBody, requestBody);
+            }
+        } finally {
+            webMgr.stop();
+        }
+    }
+
+    @Test
+    public void errorAfterHeaderSentTest() throws Exception {
+        // an error raised after the header was sent goes out as the last chunk, and the response is terminated
+        final WebManager webMgr = new WebManager();
+        final HttpServerConfig config =
+                HttpServerConfigBuilder.custom().setThreadCount(16).setRequestQueueSize(16).build();
+        final HttpServer server = new HttpServer(webMgr.getBosses(), webMgr.getWorkers(), PORT, config);
+        server.addServlet(new ErrorAfterHeaderServlet(server.ctx(), new String[] { PATH }));
+        webMgr.add(server);
+        webMgr.start();
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            final URI uri = new URI(PROTOCOL, null, HOST, PORT, PATH, null, null);
+            try (CloseableHttpResponse response = httpClient.execute(new HttpGet(uri))) {
+                // the status line was committed to by the first chunk, so it stays 200 whatever followed
+                Assert.assertEquals(HttpResponseStatus.OK.code(), response.getStatusLine().getStatusCode());
+                // must not fail: the response has to be properly terminated
+                final String responseBody = EntityUtils.toString(response.getEntity());
+                Assert.assertTrue("content sent before the error is missing",
+                        responseBody.startsWith(ErrorAfterHeaderServlet.CONTENT));
+                Assert.assertTrue("the error was not delivered to the client",
+                        responseBody.endsWith(ErrorAfterHeaderServlet.ERROR));
+            }
+        } finally {
+            webMgr.stop();
+        }
+    }
+
+    /**
+     * A write lost because the thread was interrupted while waiting for the channel leaves the body missing a
+     * stretch of what the servlet wrote. Terminating such a response cleanly hands the client a corrupt body it
+     * cannot tell from a complete one, so the connection is aborted instead.
+     */
+    @Test
+    public void failedWriteAbortsTheResponseTest() throws Exception {
+        final WebManager webMgr = new WebManager();
+        final HttpServerConfig config =
+                HttpServerConfigBuilder.custom().setThreadCount(16).setRequestQueueSize(16).build();
+        final HttpServer server = new HttpServer(webMgr.getBosses(), webMgr.getWorkers(), PORT, config);
+        final InterruptedWriteServlet servlet = new InterruptedWriteServlet(server.ctx(), new String[] { PATH });
+        server.addServlet(servlet);
+        webMgr.add(server);
+        webMgr.start();
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            final URI uri = new URI(PROTOCOL, null, HOST, PORT, PATH, null, null);
+            try (CloseableHttpResponse response = httpClient.execute(new HttpGet(uri))) {
+                Assert.assertEquals(HttpResponseStatus.OK.code(), response.getStatusLine().getStatusCode());
+                // the body is left unread until the servlet is done, which is what fills the channel and keeps it
+                // full for the interrupt to land in
+                servlet.interruptWriter(30, TimeUnit.SECONDS);
+                Assert.assertTrue("the servlet never finished", servlet.awaitFinished(30, TimeUnit.SECONDS));
+                Assert.assertTrue("the channel kept accepting writes, so no write was lost", servlet.errorObserved());
+                final StringBuilder received = new StringBuilder();
+                boolean aborted = false;
+                try (InputStream body = response.getEntity().getContent()) {
+                    final byte[] chunk = new byte[8192];
+                    for (int read = body.read(chunk); read >= 0; read = body.read(chunk)) {
+                        received.append(new String(chunk, 0, read, StandardCharsets.UTF_8));
+                    }
+                } catch (IOException e) {
+                    aborted = true;
+                }
+                Assert.assertTrue("the response was terminated as a complete one", aborted);
+                Assert.assertFalse("what was written after the failed write reached the client",
+                        received.toString().contains(InterruptedWriteServlet.AFTER_THE_FAILURE));
             }
         } finally {
             webMgr.stop();

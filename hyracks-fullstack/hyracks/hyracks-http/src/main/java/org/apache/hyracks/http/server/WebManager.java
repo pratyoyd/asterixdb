@@ -22,6 +22,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import org.apache.hyracks.api.util.ExceptionUtils;
+
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.util.internal.logging.Log4J2LoggerFactory;
@@ -102,11 +104,7 @@ public class WebManager {
         if (!stopExceptions.isEmpty()) {
             Exception ex = null;
             for (Exception stopException : stopExceptions) {
-                if (ex == null) {
-                    ex = stopException;
-                } else {
-                    ex.addSuppressed(stopException);
-                }
+                ex = ExceptionUtils.suppress(ex, stopException);
             }
             throw ex;
         }
@@ -114,5 +112,28 @@ public class WebManager {
 
     public void add(HttpServer server) {
         servers.add(server);
+    }
+
+    /**
+     * Closes all channels associated with the servers in this WebManager.
+     * This prevents any additional connections from being established.
+     */
+    public void closeChannels() throws Exception {
+        List<Exception> closeExceptions = Collections.synchronizedList(new ArrayList<>());
+        servers.parallelStream().forEach(server -> {
+            try {
+                server.closeChannels();
+            } catch (Exception e) {
+                closeExceptions.add(e);
+            }
+        });
+        if (!closeExceptions.isEmpty()) {
+            Exception ex = null;
+            for (Exception closeException : closeExceptions) {
+                ex = ExceptionUtils.suppress(ex, closeException);
+            }
+            throw ex;
+        }
+
     }
 }

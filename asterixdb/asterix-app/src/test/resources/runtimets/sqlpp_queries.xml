@@ -19,6 +19,11 @@
 <test-group name="sqlpp_queries">
   <test-group name="api">
     <test-case FilePath="api">
+      <compilation-unit name="result_ttl">
+        <output-dir compare="Text">result_ttl</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="api">
       <compilation-unit name="compileonly">
         <output-dir compare="Text">compileonly</output-dir>
       </compilation-unit>
@@ -38,7 +43,7 @@
         <output-dir compare="Text">readonly-request</output-dir>
         <expected-error>ASX0044: CREATE_DATAVERSE statement is not supported in read-only mode</expected-error>
         <expected-error>ASX0044: DATAVERSE_DROP statement is not supported in read-only mode</expected-error>
-        <expected-error>ASX0044: DATASET_DECL statement is not supported in read-only mode</expected-error>
+        <expected-error>ASX0044: CREATE_DATASET statement is not supported in read-only mode</expected-error>
         <expected-error>ASX0044: DATASET_DROP statement is not supported in read-only mode</expected-error>
         <expected-error>ASX0044: CREATE_INDEX statement is not supported in read-only mode</expected-error>
         <expected-error>ASX0044: INDEX_DROP statement is not supported in read-only mode</expected-error>
@@ -96,6 +101,15 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="api">
+      <compilation-unit name="multi-statement">
+        <output-dir compare="Text">multi-statement</output-dir>
+        <expected-error>ASX0035: Multiple statements are not allowed when the request parameter 'multi-statement' is false</expected-error>
+        <expected-error>ASX1259: async execution is not supported for a request with multiple statements</expected-error>
+        <!-- both rejections are decisions about the request, so neither names a source location -->
+        <source-location>false</source-location>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="api">
       <compilation-unit name="request-param">
         <output-dir compare="Text">request-param</output-dir>
       </compilation-unit>
@@ -129,7 +143,7 @@
       <compilation-unit name="get-non-query">
         <output-dir compare="Text">get-non-query</output-dir>
         <expected-error>CREATE_DATAVERSE statement is not supported in read-only mode</expected-error>
-        <expected-error>TYPE_DECL statement is not supported in read-only mode</expected-error>
+        <expected-error>CREATE_TYPE statement is not supported in read-only mode</expected-error>
         <expected-error>CREATE_FUNCTION statement is not supported in read-only mode</expected-error>
       </compilation-unit>
     </test-case>
@@ -141,7 +155,7 @@
     <test-case FilePath="api">
       <compilation-unit name="post-non-query">
         <output-dir compare="Text">post-non-query</output-dir>
-        <expected-error>TYPE_DECL statement is not supported in read-only mode</expected-error>
+        <expected-error>CREATE_TYPE statement is not supported in read-only mode</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="api">
@@ -2164,6 +2178,11 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="aggregate-sql">
+      <compilation-unit name="scalar_median">
+        <output-dir compare="Text">scalar_median</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="aggregate-sql">
       <compilation-unit name="scalar_min">
         <output-dir compare="Text">scalar_min</output-dir>
       </compilation-unit>
@@ -2993,7 +3012,7 @@
         <output-dir compare="Text">avg_mixed</output-dir>
         <expected-warn>ASX0004: Unsupported type: agg-avg cannot process input type string (in line 26, at column 12)</expected-warn>
         <expected-warn>ASX0004: Unsupported type: agg-avg cannot process input type string (in line 28, at column 19)</expected-warn>
-        <expected-warn>ASX0004: Unsupported type: agg-avg cannot process input type string (in line 29, at column 19)</expected-warn>
+        <expected-warn>ASX0004: Unsupported type: agg-avg cannot process input type string (in line 30, at column 19)</expected-warn>
       </compilation-unit>
     </test-case>
     <test-case FilePath="aggregate-sql-sugar">
@@ -3746,6 +3765,12 @@
         <expected-warn>Incomparable input types: bigint and string (in line 25, at column 46)</expected-warn>
       </compilation-unit>
     </test-case>
+    <test-case FilePath="comparison" check-warnings="true">
+      <compilation-unit name="ASTERIXDB-3584_in_expr">
+        <output-dir compare="Text">ASTERIXDB-3584_in_expr</output-dir>
+        <expected-warn>Incomparable input types: bigint and string</expected-warn>
+      </compilation-unit>
+    </test-case>
   </test-group>
   <test-group name="constructor">
     <test-case FilePath="constructor">
@@ -4010,6 +4035,13 @@
     <test-case FilePath="constructor">
       <compilation-unit name="polygon-from-open-list_issue1627">
         <output-dir compare="Text">polygon-from-open-list_issue1627</output-dir>
+      </compilation-unit>
+    </test-case>
+  </test-group>
+  <test-group name="crypto">
+    <test-case FilePath="crypto">
+      <compilation-unit name="sha1">
+        <output-dir compare="Text">sha1</output-dir>
       </compilation-unit>
     </test-case>
   </test-group>
@@ -4289,14 +4321,22 @@
         <output-dir compare="Clean-JSON">create-dataset-4</output-dir>
       </compilation-unit>
     </test-case>
-    <test-case FilePath="ddl">
+    <test-case FilePath="ddl" check-warnings="true">
       <compilation-unit name="analyze-dataset-1">
         <output-dir compare="Text">analyze-dataset-1</output-dir>
+          <expected-warn>ASX1174: Sample has zero rows</expected-warn>
       </compilation-unit>
     </test-case>
     <test-case FilePath="ddl">
       <compilation-unit name="analyze-dataset-with-indexes">
         <output-dir compare="Text">analyze-dataset-with-indexes</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="ddl">
+      <compilation-unit name="analyze-dataset-external">
+        <output-dir compare="Text">analyze-dataset-external</output-dir>
+        <expected-error>ASX1263: ANALYZE is not supported on external collection `Default`.`test`.`ExternalUsers`</expected-error>
+        <expected-error>ASX1263: ANALYZE is not supported on external collection `Default`.`test`.`ExternalUsers`</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="ddl/create-index">
@@ -4319,7 +4359,7 @@
     <test-case FilePath="ddl/create-index">
       <compilation-unit name="create-index-4">
         <output-dir compare="Text">create-index-4</output-dir>
-        <expected-error>Syntax error: In line 53 >>create  primary index if not exists sec_primary_idx1  if not exists on LineItem;&lt;&lt; Encountered &lt;IDENTIFIER&gt; "sec_primary_idx1" at column 37.</expected-error>
+        <expected-error>Syntax error: In line 53 >>create  primary index if not exists sec_primary_idx1  if not exists on LineItem;&lt;&lt; Encountered "if" at column 55.</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="ddl/create-index">
@@ -4533,6 +4573,11 @@
   </test-group>
   <test-group name="dml">
     <test-case FilePath="dml">
+      <compilation-unit name="truncate-dataset-1">
+        <output-dir compare="Clean-JSON">truncate-dataset-1</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="dml">
       <compilation-unit name="insert-with-autogenerated-pk_adm-with-sec-primary-index">
         <output-dir compare="Text">insert-with-autogenerated-pk_adm-with-sec-primary-index</output-dir>
       </compilation-unit>
@@ -4655,6 +4700,11 @@
     <test-case FilePath="dml">
       <compilation-unit name="insert-and-scan-dataset">
         <output-dir compare="Text">insert-and-scan-dataset</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="dml">
+      <compilation-unit name="upsert-cross-dataverse-same-dataset-name">
+        <output-dir compare="Text">upsert-cross-dataverse-same-dataset-name</output-dir>
       </compilation-unit>
     </test-case>
     <test-case FilePath="dml">
@@ -5268,7 +5318,7 @@
     <test-case FilePath="dml">
       <compilation-unit name="upsert-dataset-with-meta">
         <output-dir compare="Text">upsert-dataset-with-meta</output-dir>
-        <expected-error>upsert into dataset is not supported on datasets with meta records</expected-error>
+        <expected-error>Cannot use upsert into with 'DatasetWithMeta'. upsert into is not supported on datasets with meta records</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="dml">
@@ -5294,13 +5344,13 @@
     <test-case FilePath="dml">
       <compilation-unit name="delete-dataset-with-meta">
         <output-dir compare="Text">delete-dataset-with-meta</output-dir>
-        <expected-error>delete from dataset is not supported on datasets with meta records</expected-error>
+        <expected-error>Cannot use delete from with 'DatasetWithMeta'. delete from is not supported on datasets with meta records</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="dml">
       <compilation-unit name="insert-dataset-with-meta">
         <output-dir compare="Text">insert-dataset-with-meta</output-dir>
-        <expected-error>insert into dataset is not supported on datasets with meta records</expected-error>
+        <expected-error>Cannot use insert into with 'DatasetWithMeta'. insert into is not supported on datasets with meta records</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="dml">
@@ -6033,6 +6083,13 @@
       </compilation-unit>
     </test-case>
   </test-group>
+  <test-group name="hash-based-or">
+  <test-case FilePath="hash-based-or">
+    <compilation-unit name="hash-based-or">
+      <output-dir compare="Text">hash-based-or</output-dir>
+    </compilation-unit>
+  </test-case>
+  </test-group>
   <test-group name="group-by">
     <test-case FilePath="group-by">
       <compilation-unit name="gby-array">
@@ -6298,6 +6355,26 @@
         <output-dir compare="Text">query-ASTERIXDB-3016</output-dir>
       </compilation-unit>
     </test-case-->
+    <test-case FilePath="group-by">
+      <compilation-unit name="gby-outer-shadow-01">
+        <output-dir compare="Text">gby-outer-shadow-01</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="group-by">
+      <compilation-unit name="gby-outer-shadow-02">
+        <output-dir compare="Text">gby-outer-shadow-02</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="group-by">
+      <compilation-unit name="gby-outer-shadow-03">
+        <output-dir compare="Text">gby-outer-shadow-03</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="group-by">
+      <compilation-unit name="gby-outer-with-01">
+        <output-dir compare="Text">gby-outer-with-01</output-dir>
+      </compilation-unit>
+    </test-case>
   </test-group>
   <test-group name="index-join">
     <test-case FilePath="index-join">
@@ -6411,6 +6488,41 @@
     <test-case FilePath="index-selection">
       <compilation-unit name="batch-lookup">
         <output-dir compare="Text">batch-lookup</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="btree-index-range">
+        <output-dir compare="Text">btree-index-range</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="btree-index-array-range">
+        <output-dir compare="Text">btree-index-array-range</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="btree-index-range-02">
+        <output-dir compare="Text">btree-index-range-02</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="btree-index-composite-prefix-range">
+        <output-dir compare="Text">btree-index-composite-prefix-range</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="btree-index-composite-prefix-range-untyped">
+        <output-dir compare="Text">btree-index-composite-prefix-range-untyped</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="secondary-index-or-in-01">
+        <output-dir compare="Text">secondary-index-or-in-01</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="secondary-index-intersection-01">
+        <output-dir compare="Text">secondary-index-intersection-01</output-dir>
       </compilation-unit>
     </test-case>
     <test-case FilePath="index-selection">
@@ -6667,6 +6779,26 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="index-selection">
+      <compilation-unit name="in-list-duplicate-keys">
+        <output-dir compare="Text">in-list-duplicate-keys</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="in-list-duplicate-keys-untyped">
+        <output-dir compare="Text">in-list-duplicate-keys-untyped</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="in-list-exact-search">
+        <output-dir compare="Text">in-list-exact-search</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="in-list-exact-search-untyped">
+        <output-dir compare="Text">in-list-exact-search-untyped</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
       <compilation-unit name="inverted-index-ngram-edit-distance-with-two-ngram-index">
         <output-dir compare="Text">inverted-index-ngram-edit-distance-with-two-ngram-index</output-dir>
       </compilation-unit>
@@ -6716,6 +6848,58 @@
     <test-case FilePath="index-selection">
       <compilation-unit name="heterogeneous-index-Leftouterjoin">
         <output-dir compare="Text">heterogeneous-index-Leftouterjoin</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="duplicate-predicate-index">
+        <output-dir compare="Text">duplicate-predicate-index</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="btree-index-redundant-range">
+        <output-dir compare="Text">btree-index-redundant-range</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="btree-index-redundant-range-untyped">
+        <output-dir compare="Text">btree-index-redundant-range-untyped</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="heterogeneous-index-complex-types">
+        <output-dir compare="Text">heterogeneous-index-complex-types</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-selection">
+      <compilation-unit name="mismatch-type-predicate">
+        <output-dir compare="Text">mismatch-type-predicate</output-dir>
+      </compilation-unit>
+    </test-case>
+  </test-group>
+  <test-group name="index-only-testcases">
+      <test-case FilePath="index-only-testcases">
+        <compilation-unit name="heterogeneous-index-only-compund-keys">
+          <output-dir compare="Text">heterogeneous-index-only-compund-keys</output-dir>
+        </compilation-unit>
+      </test-case>
+      <test-case FilePath="index-only-testcases">
+        <compilation-unit name="simple-index-only">
+          <output-dir compare="Text">simple-index-only</output-dir>
+        </compilation-unit>
+      </test-case>
+      <test-case FilePath="index-only-testcases">
+        <compilation-unit name="simple-index-only-compund-keys">
+          <output-dir compare="Text">simple-index-only-compund-keys</output-dir>
+        </compilation-unit>
+      </test-case>
+    <test-case FilePath="index-only-testcases">
+      <compilation-unit name="simple-index-only-rtree">
+        <output-dir compare="Text">simple-index-only-rtree</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-only-testcases">
+      <compilation-unit name="index-only-with-Meta">
+        <output-dir compare="Text">index-only-with-Meta</output-dir>
       </compilation-unit>
     </test-case>
   </test-group>
@@ -6873,8 +7057,23 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="join">
+      <compilation-unit name="hash_join_exchange">
+        <output-dir compare="Text">hash_join_exchange</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="join">
+      <compilation-unit name="hash_join_exchange_1">
+        <output-dir compare="Text">hash_join_exchange_1</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="join">
       <compilation-unit name="ASTERIXDB-3502">
         <output-dir compare="Text">ASTERIXDB-3502</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="join">
+      <compilation-unit name="ASTERIXDB-3572-equi-non-equi-condition">
+        <output-dir compare="Text">ASTERIXDB-3572-equi-non-equi-condition</output-dir>
       </compilation-unit>
     </test-case>
     <test-case FilePath="join">
@@ -7118,6 +7317,46 @@
     </test-case>
   </test-group>
   <test-group name="misc">
+    <test-case FilePath="misc">
+      <compilation-unit name="time-travel-negative">
+        <output-dir compare="Text">time-travel-negative</output-dir>
+        <expected-error>ASX1266: Time travel value could not be resolved while compiling the query</expected-error>
+        <expected-error>ASX1265: Invalid 'AT SNAPSHOT' value: expected an integer or a string, but got date</expected-error>
+        <expected-error>ASX1265: Invalid 'AT TIMESTAMP' value: expected an integer, a string, a date or a datetime, but got null</expected-error>
+        <expected-error>ASX1265: Invalid 'AT TIMESTAMP' value: expected an integer, a string, a date or a datetime, but got double</expected-error>
+        <expected-error>ASX1106: Expected constant value</expected-error>
+        <expected-error>ASX1086: No value for parameter: $ts</expected-error>
+        <expected-error>ASX1267: current_date cannot be used in a time travel value; use current_date_immediate instead</expected-error>
+        <expected-error>ASX1265: Invalid 'AT TIMESTAMP' value: expected an integer, a string, a date or a datetime, but got time</expected-error>
+        <expected-error>ASX1265: Invalid 'AT SNAPSHOT' value: expected an integer or a string, but got boolean</expected-error>
+        <expected-error>ASX1266: Time travel value could not be resolved while compiling the query</expected-error>
+        <expected-error>ASX1073: Cannot resolve alias reference for undefined identifier d</expected-error>
+        <expected-error>ASX1106: Expected constant value</expected-error>
+        <expected-error>ASX1079: Compilation error: No positional variables are allowed over datasets</expected-error>
+        <expected-error>ASX1265: Invalid 'AT SNAPSHOT' value: expected an integer or a string, but got uuid</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="misc">
+      <compilation-unit name="time-travel-udf-param">
+        <output-dir compare="Text">time-travel-udf-param</output-dir>
+        <expected-error>ASX1265: Invalid 'AT TIMESTAMP' value: expected an integer, a string, a date or a datetime, but got boolean</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="misc">
+      <compilation-unit name="time-travel-value-types">
+        <output-dir compare="Text">time-travel-value-types</output-dir>
+        <expected-error>ASX1266: Time travel value could not be resolved while compiling the query</expected-error>
+        <expected-error>ASX1266: Time travel value could not be resolved while compiling the query</expected-error>
+        <expected-error>ASX1266: Time travel value could not be resolved while compiling the query</expected-error>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="misc">
+      <compilation-unit name="time-travel-non-assign">
+        <output-dir compare="Text">time-travel-non-assign</output-dir>
+        <expected-error>ASX1106: Expected constant value</expected-error>
+        <expected-error>ASX1106: Expected constant value</expected-error>
+      </compilation-unit>
+    </test-case>
     <test-case FilePath="misc">
       <compilation-unit name="big_in_list/000">
         <output-dir compare="Text">big_in_list/000</output-dir>
@@ -7402,7 +7641,7 @@
     <test-case FilePath="misc">
       <compilation-unit name="unsupported_parameter_value">
         <output-dir compare="Text">none</output-dir>
-        <expected-error>The given string: 4LS is not a byte unit string (e.g., 320KB or 1024)</expected-error>
+        <expected-error>The given string: 4LS is not a byte unit string (e.g., 320KiB or 1024)</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="misc">
@@ -7433,6 +7672,16 @@
     <test-case FilePath="misc">
       <compilation-unit name="active_requests">
         <output-dir compare="Text">active_requests</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="misc">
+      <compilation-unit name="async_requests">
+        <output-dir compare="Text">async_requests</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="misc">
+      <compilation-unit name="limit_after_offset">
+        <output-dir compare="Text">limit_after_offset</output-dir>
       </compilation-unit>
     </test-case>
     <test-case FilePath="misc">
@@ -7509,6 +7758,11 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="misc">
+      <compilation-unit name="handle_error_fun">
+        <output-dir compare="Text">handle_error_fun</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="misc">
       <compilation-unit name="query-ASTERIXDB-3299">
         <output-dir compare="Text">query-ASTERIXDB-3299</output-dir>
       </compilation-unit>
@@ -7521,6 +7775,19 @@
     <test-case FilePath="misc">
       <compilation-unit name="query-ASTERIXDB-3418">
         <output-dir compare="Text">query-ASTERIXDB-3418</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="misc">
+      <compilation-unit name="signed-zero-hash">
+        <output-dir compare="Text">signed-zero-hash</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="misc">
+      <compilation-unit name="signed-zero-bloom-filter">
+        <output-dir compare="Text">signed-zero-bloom-filter</output-dir>
+        <expected-error>Inserting duplicate keys into the primary storage</expected-error>
+        <expected-error>Inserting duplicate keys into the primary storage</expected-error>
+        <source-location>false</source-location>
       </compilation-unit>
     </test-case>
     <test-case FilePath="misc">
@@ -7566,6 +7833,11 @@
     <test-case FilePath="misc">
       <compilation-unit name="query-ASTERIXDB-3410">
         <output-dir compare="Text">query-ASTERIXDB-3410</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="misc">
+      <compilation-unit name="query-ASTERIXDB-3562">
+        <output-dir compare="Text">query-ASTERIXDB-3562</output-dir>
       </compilation-unit>
     </test-case>
   </test-group>
@@ -9616,6 +9888,11 @@
         <output-dir compare="Text">unary-minus_double_02</output-dir>
       </compilation-unit>
     </test-case>
+    <test-case FilePath="numeric">
+      <compilation-unit name="from_base">
+        <output-dir compare="Text">from_base</output-dir>
+      </compilation-unit>
+    </test-case>
   </test-group>
   <test-group name="open-closed">
     <!--
@@ -10030,7 +10307,9 @@
         <expected-error>ASX1105: Operation not supported on primary index ds1</expected-error>
         <expected-error>ASX1026: The given function expression query-index("test", "ds1", "pk_idx") cannot utilize index</expected-error>
         <expected-error>ASX1026: The given function expression query-index("test", "ds1", "sample_idx_1_ds1") cannot utilize index</expected-error>
-        <expected-error>ASX1026: The given function expression query-index("test", "ds1", "ds1_array_idx") cannot utilize index</expected-error>
+        <expected-error>ASX1087: Invalid number of arguments for function query-index</expected-error>
+        <expected-error>ASX1087: Invalid number of arguments for function query-index</expected-error>
+        <expected-error>ASX1087: Invalid number of arguments for function query-index</expected-error>
       </compilation-unit>
     </test-case>
   </test-group>
@@ -10627,7 +10906,7 @@
         <expected-error>ASX1169: Unable to do subquery coercion. Subquery returns more than one field (in line 32, at column 29)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Unsupported projection kind (in line 32, at column 20)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Both SELECT and SELECT VALUE are present (in line 35, at column 4)</expected-error>
-        <expected-error>ASX1169: Unable to do subquery coercion.  (in line 34, at column 3)</expected-error>
+        <expected-error>ASX1169: Unable to do subquery coercion. A set operation input is a parenthesized subquery (in line 34, at column 3)</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="sql-compat">
@@ -10642,7 +10921,7 @@
         <expected-error>ASX1169: Unable to do subquery coercion. Subquery returns more than one field (in line 35, at column 21)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Both SELECT and SELECT VALUE are present (in line 37, at column 3)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Both SELECT and SELECT VALUE are present (in line 38, at column 3)</expected-error>
-        <expected-error>ASX1169: Unable to do subquery coercion.  (in line 36, at column 3)</expected-error>
+        <expected-error>ASX1169: Unable to do subquery coercion. A set operation input is a parenthesized subquery (in line 36, at column 3)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Unsupported projection kind (in line 35, at column 20)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Unsupported projection kind (in line 36, at column 11)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Unsupported projection kind (in line 37, at column 11)</expected-error>
@@ -10660,7 +10939,7 @@
         <expected-error>ASX1169: Unable to do subquery coercion. Subquery returns more than one field (in line 37, at column 17)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Both SELECT and SELECT VALUE are present (in line 38, at column 3)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Both SELECT and SELECT VALUE are present (in line 39, at column 3)</expected-error>
-        <expected-error>ASX1169: Unable to do subquery coercion.  (in line 37, at column 3)</expected-error>
+        <expected-error>ASX1169: Unable to do subquery coercion. A set operation input is a parenthesized subquery (in line 37, at column 3)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Unsupported projection kind (in line 36, at column 21)</expected-error>
         <expected-error>ASX1169: Unable to do subquery coercion. Unsupported projection kind (in line 37, at column 25)</expected-error>
       </compilation-unit>
@@ -11075,6 +11354,16 @@
     <test-case FilePath="string">
       <compilation-unit name="regexp_contains/regexp_contains">
         <output-dir compare="Text">regexp_contains/regexp_contains</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="string">
+      <compilation-unit name="regexp_invalid_pattern_negative">
+        <output-dir compare="Text">regexp_invalid_pattern_negative</output-dir>
+        <expected-error>ASX1113: Invalid pattern [</expected-error>
+        <expected-error>ASX1113: Invalid pattern (abc</expected-error>
+        <expected-error>ASX1113: Invalid pattern *xyz</expected-error>
+        <expected-error>ASX1113: Invalid pattern [z-a]</expected-error>
+        <source-location>false</source-location>
       </compilation-unit>
     </test-case>
     <test-case FilePath="string">
@@ -11656,6 +11945,16 @@
         <expected-warn>Function 'reverse' failed to evaluate because: Decoding error - got a low surrogate without a leading high surrogate</expected-warn>
         <expected-warn>Function 'position' failed to evaluate because: Decoding error - got a low surrogate without a leading high surrogate</expected-warn>
         <expected-warn>Function 'position1' failed to evaluate because: Decoding error - got a low surrogate without a leading high surrogate</expected-warn>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="string">
+      <compilation-unit name="pad/lpad">
+        <output-dir compare="Text">pad/lpad</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="string">
+      <compilation-unit name="pad/rpad">
+        <output-dir compare="Text">pad/rpad</output-dir>
       </compilation-unit>
     </test-case>
   </test-group>
@@ -12684,6 +12983,11 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="tpch-sql-sugar">
+      <compilation-unit name="nest_aggregate_parallel_sort">
+        <output-dir compare="Text">nest_aggregate_parallel_sort</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="tpch-sql-sugar">
       <compilation-unit name="query-issue638">
         <output-dir compare="Text">query-issue638</output-dir>
       </compilation-unit>
@@ -12766,7 +13070,7 @@
     <test-case FilePath="tpch-sql-sugar">
       <compilation-unit name="q17_large_gby_variant_parameter">
         <output-dir compare="Text">none</output-dir>
-        <expected-error>Invalid query parameter compiler.groupmemory -- value has to be greater than or equal to</expected-error>
+        <expected-error>Invalid `compiler.groupmemory` "-10737418240" for frame size=32768. value should be >= 4 * frame size: `compiler.groupmemory` "131072" in bytes</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="tpch-sql-sugar">
@@ -12797,7 +13101,7 @@
     <test-case FilePath="tpch-sql-sugar">
       <compilation-unit name="q01_pricing_summary_report_parameter">
         <output-dir compare="Text">none</output-dir>
-        <expected-error>Invalid query parameter compiler.sortmemory -- value has to be greater than or equal to</expected-error>
+        <expected-error>Invalid `compiler.sortmemory` "-7516192768" for frame size=32768. value should be >= 3 * frame size: `compiler.sortmemory` "98304" in bytes</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="tpch-sql-sugar">
@@ -12858,7 +13162,7 @@
     <test-case FilePath="tpch-sql-sugar">
       <compilation-unit name="q09_product_type_profit_parameter">
         <output-dir compare="Text">none</output-dir>
-        <expected-error>Invalid query parameter compiler.joinmemory -- value has to be greater than or equal to</expected-error>
+        <expected-error>Invalid `compiler.joinmemory` "-34359738368" for frame size=32768. value should be >= 5 * frame size: `compiler.joinmemory` "163840" in bytes</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="tpch-sql-sugar">
@@ -13363,6 +13667,12 @@
     </test-case>
   </test-group>
   <test-group name="user-defined-functions">
+    <test-case FilePath="external-function-http">
+      <compilation-unit name="disabled">
+        <output-dir compare="Text">none</output-dir>
+        <expected-error>ASX1268: External HTTP functions are disabled</expected-error>
+      </compilation-unit>
+    </test-case>
     <test-case FilePath="user-defined-functions">
       <compilation-unit name="inline-in-expr">
         <output-dir compare="Text">inline-in-expr</output-dir>
@@ -13903,6 +14213,16 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="view">
+      <compilation-unit name="create-view-8-replace-typed">
+        <output-dir compare="Text">create-view-8-replace-typed</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="view">
+      <compilation-unit name="create-view-9-replace-untyped">
+        <output-dir compare="Text">create-view-9-replace-untyped</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="view">
       <compilation-unit name="drop-dataverse-1">
         <output-dir compare="Text">drop-dataverse-1</output-dir>
       </compilation-unit>
@@ -14144,7 +14464,7 @@
     <test-case FilePath="load">
       <compilation-unit name="dataset-with-meta">
         <output-dir compare="Text">dataset-with-meta</output-dir>
-        <expected-error>ASX1184: Compilation error: DatasetWithMeta: load dataset is not supported on datasets with meta records (in line 27, at column 1)</expected-error>
+        <expected-error>Cannot use load with 'DatasetWithMeta'. load is not supported on datasets with meta records (in line 27, at column 1)</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="load">
@@ -14201,6 +14521,23 @@
     <test-case FilePath="function">
       <compilation-unit name="drop_if_exists">
         <output-dir compare="Text">drop_if_exists</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="function/transform">
+      <compilation-unit name="negative">
+        <output-dir compare="Text">negative</output-dir>
+        <expected-error>ASX1223: Failed to create transform function. Encountered error: 'Transform function should have exactly one parameter'</expected-error>
+        <expected-error>ASX1223: Failed to create transform function. Encountered error: 'Transform function should have exactly one parameter'</expected-error>
+        <expected-error>ASX1223: Failed to create transform function. Encountered error: 'Transform function definition can not use collections/views'</expected-error>
+        <expected-error>ASX1223: Failed to create transform function. Encountered error: 'Transform function definition can not use collections/views'</expected-error>
+        <expected-error>ASX1223: Failed to create transform function. Encountered error: 'Transform function cannot return more than one row'</expected-error>
+        <expected-error>ASX1091: Type mismatch: expected value of type multiset or array, but got the value of type object</expected-error>
+        <source-location>false</source-location>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="function/transform">
+      <compilation-unit name="positive">
+        <output-dir compare="Text">positive</output-dir>
       </compilation-unit>
     </test-case>
   </test-group>
@@ -14496,7 +14833,6 @@
     <test-case FilePath="meta">
       <compilation-unit name="meta_after_gby">
         <output-dir compare="Text">meta_after_gby</output-dir>
-        <expected-error>Compilation error: No source collection found for META(): collection not supported or cannot reference collection (in line 29, at column 21)</expected-error>
       </compilation-unit>
     </test-case>
     <test-case FilePath="meta">
@@ -14644,6 +14980,11 @@
   </test-group>
   <test-group name="index-leftouterjoin">
     <test-case FilePath="index-leftouterjoin">
+      <compilation-unit name="index-leftouterjoin-example">
+        <output-dir compare="Text">index-leftouterjoin-example</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="index-leftouterjoin">
       <compilation-unit name="probe-pidx-with-join-btree-sidx1">
         <output-dir compare="Text">probe-pidx-with-join-btree-sidx1</output-dir>
       </compilation-unit>
@@ -14725,6 +15066,11 @@
         <output-dir compare="Text">query-issue443-2</output-dir>
       </compilation-unit>
     </test-case>
+    <test-case FilePath="distinct">
+      <compilation-unit name="hashbased">
+        <output-dir compare="Text">hashbased</output-dir>
+      </compilation-unit>
+    </test-case>
   </test-group>
   <test-group name="rightouterjoin">
     <test-case FilePath="rightouterjoin">
@@ -14770,6 +15116,16 @@
     <test-case FilePath="types">
       <compilation-unit name="isarray">
         <output-dir compare="Text">isarray</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="types" check-warnings="true">
+      <compilation-unit name="isvector">
+        <output-dir compare="Text">isvector</output-dir>
+        <expected-error>ASX1081: Cannot find function with signature isvector(1)</expected-error>
+        <expected-warn>ASX0043: Value out of range, function asterix:is-vector#2 expects its 2nd input parameter value to be between 1 and 2147483647, received 0 (in line 25, at column 21)</expected-warn>
+        <expected-warn>ASX0043: Value out of range, function asterix:is-vector#2 expects its 2nd input parameter value to be between 1 and 2147483647, received -1 (in line 26, at column 21)</expected-warn>
+        <expected-warn>ASX0002: Type mismatch: function is-vector expects its 2nd input parameter to be of type bigint, but the actual input type is double (in line 27, at column 21)</expected-warn>
+        <expected-warn>ASX0002: Type mismatch: function is-vector expects its 2nd input parameter to be of type bigint, but the actual input type is string (in line 28, at column 21)</expected-warn>
       </compilation-unit>
     </test-case>
     <test-case FilePath="types">
@@ -15260,7 +15616,29 @@
       </compilation-unit>
     </test-case>
   </test-group>
-  <test-group name="json">
+  <test-group name="update-statements">
+    <test-case FilePath="update-statements">
+      <compilation-unit name="simple-case">
+        <output-dir compare="Text">simple-case</output-dir>
+      </compilation-unit>
+    </test-case>
+      <test-case FilePath="update-statements">
+        <compilation-unit name="complex-case">
+          <output-dir compare="Text">complex-case</output-dir>
+        </compilation-unit>
+      </test-case>
+  <test-case FilePath="update-statements">
+    <compilation-unit name="update-null-missing">
+      <output-dir compare="Text">update-null-missing</output-dir>
+    </compilation-unit>
+  </test-case>
+    <test-case FilePath="update-statements">
+      <compilation-unit name="all-cases">
+        <output-dir compare="Text">all-cases</output-dir>
+      </compilation-unit>
+    </test-case>
+  </test-group>
+<test-group name="json">
     <test-case FilePath="json">
       <compilation-unit name="int01">
         <output-dir compare="Lossless-JSON">int01-losslessjson</output-dir>
@@ -15748,8 +16126,8 @@
         <expected-error>ASX0039: Expected integer value, got 1.75 (in line 28, at column 19)</expected-error>
         <expected-error>ASX1091: Type mismatch: expected value of type integer, but got the value of type string (in line 28, at column 7)</expected-error>
         <expected-error>ASX1091: Type mismatch: expected value of type integer, but got the value of type boolean (in line 28, at column 16)</expected-error>
-        <expected-error>ASX0021: Source value 9999999999 is out of range that integer can hold - integer.MAX_VALUE: 2147483647, integer.MIN_VALUE: -2147483648</expected-error>
-        <expected-error>ASX0021: Source value 8888888888 is out of range that integer can hold - integer.MAX_VALUE: 2147483647, integer.MIN_VALUE: -2147483648</expected-error>
+        <expected-error>ASX0021: Value 9999999999 is out of range for type integer, which holds values from -2147483648 to 2147483647</expected-error>
+        <expected-error>ASX0021: Value 8888888888 is out of range for type integer, which holds values from -2147483648 to 2147483647</expected-error>
         <source-location>false</source-location>
       </compilation-unit>
     </test-case>
@@ -15766,6 +16144,11 @@
     <test-case FilePath="limit">
       <compilation-unit name="push-limit-to-external-scan-select">
         <output-dir compare="Text">push-limit-to-external-scan-select</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="limit">
+      <compilation-unit name="push-limit-to-join-primary-lookup">
+        <output-dir compare="Text">push-limit-to-join-primary-lookup</output-dir>
       </compilation-unit>
     </test-case>
     <test-case FilePath="limit">
@@ -15786,6 +16169,11 @@
     <test-case FilePath="limit">
       <compilation-unit name="push-limit-to-primary-lookup-select">
         <output-dir compare="Text">push-limit-to-primary-lookup-select</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="limit">
+      <compilation-unit name="select-above-limit">
+        <output-dir compare="Text">select-above-limit</output-dir>
       </compilation-unit>
     </test-case>
     <test-case FilePath="limit">
@@ -15820,6 +16208,32 @@
     <test-case FilePath="compression">
       <compilation-unit name="scheme-snappy">
         <output-dir compare="Text">scheme-snappy</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="compression">
+      <compilation-unit name="secondary-index-invalid-scheme">
+        <output-dir compare="Text">secondary-index-invalid-scheme</output-dir>
+        <expected-error>ASX1096: Unknown compression scheme zip. Supported schemes are [snappy,none]</expected-error>
+        <source-location>false</source-location>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="compression">
+      <compilation-unit name="secondary-index-scheme">
+        <output-dir compare="Text">secondary-index-scheme</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="compression">
+      <compilation-unit name="secondary-index-unsupported-field">
+        <output-dir compare="Text">secondary-index-unsupported-field</output-dir>
+        <expected-error>ASX1059: Field(s) [merge-policy] unsupported in the with clause</expected-error>
+        <source-location>false</source-location>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="compression">
+      <compilation-unit name="secondary-index-unsupported-type">
+        <output-dir compare="Text">secondary-index-unsupported-type</output-dir>
+        <expected-error>WITH clause is only supported for BTREE, ARRAY and VTREE indexes</expected-error>
+        <source-location>false</source-location>
       </compilation-unit>
     </test-case>
   </test-group>
@@ -15859,6 +16273,21 @@
         <output-dir compare="Text">full-scan</output-dir>
       </compilation-unit>
     </test-case>
+    <test-case FilePath="metrics">
+      <compilation-unit name="plan-cache-parameterized">
+        <output-dir compare="Text">plan-cache-parameterized</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="metrics">
+      <compilation-unit name="plan-cache-time-travel">
+        <output-dir compare="Text">plan-cache-time-travel</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="metrics">
+      <compilation-unit name="plan-cache-ddl-replace">
+        <output-dir compare="Text">plan-cache-ddl-replace</output-dir>
+      </compilation-unit>
+    </test-case>
   </test-group>
   <test-group name="warnings">
     <test-case FilePath="warnings" check-warnings="true">
@@ -15896,7 +16325,7 @@
         <expected-warn><![CDATA[ASX1132: Invalid specification for hint productivity. Invalid format for productivity values (in line 31, at column 23)]]></expected-warn>
         <expected-warn><![CDATA[ASX1132: Invalid specification for hint productivity. Invalid format for productivity values (in line 31, at column 23)]]></expected-warn>
         <expected-warn><![CDATA[ASX1132: Invalid specification for hint productivity. Invalid format for productivity values (in line 31, at column 23)]]></expected-warn>
-        <expected-warn>HYR10006: Could not apply productivity hint: Productivity specified: 0.0, has to be a decimal value greater than 0 (in line 33, at column 47)</expected-warn>
+        <expected-warn><![CDATA[ASX1132: Invalid specification for hint productivity. Productivity has to be a decimal value greater than 0 (in line 33, at column 23)]]></expected-warn>
       </compilation-unit>
     </test-case>
     <test-case FilePath="warnings" check-warnings="true">
@@ -16360,6 +16789,11 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="window">
+      <compilation-unit name="isomorphic">
+        <output-dir compare="Text">isomorphic</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="window">
       <compilation-unit name="lag_01">
         <output-dir compare="Text">lag_01</output-dir>
       </compilation-unit>
@@ -16419,7 +16853,7 @@
         <output-dir compare="Text">misc_01</output-dir>
         <expected-error>ASX0002: Type mismatch</expected-error>
         <expected-error>ASX1104: Invalid modifier FROM FIRST/LAST for function</expected-error>
-        <expected-error>ASX1037: Invalid query parameter compiler.windowmemory</expected-error>
+        <expected-error>Invalid `compiler.windowmemory` "102400" for frame size=32768. value should be >= 5 * frame size: `compiler.windowmemory` "163840" in bytes </expected-error>
         <expected-error>ASX1102: Expected window or aggregate function, got: lowercase</expected-error>
         <expected-error>ASX1079: Compilation error: count is a SQL-92 aggregate function</expected-error>
         <expected-error>ASX1104: Invalid modifier RESPECT/IGNORE NULLS for function</expected-error>
@@ -16441,6 +16875,11 @@
     <test-case FilePath="window">
       <compilation-unit name="win_opt_02">
         <output-dir compare="Text">win_opt_02</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="window">
+      <compilation-unit name="win_outer_alias_01">
+        <output-dir compare="Text">win_outer_alias_01</output-dir>
       </compilation-unit>
     </test-case>
   </test-group>
@@ -16511,6 +16950,26 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
+      <compilation-unit name="assembly/missing-inner-array">
+        <output-dir compare="Text">assembly/missing-inner-array</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="assembly/ASTERIXDB-3652-1">
+        <output-dir compare="Text">assembly/ASTERIXDB-3652-1</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="assembly/ASTERIXDB-3652-2">
+        <output-dir compare="Text">assembly/ASTERIXDB-3652-2</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="assembly/ASTERIXDB-3652-3">
+        <output-dir compare="Text">assembly/ASTERIXDB-3652-3</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
       <compilation-unit name="filter/ASTERIXDB-3499">
         <output-dir compare="Text">filter/ASTERIXDB-3499</output-dir>
       </compilation-unit>
@@ -16518,6 +16977,46 @@
     <test-case FilePath="column">
       <compilation-unit name="filter/ASTERIXDB-3502">
         <output-dir compare="Text">filter/ASTERIXDB-3502</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/ASTERIXDB-3582">
+        <output-dir compare="Text">filter/ASTERIXDB-3582</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/ASTERIXDB-3582-2">
+        <output-dir compare="Text">filter/ASTERIXDB-3582-2</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/nested-array-mixed-type-empty">
+        <output-dir compare="Text">filter/nested-array-mixed-type-empty</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/double">
+        <output-dir compare="Text">filter/double</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/double-precision">
+        <output-dir compare="Text">filter/double-precision</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/double-nan">
+        <output-dir compare="Text">filter/double-nan</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/constant-left">
+        <output-dir compare="Text">filter/constant-left</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="filter/return-array">
+        <output-dir compare="Text">filter/return-array</output-dir>
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
@@ -16663,6 +17162,16 @@
     <test-case FilePath="column">
       <compilation-unit name="pushdown/replicate">
         <output-dir compare="Text">pushdown/replicate</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="pushdown/same-datasource-diff-scan">
+        <output-dir compare="Text">pushdown/same-datasource-diff-scan</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="pushdown/window_subquery">
+        <output-dir compare="Text">pushdown/window_subquery</output-dir>
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
@@ -16821,6 +17330,36 @@
       </compilation-unit>
     </test-case>
     <test-case FilePath="column">
+      <compilation-unit name="temporal/001">
+        <output-dir compare="Text">temporal/001</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/date">
+        <output-dir compare="Text">temporal/002/date</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/time">
+        <output-dir compare="Text">temporal/002/time</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/datetime">
+        <output-dir compare="Text">temporal/002/datetime</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/daytimeduration">
+        <output-dir compare="Text">temporal/002/daytimeduration</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
+      <compilation-unit name="temporal/002/yearmonthduration">
+        <output-dir compare="Text">temporal/002/yearmonthduration</output-dir>
+      </compilation-unit>
+    </test-case>
+    <test-case FilePath="column">
       <compilation-unit name="analyze-dataset">
         <output-dir compare="Text">analyze-dataset</output-dir>
       </compilation-unit>
@@ -16833,10 +17372,8 @@
     <test-case FilePath="column">
       <compilation-unit name="supported-types">
         <output-dir compare="Text">supported-types</output-dir>
-        <expected-error>ASX0067: Type(s) '[datetime]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, uuid]</expected-error>
-        <expected-error>ASX0067: Type(s) '[datetime, date, time, duration]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, uuid]</expected-error>
-        <expected-error>ASX0067: Type(s) '[datetime]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, uuid]</expected-error>
-        <expected-error>ASX0067: Type(s) '[datetime]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, uuid]</expected-error>
+        <expected-error>ASX0067: Type(s) '[point]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, datetime, date, time, duration, interval, yearmonthduration, daytimeduration, uuid]</expected-error>
+        <expected-error>ASX0067: Type(s) '[point]' are not supported in columnar storage format. Supported types are [bigint, float, double, string, boolean, datetime, date, time, duration, interval, yearmonthduration, daytimeduration, uuid]</expected-error>
         <source-location>false</source-location>
       </compilation-unit>
     </test-case>
@@ -16914,6 +17451,20 @@
         <output-dir compare="Clean-JSON">nested-type</output-dir>
         <expected-error>ASX0001: Field type string cannot be promoted to type uuid</expected-error>
         <expected-error>ASX0001: Field type string cannot be promoted to type uuid</expected-error>
+      </compilation-unit>
+    </test-case>
+  </test-group>
+  <test-group name="correlation">
+    <test-case FilePath="correlation">
+      <compilation-unit name="ASTERIXDB-3752-LIMIT-in-subquery">
+        <output-dir compare="Text">ASTERIXDB-3752-LIMIT-in-subquery</output-dir>
+      </compilation-unit>
+    </test-case>
+  </test-group>
+  <test-group name="correlation">
+    <test-case FilePath="correlation">
+      <compilation-unit name="ASTERIXDB-3752-LIMIT-in-subquery">
+        <output-dir compare="Text">ASTERIXDB-3752-LIMIT-in-subquery</output-dir>
       </compilation-unit>
     </test-case>
   </test-group>

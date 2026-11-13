@@ -23,8 +23,8 @@ import java.util.HashSet;
 import java.util.Set;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
@@ -114,7 +114,7 @@ public class PushNestedOrderByUnderPreSortedGroupByRule implements IAlgebraicRew
             // ++k;
         }
         // sort2.setSortColumns(sortColumns);
-        sort2.computeDeliveredProperties(order2, null);
+        sort2.computeDeliveredProperties(order2, context);
         // remove order1
         ILogicalOperator underOrder1 = order1.getInputs().get(0).getValue();
         opRef2.setValue(underOrder1);

@@ -38,7 +38,7 @@ import org.apache.hyracks.data.std.primitive.ShortPointable;
 import org.apache.hyracks.storage.am.lsm.btree.column.api.IColumnWriteMultiPageOp;
 import org.apache.parquet.bytes.BytesInput;
 
-final class LongColumnValuesWriter extends AbstractColumnValuesWriter {
+public final class LongColumnValuesWriter extends AbstractColumnValuesWriter {
     private final AbstractParquetValuesWriter longWriter;
     private final ATypeTag typeTag;
 
@@ -65,8 +65,13 @@ final class LongColumnValuesWriter extends AbstractColumnValuesWriter {
             case SMALLINT:
                 return ShortPointable.getShort(byteArray, offset);
             case INTEGER:
+            case DATE:
+            case YEARMONTHDURATION:
+            case TIME:
                 return IntegerPointable.getInteger(byteArray, offset);
             case BIGINT:
+            case DATETIME:
+            case DAYTIMEDURATION:
                 return LongPointable.getLong(byteArray, offset);
             default:
                 throw new IllegalAccessError(typeTag + " is not of type integer");
@@ -118,5 +123,18 @@ final class LongColumnValuesWriter extends AbstractColumnValuesWriter {
     @Override
     protected ATypeTag getTypeTag() {
         return typeTag;
+    }
+
+    @Override
+    public int getRequiredTemporaryBuffersCount() {
+        return requiredTemporaryBuffers(filtered);
+    }
+
+    public static int requiredTemporaryBuffers(boolean filtered) {
+        if (filtered) {
+            return ParquetDeltaBinaryPackingValuesWriterForLong.REQUIRED_TEMPORARY_BUFFERS;
+        } else {
+            return ParquetPlainFixedLengthValuesWriter.REQUIRED_TEMPORARY_BUFFERS;
+        }
     }
 }

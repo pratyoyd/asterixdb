@@ -22,7 +22,10 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.asterix.common.api.INcApplicationContext;
 import org.apache.asterix.common.ioopcallbacks.LSMIOOperationCallback;
+import org.apache.asterix.common.storage.DatasetResourceReference;
+import org.apache.asterix.common.storage.IIndexCheckpointManagerProvider;
 import org.apache.asterix.runtime.operators.LSMSecondaryIndexCreationTupleProcessorNodePushable.DeletedTupleCounter;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
@@ -51,23 +54,31 @@ public class LSMSecondaryIndexBulkLoadNodePushable extends AbstractLSMSecondaryI
 
     private final IIndexDataflowHelper primaryIndexHelper;
     private final IIndexDataflowHelper secondaryIndexHelper;
+    private final boolean completesIndexCreation;
+    private final IIndexCheckpointManagerProvider indexCheckpointManagerProvider;
 
     private ILSMIndex primaryIndex;
     private ILSMIndex secondaryIndex;
 
     private LSMIndexDiskComponentBulkLoader componentBulkLoader;
     private int currentComponentPos = -1;
+    private boolean failed = false;
 
     public LSMSecondaryIndexBulkLoadNodePushable(IHyracksTaskContext ctx, int partition, RecordDescriptor inputRecDesc,
             IIndexDataflowHelperFactory primaryIndexHelperFactory,
             IIndexDataflowHelperFactory secondaryIndexHelperFactory, int[] fieldPermutation, int numTagFields,
-            int numSecondaryKeys, int numPrimaryKeys, boolean hasBuddyBTree) throws HyracksDataException {
+            int numSecondaryKeys, int numPrimaryKeys, boolean hasBuddyBTree, boolean completesIndexCreation)
+            throws HyracksDataException {
         super(ctx, partition, inputRecDesc, numTagFields, numSecondaryKeys, numPrimaryKeys, hasBuddyBTree);
+        this.completesIndexCreation = completesIndexCreation;
         //TODO(partitioning) correlated
         this.primaryIndexHelper =
                 primaryIndexHelperFactory.create(ctx.getJobletContext().getServiceContext(), partition);
         this.secondaryIndexHelper =
                 secondaryIndexHelperFactory.create(ctx.getJobletContext().getServiceContext(), partition);
+        INcApplicationContext ncCtx =
+                (INcApplicationContext) ctx.getJobletContext().getServiceContext().getApplicationContext();
+        this.indexCheckpointManagerProvider = ncCtx.getIndexCheckpointManagerProvider();
         this.tuple = new PermutingFrameTupleReference(fieldPermutation);
 
         int[] sourcePermutation = new int[fieldPermutation.length - numTagFields];
@@ -98,7 +109,7 @@ public class LSMSecondaryIndexBulkLoadNodePushable extends AbstractLSMSecondaryI
     public void close() throws HyracksDataException {
         HyracksDataException closeException = null;
         try {
-            endCurrentComponent();
+            endOrAbortCurrentComponent();
         } catch (HyracksDataException e) {
             closeException = e;
         }
@@ -138,6 +149,18 @@ public class LSMSecondaryIndexBulkLoadNodePushable extends AbstractLSMSecondaryI
             }
         }
 
+        if (completesIndexCreation && closeException == null && !failed) {
+            // the load is the creator's last step on this partition: the index now holds what it starts with, so it
+            // is no longer pending (ASTERIXDB-3839). A load that failed -- or one whose close above threw -- leaves
+            // the index pending, for storage cleanup to reclaim.
+            try {
+                indexCheckpointManagerProvider.get(DatasetResourceReference.of(secondaryIndexHelper.getResource()))
+                        .creationCompleted();
+            } catch (HyracksDataException e) {
+                closeException = e;
+            }
+        }
+
         if (closeException != null) {
             throw closeException;
         }
@@ -151,6 +174,7 @@ public class LSMSecondaryIndexBulkLoadNodePushable extends AbstractLSMSecondaryI
     @Override
     public void fail() throws HyracksDataException {
         writer.fail();
+        failed = true;
     }
 
     @Override
@@ -177,15 +201,22 @@ public class LSMSecondaryIndexBulkLoadNodePushable extends AbstractLSMSecondaryI
         }
     }
 
-    private void endCurrentComponent() throws HyracksDataException {
+    private void endOrAbortCurrentComponent() throws HyracksDataException {
         if (componentBulkLoader != null) {
-            componentBulkLoader.end();
-            componentBulkLoader = null;
+            try {
+                if (!failed) {
+                    componentBulkLoader.end();
+                } else {
+                    componentBulkLoader.abort();
+                }
+            } finally {
+                componentBulkLoader = null;
+            }
         }
     }
 
     private void loadNewComponent(int componentPos) throws HyracksDataException {
-        endCurrentComponent();
+        endOrAbortCurrentComponent(); // This should never call componentBulkLoader.abort()
         int numTuples = getNumDeletedTuples(componentPos);
         ILSMDiskComponent primaryComponent = primaryIndex.getDiskComponents().get(componentPos);
         Map<String, Object> parameters = new HashMap<>();

@@ -41,6 +41,8 @@ import org.apache.hyracks.storage.am.lsm.common.api.ILSMIndexOperationContext;
 import org.apache.hyracks.storage.am.lsm.common.api.LSMOperationType;
 import org.apache.hyracks.storage.common.IIndexCursor;
 import org.apache.hyracks.storage.common.ISearchPredicate;
+import org.apache.hyracks.util.ExponentialRetryPolicy;
+import org.apache.hyracks.util.IRetryPolicy;
 
 public class LSMTreeIndexAccessor implements ILSMIndexAccessor {
     @FunctionalInterface
@@ -128,6 +130,23 @@ public class LSMTreeIndexAccessor implements ILSMIndexAccessor {
     @Override
     public void flush(ILSMIOOperation operation) throws HyracksDataException {
         lsmHarness.flush(operation);
+        if (operation.getStatus() == ILSMIOOperation.LSMIOOperationStatus.FAILURE) {
+            IRetryPolicy policy = new ExponentialRetryPolicy();
+            while (operation.getStatus() == ILSMIOOperation.LSMIOOperationStatus.FAILURE) {
+                try {
+                    if (policy.retry(operation.getFailure())) {
+                        operation.setFailure(null);
+                        operation.setStatus(ILSMIOOperation.LSMIOOperationStatus.SUCCESS);
+                        lsmHarness.flush(operation);
+                    } else {
+                        break;
+                    }
+                } catch (InterruptedException e) {
+                    // in reality, this thread won't be interrupted
+                    throw HyracksDataException.create(e);
+                }
+            }
+        }
     }
 
     @Override
@@ -227,6 +246,12 @@ public class LSMTreeIndexAccessor implements ILSMIndexAccessor {
     public void scanDiskComponents(IIndexCursor cursor) throws HyracksDataException {
         ctx.setOperation(IndexOperation.DISK_COMPONENT_SCAN);
         lsmHarness.scanDiskComponents(ctx, cursor);
+    }
+
+    @Override
+    public void scanDiskComponentsForSample(IIndexCursor cursor) throws HyracksDataException {
+        ctx.setOperation(IndexOperation.DISK_COMPONENT_SCAN);
+        lsmHarness.scanDiskComponentsForSample(ctx, cursor);
     }
 
     @Override

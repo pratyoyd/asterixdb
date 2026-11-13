@@ -18,6 +18,9 @@
  */
 package org.apache.asterix.metadata.utils;
 
+import static org.apache.asterix.external.util.ExternalDataUtils.isDeltaTable;
+import static org.apache.asterix.external.util.ExternalDataUtils.isParquetFormat;
+import static org.apache.asterix.external.util.iceberg.IcebergUtils.isIcebergTable;
 import static org.apache.asterix.om.utils.ProjectionFiltrationTypeUtil.ALL_FIELDS_TYPE;
 import static org.apache.hyracks.storage.am.common.dataflow.IndexDropOperatorDescriptor.DropOption;
 
@@ -38,9 +41,14 @@ import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.common.external.IExternalFilterEvaluatorFactory;
 import org.apache.asterix.common.metadata.MetadataConstants;
+import org.apache.asterix.common.storage.IndexCompletionMode;
 import org.apache.asterix.common.transactions.TxnId;
 import org.apache.asterix.external.indexing.ExternalFile;
+import org.apache.asterix.external.input.filter.NoOpDeltaTableFilterEvaluatorFactory;
 import org.apache.asterix.external.input.filter.NoOpExternalFilterEvaluatorFactory;
+import org.apache.asterix.external.input.filter.NoOpIcebergTableFilterEvaluatorFactory;
+import org.apache.asterix.external.input.filter.ParquetFilterEvaluatorFactory;
+import org.apache.asterix.external.util.ExternalDataConstants;
 import org.apache.asterix.external.util.ExternalDataPrefix;
 import org.apache.asterix.metadata.dataset.DatasetFormatInfo;
 import org.apache.asterix.metadata.declared.MetadataProvider;
@@ -49,7 +57,10 @@ import org.apache.asterix.metadata.entities.Index;
 import org.apache.asterix.metadata.entities.InternalDatasetDetails;
 import org.apache.asterix.metadata.utils.filter.ColumnFilterBuilder;
 import org.apache.asterix.metadata.utils.filter.ColumnRangeFilterBuilder;
+import org.apache.asterix.metadata.utils.filter.DeltaTableFilterBuilder;
 import org.apache.asterix.metadata.utils.filter.ExternalFilterBuilder;
+import org.apache.asterix.metadata.utils.filter.IcebergTableFilterBuilder;
+import org.apache.asterix.metadata.utils.filter.ParquetFilterBuilder;
 import org.apache.asterix.om.base.AString;
 import org.apache.asterix.om.base.IAObject;
 import org.apache.asterix.om.types.ARecordType;
@@ -58,8 +69,9 @@ import org.apache.asterix.runtime.job.listener.JobEventListenerFactory;
 import org.apache.asterix.runtime.projection.ColumnDatasetProjectionFiltrationInfo;
 import org.apache.asterix.runtime.projection.ExternalDatasetProjectionFiltrationInfo;
 import org.apache.asterix.runtime.projection.FunctionCallInformation;
+import org.apache.asterix.runtime.projection.ParquetExternalDatasetProjectionFiltrationInfo;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.DefaultProjectionFiltrationInfo;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
@@ -68,7 +80,9 @@ import org.apache.hyracks.algebricks.core.algebra.metadata.IProjectionFiltration
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenContext;
 import org.apache.hyracks.api.dataflow.value.ITypeTraits;
 import org.apache.hyracks.api.exceptions.SourceLocation;
+import org.apache.hyracks.api.job.HyracksJobProperty;
 import org.apache.hyracks.api.job.IJobletEventListenerFactory;
+import org.apache.hyracks.api.job.JobKind;
 import org.apache.hyracks.api.job.JobSpecification;
 import org.apache.hyracks.storage.am.common.impls.DefaultTupleProjectorFactory;
 import org.apache.hyracks.storage.am.common.impls.NoOpTupleProjectorFactory;
@@ -137,6 +151,7 @@ public class IndexUtil {
                 numSecondaryKeys = ((Index.ValueIndexDetails) index.getIndexDetails()).getKeyFieldNames().size();
                 return new int[] { numPrimaryKeys + numSecondaryKeys };
             case RTREE:
+            case VTREE:
             case LENGTH_PARTITIONED_NGRAM_INVIX:
             case LENGTH_PARTITIONED_WORD_INVIX:
             case SINGLE_PARTITION_NGRAM_INVIX:
@@ -155,21 +170,28 @@ public class IndexUtil {
             Dataset dataset, SourceLocation sourceLoc) throws AlgebricksException {
         ISecondaryIndexOperationsHelper secondaryIndexHelper =
                 SecondaryIndexOperationsHelper.createIndexOperationsHelper(dataset, index, metadataProvider, sourceLoc);
-        return secondaryIndexHelper.buildDropJobSpec(EnumSet.noneOf(DropOption.class));
+        JobSpecification spec = secondaryIndexHelper.buildDropJobSpec(EnumSet.noneOf(DropOption.class));
+        spec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DDL);
+        return spec;
     }
 
     public static JobSpecification buildDropIndexJobSpec(Index index, MetadataProvider metadataProvider,
             Dataset dataset, Set<DropOption> options, SourceLocation sourceLoc) throws AlgebricksException {
         ISecondaryIndexOperationsHelper secondaryIndexHelper =
                 SecondaryIndexOperationsHelper.createIndexOperationsHelper(dataset, index, metadataProvider, sourceLoc);
-        return secondaryIndexHelper.buildDropJobSpec(options);
+        JobSpecification spec = secondaryIndexHelper.buildDropJobSpec(options);
+        spec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DDL);
+        return spec;
     }
 
     public static JobSpecification buildSecondaryIndexCreationJobSpec(Dataset dataset, Index index,
-            MetadataProvider metadataProvider, SourceLocation sourceLoc) throws AlgebricksException {
+            MetadataProvider metadataProvider, SourceLocation sourceLoc, IndexCompletionMode completionMode)
+            throws AlgebricksException {
         ISecondaryIndexOperationsHelper secondaryIndexHelper =
                 SecondaryIndexOperationsHelper.createIndexOperationsHelper(dataset, index, metadataProvider, sourceLoc);
-        return secondaryIndexHelper.buildCreationJobSpec();
+        JobSpecification spec = secondaryIndexHelper.buildCreationJobSpec(completionMode);
+        spec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DDL);
+        return spec;
     }
 
     public static JobSpecification buildSecondaryIndexLoadingJobSpec(Dataset dataset, Index index,
@@ -188,7 +210,9 @@ public class IndexUtil {
             secondaryIndexHelper = SecondaryTreeIndexOperationsHelper.createIndexOperationsHelper(dataset, index,
                     metadataProvider, sourceLoc);
         }
-        return secondaryIndexHelper.buildLoadingJobSpec();
+        JobSpecification spec = secondaryIndexHelper.buildLoadingJobSpec();
+        spec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DML);
+        return spec;
     }
 
     private static boolean supportsCorrelated(DatasetConfig.IndexType indexType) {
@@ -200,6 +224,13 @@ public class IndexUtil {
         ISecondaryIndexOperationsHelper secondaryIndexHelper =
                 SecondaryIndexOperationsHelper.createIndexOperationsHelper(dataset, index, metadataProvider, sourceLoc);
         return secondaryIndexHelper.buildCompactJobSpec();
+    }
+
+    public static JobSpecification buildSecondaryIndexStaticStructureJobSpec(Dataset dataset, Index index,
+            MetadataProvider metadataProvider, SourceLocation sourceLoc) throws AlgebricksException {
+        ISecondaryIndexOperationsHelper secondaryIndexHelper =
+                SecondaryIndexOperationsHelper.createIndexOperationsHelper(dataset, index, metadataProvider, sourceLoc);
+        return secondaryIndexHelper.buildStaticStructureJobSpec();
     }
 
     /**
@@ -232,7 +263,7 @@ public class IndexUtil {
         if (typeConstructorFun == null) {
             throw new CompilationException(ErrorCode.COMPILATION_TYPE_UNSUPPORTED, srcLoc, "index", type.getTypeName());
         }
-        return new Pair<>(typeConstructorFun, withFormat ? new AString(format) : null);
+        return Pair.of(typeConstructorFun, withFormat ? new AString(format) : null);
     }
 
     private static Triple<String, String, String> getTemporalFormats(Index index) {
@@ -274,7 +305,7 @@ public class IndexUtil {
     }
 
     public static Pair<String, String> getSampleIndexNames(String datasetName) {
-        return new Pair<>(MetadataConstants.SAMPLE_INDEX_1_PREFIX + datasetName,
+        return Pair.of(MetadataConstants.SAMPLE_INDEX_1_PREFIX + datasetName,
                 MetadataConstants.SAMPLE_INDEX_2_PREFIX + datasetName);
     }
 
@@ -363,16 +394,77 @@ public class IndexUtil {
     public static IExternalFilterEvaluatorFactory createExternalFilterEvaluatorFactory(JobGenContext context,
             IVariableTypeEnvironment typeEnv, IProjectionFiltrationInfo projectionFiltrationInfo,
             Map<String, String> properties) throws AlgebricksException {
-        if (projectionFiltrationInfo == DefaultProjectionFiltrationInfo.INSTANCE) {
-            return NoOpExternalFilterEvaluatorFactory.INSTANCE;
+        if (isDeltaTable(properties)) {
+            return createDeltaFilter(projectionFiltrationInfo, context, typeEnv);
         }
-
-        ExternalDataPrefix prefix = new ExternalDataPrefix(properties);
-        ExternalDatasetProjectionFiltrationInfo pfi =
-                (ExternalDatasetProjectionFiltrationInfo) projectionFiltrationInfo;
-        ExternalFilterBuilder build = new ExternalFilterBuilder(pfi, context, typeEnv, prefix);
-
-        return build.build();
+        if (isIcebergTable(properties)) {
+            return createIcebergFilter(projectionFiltrationInfo, context, typeEnv);
+        }
+        if (isParquetFormat(properties)) {
+            return createParquetFilter(projectionFiltrationInfo, context, typeEnv, properties);
+        }
+        return createExternalFilter(projectionFiltrationInfo, context, typeEnv, properties);
     }
 
+    private static IExternalFilterEvaluatorFactory createDeltaFilter(IProjectionFiltrationInfo projectionFiltrationInfo,
+            JobGenContext context, IVariableTypeEnvironment typeEnv) throws AlgebricksException {
+        if (projectionFiltrationInfo == DefaultProjectionFiltrationInfo.INSTANCE) {
+            return NoOpDeltaTableFilterEvaluatorFactory.INSTANCE;
+        } else {
+            DeltaTableFilterBuilder builder = new DeltaTableFilterBuilder(
+                    (ExternalDatasetProjectionFiltrationInfo) projectionFiltrationInfo, context, typeEnv);
+            return builder.build();
+        }
+    }
+
+    private static IExternalFilterEvaluatorFactory createIcebergFilter(
+            IProjectionFiltrationInfo projectionFiltrationInfo, JobGenContext context, IVariableTypeEnvironment typeEnv)
+            throws AlgebricksException {
+        if (projectionFiltrationInfo == DefaultProjectionFiltrationInfo.INSTANCE) {
+            return NoOpIcebergTableFilterEvaluatorFactory.INSTANCE;
+        } else {
+            IcebergTableFilterBuilder builder = new IcebergTableFilterBuilder(
+                    (ExternalDatasetProjectionFiltrationInfo) projectionFiltrationInfo, context, typeEnv);
+            return builder.build();
+        }
+    }
+
+    private static IExternalFilterEvaluatorFactory createParquetFilter(
+            IProjectionFiltrationInfo projectionFiltrationInfo, JobGenContext context, IVariableTypeEnvironment typeEnv,
+            Map<String, String> properties) throws AlgebricksException {
+        if (projectionFiltrationInfo == DefaultProjectionFiltrationInfo.INSTANCE) {
+            return NoOpDeltaTableFilterEvaluatorFactory.INSTANCE;
+        } else {
+            ExternalDataPrefix prefix = new ExternalDataPrefix(properties);
+            ExternalDatasetProjectionFiltrationInfo pfi =
+                    (ExternalDatasetProjectionFiltrationInfo) projectionFiltrationInfo;
+            IExternalFilterEvaluatorFactory externalFilterEvaluatorFactory =
+                    NoOpExternalFilterEvaluatorFactory.INSTANCE;
+            if (!prefix.getPaths().isEmpty()) {
+                ExternalFilterBuilder externalFilterBuilder = new ExternalFilterBuilder(pfi, context, typeEnv, prefix);
+                externalFilterEvaluatorFactory = externalFilterBuilder.build();
+            }
+            String rowGroupFilter = properties.get(ExternalDataConstants.ParquetOptions.ROW_GROUP_FILTER);
+            if (rowGroupFilter != null && !Boolean.parseBoolean(rowGroupFilter)) {
+                return new ParquetFilterEvaluatorFactory(externalFilterEvaluatorFactory, null);
+            }
+            ParquetFilterBuilder builder = new ParquetFilterBuilder(
+                    (ParquetExternalDatasetProjectionFiltrationInfo) projectionFiltrationInfo, context, typeEnv);
+            return new ParquetFilterEvaluatorFactory(externalFilterEvaluatorFactory, builder.buildFilterExpression());
+        }
+    }
+
+    private static IExternalFilterEvaluatorFactory createExternalFilter(
+            IProjectionFiltrationInfo projectionFiltrationInfo, JobGenContext context, IVariableTypeEnvironment typeEnv,
+            Map<String, String> properties) throws AlgebricksException {
+        if (projectionFiltrationInfo == DefaultProjectionFiltrationInfo.INSTANCE) {
+            return NoOpExternalFilterEvaluatorFactory.INSTANCE;
+        } else {
+            ExternalDataPrefix prefix = new ExternalDataPrefix(properties);
+            ExternalDatasetProjectionFiltrationInfo pfi =
+                    (ExternalDatasetProjectionFiltrationInfo) projectionFiltrationInfo;
+            ExternalFilterBuilder build = new ExternalFilterBuilder(pfi, context, typeEnv, prefix);
+            return build.build();
+        }
+    }
 }

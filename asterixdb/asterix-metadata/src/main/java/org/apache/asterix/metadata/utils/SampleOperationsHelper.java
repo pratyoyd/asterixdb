@@ -27,16 +27,21 @@ import java.util.Set;
 
 import org.apache.asterix.common.cluster.PartitioningProperties;
 import org.apache.asterix.common.config.OptimizationConfUtil;
+import org.apache.asterix.common.exceptions.CompilationException;
+import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.storage.IndexCompletionMode;
 import org.apache.asterix.common.utils.StorageConstants;
 import org.apache.asterix.formats.base.IDataFormat;
 import org.apache.asterix.metadata.declared.MetadataProvider;
 import org.apache.asterix.metadata.entities.Dataset;
 import org.apache.asterix.metadata.entities.Index;
+import org.apache.asterix.metadata.entities.InternalDatasetDetails;
 import org.apache.asterix.om.base.AInt32;
 import org.apache.asterix.om.constants.AsterixConstantValue;
 import org.apache.asterix.om.functions.IFunctionDescriptor;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.BuiltinType;
+import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.runtime.aggregates.collections.FirstElementEvalFactory;
 import org.apache.asterix.runtime.evaluators.comparisons.GreaterThanDescriptor;
 import org.apache.asterix.runtime.operators.DatasetStreamStatsOperatorDescriptor;
@@ -44,10 +49,10 @@ import org.apache.asterix.runtime.operators.LSMIndexBulkLoadOperatorDescriptor;
 import org.apache.asterix.runtime.runningaggregates.std.SampleSlotRunningAggregateFunctionFactory;
 import org.apache.asterix.runtime.runningaggregates.std.TidRunningAggregateDescriptor;
 import org.apache.asterix.runtime.utils.RuntimeUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraintHelper;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator;
 import org.apache.hyracks.algebricks.core.jobgen.impl.ConnectorPolicyAssignmentPolicy;
 import org.apache.hyracks.algebricks.data.IBinaryComparatorFactoryProvider;
@@ -80,6 +85,7 @@ import org.apache.hyracks.dataflow.std.connectors.OneToOneConnectorDescriptor;
 import org.apache.hyracks.dataflow.std.file.IFileSplitProvider;
 import org.apache.hyracks.dataflow.std.group.AbstractAggregatorDescriptorFactory;
 import org.apache.hyracks.dataflow.std.group.sort.SortGroupByOperatorDescriptor;
+import org.apache.hyracks.dataflow.std.sort.ExternalSortOperatorDescriptor;
 import org.apache.hyracks.storage.am.common.build.IndexBuilderFactory;
 import org.apache.hyracks.storage.am.common.dataflow.IIndexDataflowHelperFactory;
 import org.apache.hyracks.storage.am.common.dataflow.IndexCreateOperatorDescriptor;
@@ -88,6 +94,8 @@ import org.apache.hyracks.storage.am.common.dataflow.IndexDropOperatorDescriptor
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMMergePolicyFactory;
 import org.apache.hyracks.storage.common.IStorageManager;
 import org.apache.hyracks.storage.common.projection.ITupleProjectorFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 /**
  * Utility class for sampling operations.
@@ -98,7 +106,13 @@ import org.apache.hyracks.storage.common.projection.ITupleProjectorFactory;
  */
 public class SampleOperationsHelper implements ISecondaryIndexOperationsHelper {
 
+    private static final Logger LOGGER = LogManager.getLogger();
     public static final String DATASET_STATS_OPERATOR_NAME = "Sample.DatasetStats";
+    // MetadataProvider property carrying the number of storage partitions that hold live data, as measured by
+    // the sample-cardinality probe (DatasetSampleCardinalityProbeOperatorDescriptor) run before this job. Used
+    // as the per-partition-quota divisor so empty/fully-deleted partitions do not drop their share of the
+    // target. Absent/<=0 => fall back to numPartitions (pre-fix behavior).
+    public static final String SAMPLE_LIVE_PARTITION_COUNT = "sample-live-partition-count";
 
     private final MetadataProvider metadataProvider;
     private final Dataset dataset;
@@ -116,6 +130,7 @@ public class SampleOperationsHelper implements ISecondaryIndexOperationsHelper {
     private int groupbyNumFrames;
     private int[][] computeStorageMap;
     private int numPartitions;
+    private boolean isFullScan;
 
     protected SampleOperationsHelper(Dataset dataset, Index sampleIdx, MetadataProvider metadataProvider,
             SourceLocation sourceLoc) {
@@ -123,6 +138,7 @@ public class SampleOperationsHelper implements ISecondaryIndexOperationsHelper {
         this.sampleIdx = sampleIdx;
         this.metadataProvider = metadataProvider;
         this.sourceLoc = sourceLoc;
+        this.isFullScan = ((Index.SampleIndexDetails) sampleIdx.getIndexDetails()).isFullScan();
     }
 
     @Override
@@ -130,7 +146,7 @@ public class SampleOperationsHelper implements ISecondaryIndexOperationsHelper {
         itemType = (ARecordType) metadataProvider.findType(dataset.getItemTypeDatabaseName(),
                 dataset.getItemTypeDataverseName(), dataset.getItemTypeName());
         metaType = DatasetUtil.getMetaType(metadataProvider, dataset);
-        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, metaType, dataset);
+        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, dataset);
 
         recordDesc = dataset.getPrimaryRecordDescriptor(metadataProvider);
         comparatorFactories = dataset.getPrimaryComparatorFactories(metadataProvider, itemType, metaType);
@@ -148,16 +164,16 @@ public class SampleOperationsHelper implements ISecondaryIndexOperationsHelper {
         numPartitions = samplePartitioningProperties.getNumberOfPartitions();
         Pair<ILSMMergePolicyFactory, Map<String, String>> compactionInfo =
                 DatasetUtil.getMergePolicyFactory(dataset, metadataProvider.getMetadataTxnContext());
-        mergePolicyFactory = compactionInfo.first;
-        mergePolicyProperties = compactionInfo.second;
+        mergePolicyFactory = compactionInfo.getLeft();
+        mergePolicyProperties = compactionInfo.getRight();
     }
 
     @Override
-    public JobSpecification buildCreationJobSpec() throws AlgebricksException {
+    public JobSpecification buildCreationJobSpec(IndexCompletionMode completionMode) throws AlgebricksException {
         JobSpecification spec = RuntimeUtils.createJobSpecification(metadataProvider.getApplicationContext());
-        IndexBuilderFactory[][] indexBuilderFactories =
-                DatasetUtil.getIndexBuilderFactories(dataset, metadataProvider, sampleIdx, itemType, metaType,
-                        fileSplitProvider, mergePolicyFactory, mergePolicyProperties, computeStorageMap);
+        IndexBuilderFactory[][] indexBuilderFactories = DatasetUtil.getIndexBuilderFactories(dataset, metadataProvider,
+                sampleIdx, itemType, metaType, fileSplitProvider, mergePolicyFactory, mergePolicyProperties,
+                computeStorageMap, completionMode);
         IndexCreateOperatorDescriptor indexCreateOp =
                 new IndexCreateOperatorDescriptor(spec, indexBuilderFactories, computeStorageMap);
         indexCreateOp.setSourceLocation(sourceLoc);
@@ -169,6 +185,118 @@ public class SampleOperationsHelper implements ISecondaryIndexOperationsHelper {
 
     @Override
     public JobSpecification buildLoadingJobSpec() throws AlgebricksException {
+        if (isFullScan) {
+            return buildFullScanAnalyzePipeline();
+        }
+        return buildRandomScanAnalyzePipeline();
+    }
+
+    private JobSpecification buildRandomScanAnalyzePipeline() throws AlgebricksException {
+        Index.SampleIndexDetails indexDetails = (Index.SampleIndexDetails) sampleIdx.getIndexDetails();
+        int sampleCardinalityTarget = indexDetails.getSampleCardinalityTarget();
+        long sampleSeed = indexDetails.getSampleSeed();
+        IDataFormat format = metadataProvider.getDataFormat();
+        int nFields = recordDesc.getFieldCount();
+        int[] columns = new int[nFields];
+        for (int i = 0; i < nFields; i++) {
+            columns[i] = i;
+        }
+        IStorageManager storageMgr = metadataProvider.getStorageComponentProvider().getStorageManager();
+        JobSpecification spec = RuntimeUtils.createJobSpecification(metadataProvider.getApplicationContext());
+        IIndexDataflowHelperFactory dataflowHelperFactory =
+                new IndexDataflowHelperFactory(storageMgr, fileSplitProvider);
+
+        // job spec:
+        IndexUtil.bindJobEventListener(spec, metadataProvider);
+
+        // if format == column. Bring the entire record as we are sampling
+        ITupleProjectorFactory projectorFactory = IndexUtil.createPrimaryIndexScanTupleProjectorFactory(
+                dataset.getDatasetFormatInfo(), ALL_FIELDS_TYPE, itemType, metaType, dataset.getPrimaryKeys().size());
+
+        // dummy key provider ----> primary index scan
+        IOperatorDescriptor sourceOp = DatasetUtil.createDummyKeyProviderOp(spec, dataset, metadataProvider);
+        // The sampleCardinalityTarget is divided by the number of partitions to get the per-partition quota;
+        // the hash partitioner keeps partitions ~evenly populated, so an even split yields a uniform sample.
+        // Divide by the number of partitions that actually hold live data (see resolveLiveDivisor): an empty
+        // or fully-deleted partition draws 0, and counting it in the divisor would drop its share and leave the
+        // realized sample below the target. Round up so the aggregate is at least the requested target.
+        int liveDivisor = resolveLiveDivisor();
+        int sampleCardinalityTargetPerPartition =
+                Math.max(1, (int) Math.ceil((double) sampleCardinalityTarget / liveDivisor));
+        // Divergence detector: the realized sample is ~liveDivisor * perPartition. It falls short of the
+        // target only when liveDivisor < numPartitions (empty/fully-deleted partitions excluded) AND the ceil
+        // rounding cannot make it up. Log the inputs so an under-fill (MB-73067 class) is diagnosable from a
+        // single line: liveDivisor==numPartitions is the healthy case; liveDivisor<numPartitions is the fix
+        // engaging; projected<target would signal the fix under-shooting.
+        LOGGER.debug(
+                "sample allocation for '{}': target={}, liveDivisor={}, numPartitions={}, perPartition={}, "
+                        + "projected~={}{}",
+                dataset.getDatasetName(), sampleCardinalityTarget, liveDivisor, numPartitions,
+                sampleCardinalityTargetPerPartition, (long) sampleCardinalityTargetPerPartition * liveDivisor,
+                liveDivisor < numPartitions ? " [empty-partitions-excluded]" : "");
+        IOperatorDescriptor targetOp = DatasetUtil.createSampleScanOp(spec, metadataProvider, dataset,
+                sampleCardinalityTargetPerPartition, sampleSeed, projectorFactory);
+        spec.connect(new OneToOneConnectorDescriptor(spec), sourceOp, 0, targetOp, 0);
+        sourceOp = targetOp;
+
+        // primary index scan ----> stream stats op
+        List<Index> dsIndexes = metadataProvider.getSecondaryIndexes(dataset);
+        IndexDataflowHelperFactory[] indexes = new IndexDataflowHelperFactory[dsIndexes.size()];
+        String[] names = new String[dsIndexes.size()];
+        for (int i = 0; i < indexes.length; i++) {
+            Index idx = dsIndexes.get(i);
+            PartitioningProperties idxPartitioningProps =
+                    metadataProvider.getPartitioningProperties(dataset, idx.getIndexName());
+            indexes[i] = new IndexDataflowHelperFactory(storageMgr, idxPartitioningProps.getSplitsProvider());
+            names[i] = idx.getIndexName();
+        }
+        targetOp = new DatasetStreamStatsOperatorDescriptor(spec, recordDesc, DATASET_STATS_OPERATOR_NAME, indexes,
+                names, computeStorageMap);
+        spec.connect(new OneToOneConnectorDescriptor(spec), sourceOp, 0, targetOp, 0);
+        sourceOp = targetOp;
+
+        int[] sortFields = dataset.getPrimaryBloomFilterFields();
+        INormalizedKeyComputerFactoryProvider normKeyProvider = format.getNormalizedKeyComputerFactoryProvider();
+        INormalizedKeyComputerFactory[] normKeyFactories = new INormalizedKeyComputerFactory[sortFields.length];
+        List<IAType> primaryKeyTypes = KeyFieldTypeUtil
+                .getPartitioningKeyTypes((InternalDatasetDetails) dataset.getDatasetDetails(), itemType, metaType);
+        for (int i = 0; i < primaryKeyTypes.size(); i++) {
+            IAType primaryKeyType = primaryKeyTypes.get(i);
+            INormalizedKeyComputerFactory normalizedKeyComputerFactory =
+                    normKeyProvider.getNormalizedKeyComputerFactory(primaryKeyType, true);
+            if (normalizedKeyComputerFactory == null) {
+                LOGGER.error("No normalized key computer for primary key field {} of type {}", i,
+                        primaryKeyType.getTypeName());
+                throw new IllegalArgumentException(
+                        "No normalized key computer for primary key type " + primaryKeyType.getTypeName());
+            }
+            normKeyFactories[i] = normalizedKeyComputerFactory;
+        }
+
+        targetOp = new ExternalSortOperatorDescriptor(spec, getSortNumFrames(metadataProvider, sourceLoc), sortFields,
+                normKeyFactories, comparatorFactories, recordDesc);
+        spec.connect(new OneToOneConnectorDescriptor(spec), sourceOp, 0, targetOp, 0);
+        sourceOp = targetOp;
+
+        targetOp = createTreeIndexBulkLoadOp(spec, columns, dataflowHelperFactory,
+                StorageConstants.DEFAULT_TREE_FILL_FACTOR, sampleCardinalityTarget);
+        spec.connect(new OneToOneConnectorDescriptor(spec), sourceOp, 0, targetOp, 0);
+        sourceOp = targetOp;
+
+        // bulk load op ----> sink op
+        SinkRuntimeFactory sinkRuntimeFactory = new SinkRuntimeFactory();
+        sinkRuntimeFactory.setSourceLocation(sourceLoc);
+        targetOp = new AlgebricksMetaOperatorDescriptor(spec, 1, 0, new IPushRuntimeFactory[] { sinkRuntimeFactory },
+                new RecordDescriptor[] { recordDesc });
+        spec.connect(new OneToOneConnectorDescriptor(spec), sourceOp, 0, targetOp, 0);
+
+        spec.addRoot(targetOp);
+        spec.setConnectorPolicyAssignmentPolicy(new ConnectorPolicyAssignmentPolicy());
+
+        return spec;
+    }
+
+    private JobSpecification buildFullScanAnalyzePipeline() throws AlgebricksException {
         Index.SampleIndexDetails indexDetails = (Index.SampleIndexDetails) sampleIdx.getIndexDetails();
         int sampleCardinalityTarget = indexDetails.getSampleCardinalityTarget();
         long sampleSeed = indexDetails.getSampleSeed();
@@ -326,6 +454,20 @@ public class SampleOperationsHelper implements ISecondaryIndexOperationsHelper {
         return spec;
     }
 
+    /**
+     * The per-partition-quota divisor: the number of storage partitions holding live data, as measured by the
+     * sample-cardinality probe and passed via {@link #SAMPLE_LIVE_PARTITION_COUNT}. Falls back to the total
+     * partition count when the probe result is absent or out of range (e.g. the probe did not run), preserving
+     * pre-fix behavior.
+     */
+    private int resolveLiveDivisor() {
+        Integer livePartitionCount = metadataProvider.getProperty(SAMPLE_LIVE_PARTITION_COUNT);
+        if (livePartitionCount != null && livePartitionCount > 0 && livePartitionCount <= numPartitions) {
+            return livePartitionCount;
+        }
+        return numPartitions;
+    }
+
     protected LSMIndexBulkLoadOperatorDescriptor createTreeIndexBulkLoadOp(JobSpecification spec,
             int[] fieldPermutation, IIndexDataflowHelperFactory dataflowHelperFactory, float fillFactor,
             long numElementHint) throws AlgebricksException {
@@ -337,7 +479,7 @@ public class SampleOperationsHelper implements ISecondaryIndexOperationsHelper {
         LSMIndexBulkLoadOperatorDescriptor treeIndexBulkLoadOp = new LSMIndexBulkLoadOperatorDescriptor(spec,
                 recordDesc, fieldPermutation, fillFactor, false, numElementHint, true, dataflowHelperFactory, null,
                 LSMIndexBulkLoadOperatorDescriptor.BulkLoadUsage.LOAD, dataset.getDatasetId(), null, partitionerFactory,
-                computeStorageMap);
+                computeStorageMap, true);
         treeIndexBulkLoadOp.setSourceLocation(sourceLoc);
         AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(spec, treeIndexBulkLoadOp,
                 partitionConstraint);
@@ -380,6 +522,20 @@ public class SampleOperationsHelper implements ISecondaryIndexOperationsHelper {
             throws AlgebricksException {
         return OptimizationConfUtil.getGroupByNumFrames(
                 metadataProvider.getApplicationContext().getCompilerProperties(), metadataProvider.getConfig(),
-                sourceLoc);
+                sourceLoc, metadataProvider.getApplicationContext().getCompilerProperties().getFrameSize());
+    }
+
+    private static int getSortNumFrames(MetadataProvider metadataProvider, SourceLocation sourceLoc)
+            throws AlgebricksException {
+        return OptimizationConfUtil.getSortNumFrames(metadataProvider.getApplicationContext().getCompilerProperties(),
+                metadataProvider.getConfig(), sourceLoc,
+                metadataProvider.getApplicationContext().getCompilerProperties().getFrameSize());
+    }
+
+    @Override
+    public JobSpecification buildStaticStructureJobSpec() throws AlgebricksException {
+        // Samples are BTrees; only vector indexes have a static-structure build phase.
+        throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE,
+                "a static-structure job was requested for the sample index");
     }
 }

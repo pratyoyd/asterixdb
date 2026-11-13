@@ -30,7 +30,6 @@ import java.util.SortedMap;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
 import org.apache.asterix.common.api.IClusterManagementWork.ClusterState;
 import org.apache.asterix.common.cluster.ClusterPartition;
@@ -43,6 +42,7 @@ import org.apache.asterix.common.replication.INcLifecycleCoordinator;
 import org.apache.asterix.common.transactions.IResourceIdManager;
 import org.apache.asterix.common.utils.NcLocalCounters;
 import org.apache.asterix.common.utils.PartitioningScheme;
+import org.apache.asterix.common.utils.Partitions;
 import org.apache.asterix.common.utils.StorageConstants;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksAbsolutePartitionConstraint;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
@@ -152,15 +152,15 @@ public class ClusterStateManager implements IClusterStateManager {
 
     @Override
     public synchronized void updateNodeState(String nodeId, boolean active, NcLocalCounters localCounters,
-            Set<Integer> activePartitions) {
+            Partitions activePartitions) {
         if (active) {
             updateClusterCounters(nodeId, localCounters);
             participantNodes.add(nodeId);
             if (appCtx.isCloudDeployment()) {
                 // node compute partitions never change
                 ClusterPartition[] nodePartitions = getNodePartitions(nodeId);
-                activePartitions =
-                        Arrays.stream(nodePartitions).map(ClusterPartition::getPartitionId).collect(Collectors.toSet());
+                activePartitions = Arrays.stream(nodePartitions).map(ClusterPartition::getPartitionId)
+                        .collect(Partitions.collector());
                 activateNodePartitions(nodeId, activePartitions);
             } else {
                 activateNodePartitions(nodeId, activePartitions);
@@ -168,6 +168,10 @@ public class ClusterStateManager implements IClusterStateManager {
 
         } else {
             participantNodes.remove(nodeId);
+            // pendingRemoval is only meaningful for participants; discard the registration, as removePending()
+            // cannot re-register a non-participant.  the node's partitions are deactivated below, so they are
+            // excluded from the cluster locations regardless
+            pendingRemoval.remove(nodeId);
             deactivateNodePartitions(nodeId);
         }
     }
@@ -431,6 +435,10 @@ public class ClusterStateManager implements IClusterStateManager {
     @Override
     public synchronized void deregisterNodePartitions(String nodeId) throws HyracksDataException {
         ClusterPartition[] nodePartitions = node2PartitionsMap.remove(nodeId);
+        // the node is on its way out; discard any pending removal registration, as removePending() cannot
+        // re-register a non-participant.  note this is done unconditionally, as the partitions may have
+        // already been deregistered
+        pendingRemoval.remove(nodeId);
         if (nodePartitions == null) {
             LOGGER.info("deregisterNodePartitions unknown node {} (already removed?)", nodeId);
         } else {
@@ -474,8 +482,14 @@ public class ClusterStateManager implements IClusterStateManager {
         return ncConfigMap;
     }
 
+    @Override
     public synchronized Set<String> getNodesPendingRemoval() {
         return new HashSet<>(pendingRemoval);
+    }
+
+    @Override
+    public synchronized boolean isPendingRemoval(String nodeId) {
+        return pendingRemoval.contains(nodeId);
     }
 
     @Override
@@ -542,8 +556,8 @@ public class ClusterStateManager implements IClusterStateManager {
         });
     }
 
-    private synchronized void activateNodePartitions(String nodeId, Set<Integer> activePartitions) {
-        for (Integer partitionId : activePartitions) {
+    private synchronized void activateNodePartitions(String nodeId, Partitions activePartitions) {
+        for (int partitionId : activePartitions) {
             updateClusterPartition(partitionId, nodeId, true);
         }
     }

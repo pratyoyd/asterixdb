@@ -28,9 +28,11 @@ import org.apache.asterix.column.metadata.schema.AbstractSchemaNode;
 import org.apache.asterix.column.values.IColumnValuesReaderFactory;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.util.InvokeUtil;
 import org.apache.hyracks.data.std.api.IValueReference;
 import org.apache.hyracks.storage.am.lsm.btree.column.error.ColumnarValueException;
 
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 public final class ColumnAssembler {
@@ -80,16 +82,21 @@ public final class ColumnAssembler {
         int index = 0;
         while (index < assemblers.length) {
             AbstractPrimitiveValueAssembler assembler = assemblers[index];
+            assembler.notifyCurrentTuple(tupleIndex);
             int groupIndex;
 
             try {
-                groupIndex = assembler.next(state);
+                groupIndex = assembler.next(tupleIndex, state);
             } catch (ColumnarValueException e) {
                 appendInformation(e);
                 throw e;
             }
 
             if (groupIndex != AbstractPrimitiveValueAssembler.NEXT_ASSEMBLER) {
+                // EndOfRepeatedGroupAssembler jumps back to the start of its group, so this is the only branch
+                // that can fail to make progress; a group whose exit condition is never met spins here forever.
+                // Guarding the jump rather than the loop keeps the straight-line per-column advance untouched.
+                InvokeUtil.failIfInterrupted();
                 index = groupIndex;
             } else {
                 index++;
@@ -132,6 +139,15 @@ public final class ColumnAssembler {
     }
 
     public void setAt(int index) throws HyracksDataException {
+        int skipCount = index - tupleIndex;
+        if (skipCount < 0) {
+            // should never happen as tupleIndex progress forward.
+            ColumnarValueException e = new ColumnarValueException();
+            e.getNode().put("message",
+                    "skipCount is negative, currentTupleIndex: " + tupleIndex + ", finalTupleIndex: " + index);
+            appendInformation(e);
+            throw e;
+        }
         skip(index - tupleIndex);
     }
 
@@ -140,6 +156,10 @@ public final class ColumnAssembler {
         assemblerNode.put("tupleIndex", tupleIndex);
         assemblerNode.put("numberOfTuples", numberOfTuples);
         assemblerNode.put("numberOfSkips", numberOfSkips);
+        ArrayNode assemblerReaders = assemblerNode.putArray("assemblerReaders");
+        for (int i = 0; i < assemblers.length; i++) {
+            assemblers[i].getReader().appendReaderInformation(assemblerReaders.addObject());
+        }
         state.appendStateInfo(e);
     }
 }

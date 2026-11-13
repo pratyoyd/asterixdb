@@ -19,7 +19,6 @@
 package org.apache.asterix.lang.common.visitor.base;
 
 import org.apache.asterix.common.exceptions.CompilationException;
-import org.apache.asterix.lang.common.clause.UpdateClause;
 import org.apache.asterix.lang.common.expression.OrderedListTypeDefinition;
 import org.apache.asterix.lang.common.expression.RecordTypeDefinition;
 import org.apache.asterix.lang.common.expression.TypeReferenceExpression;
@@ -67,11 +66,14 @@ import org.apache.asterix.lang.common.statement.SetStatement;
 import org.apache.asterix.lang.common.statement.StartFeedStatement;
 import org.apache.asterix.lang.common.statement.StopFeedStatement;
 import org.apache.asterix.lang.common.statement.SynonymDropStatement;
+import org.apache.asterix.lang.common.statement.TruncateDatasetStatement;
 import org.apache.asterix.lang.common.statement.TypeDecl;
 import org.apache.asterix.lang.common.statement.TypeDropStatement;
 import org.apache.asterix.lang.common.statement.UpdateStatement;
 import org.apache.asterix.lang.common.statement.ViewDecl;
 import org.apache.asterix.lang.common.statement.ViewDropStatement;
+import org.apache.asterix.lang.common.statement.catalog.CatalogCreateStatement;
+import org.apache.asterix.lang.common.statement.catalog.CatalogDropStatement;
 
 public abstract class AbstractQueryExpressionVisitor<R, T> implements ILangVisitor<R, T> {
 
@@ -102,6 +104,11 @@ public abstract class AbstractQueryExpressionVisitor<R, T> implements ILangVisit
 
     @Override
     public R visit(DropDatasetStatement del, T arg) throws CompilationException {
+        return null;
+    }
+
+    @Override
+    public R visit(TruncateDatasetStatement del, T arg) throws CompilationException {
         return null;
     }
 
@@ -162,11 +169,6 @@ public abstract class AbstractQueryExpressionVisitor<R, T> implements ILangVisit
 
     @Override
     public R visit(UnorderedListTypeDefinition ulte, T arg) throws CompilationException {
-        return null;
-    }
-
-    @Override
-    public R visit(UpdateClause del, T arg) throws CompilationException {
         return null;
     }
 
@@ -337,6 +339,16 @@ public abstract class AbstractQueryExpressionVisitor<R, T> implements ILangVisit
 
     @Override
     public R visit(ViewDecl vd, T arg) throws CompilationException {
+        return null;
+    }
+
+    @Override
+    public R visit(CatalogCreateStatement ccs, T arg) throws CompilationException {
+        return null;
+    }
+
+    @Override
+    public R visit(CatalogDropStatement del, T arg) throws CompilationException {
         return null;
     }
 }

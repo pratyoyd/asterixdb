@@ -20,6 +20,7 @@ package org.apache.asterix.cloud.clients.aws.s3;
 
 import java.io.IOException;
 import java.net.URI;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -29,18 +30,26 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
-import org.apache.asterix.cloud.clients.IParallelDownloader;
+import org.apache.asterix.cloud.clients.AbstractParallelDownloader;
 import org.apache.asterix.cloud.clients.profiler.IRequestProfilerLimiter;
 import org.apache.commons.io.FileUtils;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.FileReference;
 import org.apache.hyracks.control.nc.io.IOManager;
 import org.apache.hyracks.util.annotations.ThreadSafe;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
+import software.amazon.awssdk.http.SdkHttpConfigurationOption;
+import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
+import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
+import software.amazon.awssdk.http.nio.netty.SdkEventLoopGroup;
+import software.amazon.awssdk.http.nio.netty.internal.CustomResolverBootstrapProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
 import software.amazon.awssdk.services.s3.S3AsyncClientBuilder;
 import software.amazon.awssdk.services.s3.S3CrtAsyncClientBuilder;
+import software.amazon.awssdk.services.s3.crt.S3CrtHttpConfiguration;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.transfer.s3.S3TransferManager;
 import software.amazon.awssdk.transfer.s3.model.CompletedDirectoryDownload;
@@ -50,58 +59,71 @@ import software.amazon.awssdk.transfer.s3.model.DownloadDirectoryRequest;
 import software.amazon.awssdk.transfer.s3.model.DownloadFileRequest;
 import software.amazon.awssdk.transfer.s3.model.FailedFileDownload;
 import software.amazon.awssdk.transfer.s3.model.FileDownload;
+import software.amazon.awssdk.utils.AttributeMap;
 
+/**
+ * Parallel S3 downloader with optional custom DNS resolution.
+ */
 @ThreadSafe
-class S3ParallelDownloader implements IParallelDownloader {
+class S3ParallelDownloader extends AbstractParallelDownloader {
+    private static final Logger LOGGER = LogManager.getLogger();
+    static final String CRT_CERTIFICATES_MESSAGE =
+            "The crt S3 parallel downloader client cannot use custom certificates; use the async or sync client type";
     private final String bucket;
     private final IOManager ioManager;
     private final S3AsyncClient s3AsyncClient;
     private final S3TransferManager transferManager;
+    // the CRT client takes no execution interceptor, so its downloads are reported from the transfer manager instead
+    private final boolean reportDownloads;
     private final S3ClientConfig config;
     private final IRequestProfilerLimiter profiler;
+    // Shared event loop group (reused across Netty client instances if multiple downloaders are created)
+    private static final SdkEventLoopGroup SHARED_EVENT_LOOP = SdkEventLoopGroup.builder()
+            .numberOfThreads(Math.max(2, Runtime.getRuntime().availableProcessors())).build();
 
     S3ParallelDownloader(String bucket, IOManager ioManager, S3ClientConfig config, IRequestProfilerLimiter profiler) {
         this.bucket = bucket;
         this.ioManager = ioManager;
         this.config = config;
         this.profiler = profiler;
-        s3AsyncClient = createAsyncClient(config);
-        transferManager = createS3TransferManager(s3AsyncClient);
+        this.s3AsyncClient = createAsyncClient(config);
+        this.transferManager = createS3TransferManager(s3AsyncClient);
+        this.reportDownloads =
+                config.getParallelDownloaderClientType() == S3ClientConfig.S3ParallelDownloaderClientType.CRT;
     }
 
     @Override
     public void downloadFiles(Collection<FileReference> toDownload) throws HyracksDataException {
         try {
-            List<CompletableFuture<CompletedFileDownload>> downloads = startDownloadingFiles(toDownload);
-            waitForFileDownloads(downloads);
+            downloadFilesAndWait(toDownload);
         } catch (IOException | ExecutionException | InterruptedException e) {
             throw HyracksDataException.create(e);
         }
     }
 
     @Override
-    public Collection<FileReference> downloadDirectories(Collection<FileReference> toDownload)
-            throws HyracksDataException {
-        Set<FileReference> failedFiles;
+    public Set<FileReference> downloadDirectories(Collection<FileReference> toDownload)
+            throws HyracksDataException, ExecutionException, InterruptedException {
         List<CompletableFuture<CompletedDirectoryDownload>> downloads = startDownloadingDirectories(toDownload);
-        try {
-            failedFiles = waitForDirectoryDownloads(downloads);
-        } catch (ExecutionException | InterruptedException e) {
-            throw HyracksDataException.create(e);
-        }
+        return waitForDirectoryDownloads(downloads);
+    }
 
-        return failedFiles;
+    @Override
+    protected String getPrefix() {
+        return config.getPrefix();
     }
 
     @Override
     public void close() {
         transferManager.close();
         s3AsyncClient.close();
+        // Do NOT close SHARED_EVENT_LOOP here (shared globally). Provide a separate shutdown hook if needed.
     }
 
-    private List<CompletableFuture<CompletedFileDownload>> startDownloadingFiles(Collection<FileReference> toDownload)
-            throws IOException {
+    private void downloadFilesAndWait(Collection<FileReference> toDownload)
+            throws IOException, ExecutionException, InterruptedException {
         List<CompletableFuture<CompletedFileDownload>> downloads = new ArrayList<>();
+        int maxPending = config.getRequestsMaxPendingHttpConnections();
         for (FileReference fileReference : toDownload) {
             // multipart download
             profiler.objectGet();
@@ -118,16 +140,24 @@ class S3ParallelDownloader implements IParallelDownloader {
             DownloadFileRequest.Builder builder = DownloadFileRequest.builder();
             builder.getObjectRequest(requestBuilder.build());
             builder.destination(fileReference.getFile());
+            if (reportDownloads) {
+                builder.addTransferListener(new S3DownloadMetricsListener());
+            }
 
             FileDownload fileDownload = transferManager.downloadFile(builder.build());
             downloads.add(fileDownload.completionFuture());
+            if (maxPending > 0 && downloads.size() >= maxPending) {
+                waitForFileDownloads(downloads);
+                downloads.clear();
+            }
         }
-        return downloads;
+        if (!downloads.isEmpty()) {
+            waitForFileDownloads(downloads);
+        }
     }
 
     private void waitForFileDownloads(List<CompletableFuture<CompletedFileDownload>> downloads)
             throws ExecutionException, InterruptedException {
-
         for (CompletableFuture<CompletedFileDownload> download : downloads) {
             download.get();
         }
@@ -140,8 +170,12 @@ class S3ParallelDownloader implements IParallelDownloader {
             DownloadDirectoryRequest.Builder builder = DownloadDirectoryRequest.builder();
             builder.bucket(bucket);
             builder.destination(fileReference.getFile().toPath());
+            // check behavior regarding directory objects
             builder.listObjectsV2RequestTransformer(
                     l -> l.prefix(config.getPrefix() + fileReference.getRelativePath()));
+            if (reportDownloads) {
+                builder.downloadFileRequestTransformer(f -> f.addTransferListener(new S3DownloadMetricsListener()));
+            }
             DirectoryDownload directoryDownload = transferManager.downloadDirectory(builder.build());
             downloads.add(directoryDownload.completionFuture());
         }
@@ -170,40 +204,93 @@ class S3ParallelDownloader implements IParallelDownloader {
     }
 
     private static S3AsyncClient createAsyncClient(S3ClientConfig config) {
-        if (config.isLocalS3Provider()) {
-            // CRT client is not supported by S3Mock
-            return createS3AsyncClient(config);
-        } else {
-            // CRT could provide a better performance when used with an actual S3
+        S3ClientConfig.S3ParallelDownloaderClientType parallelDownloaderClientType =
+                config.getParallelDownloaderClientType();
+        if (parallelDownloaderClientType == S3ClientConfig.S3ParallelDownloaderClientType.CRT) {
             return createS3CrtAsyncClient(config);
         }
+        return createS3AsyncClient(config);
     }
 
     private static S3AsyncClient createS3AsyncClient(S3ClientConfig config) {
         S3AsyncClientBuilder builder = S3AsyncClient.builder();
         builder.credentialsProvider(config.createCredentialsProvider());
         builder.region(Region.of(config.getRegion()));
-
+        builder.forcePathStyle(config.isForcePathStyle());
         if (config.getEndpoint() != null && !config.getEndpoint().isEmpty()) {
             builder.endpointOverride(URI.create(config.getEndpoint()));
         }
+        AttributeMap.Builder httpOptions = AttributeMap.builder();
+        if (config.isDisableSslVerify()) {
+            httpOptions.put(SdkHttpConfigurationOption.TRUST_ALL_CERTIFICATES, true);
+        }
+        if (config.getRequestsMaxHttpConnections() > 0) {
+            httpOptions.put(SdkHttpConfigurationOption.MAX_CONNECTIONS, config.getRequestsMaxHttpConnections());
+        }
+        if (config.getRequestsMaxPendingHttpConnections() > 0) {
+            httpOptions.put(SdkHttpConfigurationOption.MAX_PENDING_CONNECTION_ACQUIRES,
+                    config.getRequestsMaxPendingHttpConnections());
+        }
+        if (config.getRequestsHttpConnectionAcquireTimeout() > 0) {
+            httpOptions.put(SdkHttpConfigurationOption.CONNECTION_ACQUIRE_TIMEOUT,
+                    Duration.ofSeconds(config.getRequestsHttpConnectionAcquireTimeout()));
+        }
+        if (config.getS3ReadTimeoutInSeconds() > 0) {
+            httpOptions.put(SdkHttpConfigurationOption.READ_TIMEOUT,
+                    Duration.ofSeconds(config.getS3ReadTimeoutInSeconds()));
+        }
 
+        NettyNioAsyncHttpClient.Builder nettyBuilder =
+                NettyNioAsyncHttpClient.builder().eventLoopGroup(SHARED_EVENT_LOOP);
+
+        if (config.getMaxIdleSeconds() > 0) {
+            nettyBuilder.connectionMaxIdleTime(Duration.ofSeconds(config.getMaxIdleSeconds()));
+        }
+        if (config.getMaxLifetimeSeconds() > 0) {
+            nettyBuilder.connectionTimeToLive(Duration.ofSeconds(config.getMaxLifetimeSeconds()));
+        }
+
+        if (!config.isDisableSslVerify() && !config.getCertificates().isEmpty()) {
+            nettyBuilder.tlsTrustManagersProvider(S3TrustManagerProvider.create(config.getCertificates()));
+        }
+
+        SdkAsyncHttpClient nettyClient = nettyBuilder.buildWithDefaults(httpOptions.build());
+        if (config.useRoundRobinDnsResolver()) {
+            try {
+                CustomResolverBootstrapProvider.bindTo(nettyClient, new RoundRobinAddressResolverGroup());
+            } catch (Exception e) {
+                LOGGER.warn(
+                        "failed to bind RoundRobinDnsBootstrapProvider to Netty client, falling back to default resolver",
+                        e);
+            }
+        }
+
+        builder.httpClient(nettyClient);
+        builder.overrideConfiguration(c -> c.addExecutionInterceptor(S3RequestMetricsInterceptor.INSTANCE));
         return builder.build();
     }
 
     private static S3AsyncClient createS3CrtAsyncClient(S3ClientConfig config) {
+        if (!config.getCertificates().isEmpty()) {
+            // the CRT client has no hook for a custom trust store, so a client built here would fail every TLS
+            // handshake against the endpoint the certificates were configured for; refuse rather than warn
+            throw new IllegalArgumentException(CRT_CERTIFICATES_MESSAGE);
+        }
         S3CrtAsyncClientBuilder builder = S3AsyncClient.crtBuilder();
         builder.credentialsProvider(config.createCredentialsProvider());
         builder.region(Region.of(config.getRegion()));
-
+        builder.forcePathStyle(config.isForcePathStyle());
         if (config.getEndpoint() != null && !config.getEndpoint().isEmpty()) {
             builder.endpointOverride(URI.create(config.getEndpoint()));
         }
-
+        if (config.isDisableSslVerify()) {
+            builder.httpConfiguration(S3CrtHttpConfiguration.builder().trustAllCertificatesEnabled(true).build());
+        }
         return builder.build();
     }
 
     private S3TransferManager createS3TransferManager(S3AsyncClient s3AsyncClient) {
         return S3TransferManager.builder().s3Client(s3AsyncClient).build();
     }
+
 }

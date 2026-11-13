@@ -25,6 +25,7 @@ import java.util.List;
 
 import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.job.JobStatus;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -34,7 +35,9 @@ public class ResultJobRecord implements IResultStateRecord {
         IDLE,
         RUNNING,
         SUCCESS,
-        FAILED
+        REMOVED,
+        FAILED,
+        TIMEOUT
     }
 
     public static class Status implements Serializable {
@@ -76,23 +79,31 @@ public class ResultJobRecord implements IResultStateRecord {
         }
     }
 
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 2L;
     private static final Logger LOGGER = LogManager.getLogger();
     private final long timestamp;
+    private final long resultTtlInNanos; // per-request TTL in nanoseconds, -1 for system default
+    private final String requestId;
     private long jobStartTime;
-    private long jobEndTime;
-    private Status status;
+    private volatile long jobEndTime;
+    private final Status status;
     private ResultSetId rsId;
     private ResultSetMetaData resultSetMetaData;
+    private long resultCount;
+    private final boolean resultSetOrdered;
 
-    public ResultJobRecord() {
+    public ResultJobRecord(boolean resultSetOrdered, long resultTtlInNanos, String requestId) {
+        this.requestId = requestId;
         this.timestamp = System.nanoTime();
+        this.resultTtlInNanos = resultTtlInNanos;
         this.status = new Status();
+        this.resultCount = 0;
+        this.resultSetOrdered = resultSetOrdered;
     }
 
     private void updateState(State newStatus) {
         // FAILED is a stable status
-        if (status.state != State.FAILED) {
+        if (status.state != State.FAILED && status.state != State.TIMEOUT) {
             status.setState(newStatus);
         }
     }
@@ -106,12 +117,35 @@ public class ResultJobRecord implements IResultStateRecord {
         jobEndTime = System.nanoTime();
     }
 
+    public void finishWithStatus(JobStatus jobStatus) {
+        finish();
+        if (jobStatus != null && (status.state == State.RUNNING || status.state == State.IDLE)) {
+            switch (jobStatus) {
+                case TERMINATED -> updateState(State.SUCCESS);
+                case FAILURE, FAILURE_BEFORE_EXECUTION ->  updateState(State.FAILED);
+            }
+        }
+    }
+
     public long getJobDuration() {
         return jobEndTime - jobStartTime;
     }
 
-    public void success() {
+    public long getResultCount() {
+        return resultCount;
+    }
+
+    public void success(int resultCount) {
         updateState(State.SUCCESS);
+        this.resultCount = resultCount;
+    }
+
+    public void consume() {
+        updateState(State.REMOVED);
+    }
+
+    public boolean consumed() {
+        return status.getState() == State.REMOVED;
     }
 
     public void fail(List<Exception> exceptions) {
@@ -119,13 +153,39 @@ public class ResultJobRecord implements IResultStateRecord {
         status.setExceptions(exceptions);
     }
 
+    public void timeout() {
+        updateState(State.TIMEOUT);
+    }
+
+    public boolean isDone() {
+        return status.state != State.RUNNING && status.state != State.IDLE;
+    }
+
     @Override
-    public long getTimestamp() {
+    public long getTimestampNanos() {
         return timestamp;
+    }
+
+    @Override
+    public long getCompleteTimestampNanos() {
+        return jobEndTime;
+    }
+
+    @Override
+    public long getResultTtlInNanos() {
+        return resultTtlInNanos;
+    }
+
+    public String getRequestId() {
+        return requestId;
     }
 
     public Status getStatus() {
         return status;
+    }
+
+    public boolean isResultSetOrdered() {
+        return resultSetOrdered;
     }
 
     @Override
@@ -166,14 +226,24 @@ public class ResultJobRecord implements IResultStateRecord {
 
     public synchronized void updateState() {
         int successCount = 0;
+        int consumedCount = 0;
+        int resultCount = 0;
         ResultDirectoryRecord[] records = resultSetMetaData.getRecords();
         for (ResultDirectoryRecord record : records) {
-            if ((record != null) && (record.getStatus() == ResultDirectoryRecord.Status.SUCCESS)) {
-                successCount++;
+            if (record != null) {
+                if (record.ready()) {
+                    successCount++;
+                    resultCount += record.getResultCount();
+                }
+                if (record.hasReachedReadEOS()) {
+                    consumedCount++;
+                }
             }
         }
-        if (successCount == records.length) {
-            success();
+        if (consumedCount == records.length) {
+            consume();
+        } else if (successCount == records.length) {
+            success(resultCount);
         }
     }
 

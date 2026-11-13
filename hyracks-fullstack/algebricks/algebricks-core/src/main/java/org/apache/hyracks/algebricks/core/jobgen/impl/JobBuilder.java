@@ -28,18 +28,19 @@ import java.util.Map;
 
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksAbsolutePartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksCountPartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint.PartitionConstraintType;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraintHelper;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.IHyracksJobBuilder;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
+import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator.ExecutionMode;
-import org.apache.hyracks.algebricks.core.algebra.operators.logical.SubplanOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractOperatorWithNestedPlans;
 import org.apache.hyracks.algebricks.core.algebra.util.OperatorManipulationUtil;
 import org.apache.hyracks.algebricks.runtime.base.AlgebricksPipeline;
 import org.apache.hyracks.algebricks.runtime.base.IPushRuntimeFactory;
@@ -110,7 +111,7 @@ public class JobBuilder implements IHyracksJobBuilder {
     @Override
     public void contributeMicroOperator(ILogicalOperator op, IPushRuntimeFactory runtime, RecordDescriptor recDesc,
             AlgebricksPartitionConstraint pc) {
-        microOps.put(op, new Pair<>(runtime, recDesc));
+        microOps.put(op, Pair.of(runtime, recDesc));
         revMicroOpMap.put(runtime, op);
         if (pc != null) {
             pcForMicroOps.put(op, pc);
@@ -124,13 +125,13 @@ public class JobBuilder implements IHyracksJobBuilder {
 
     @Override
     public void contributeConnector(ILogicalOperator exchgOp, IConnectorDescriptor conn) {
-        connectors.put(exchgOp, new Pair<IConnectorDescriptor, TargetConstraint>(conn, null));
+        connectors.put(exchgOp, Pair.of(conn, null));
     }
 
     @Override
     public void contributeConnectorWithTargetConstraint(ILogicalOperator exchgOp, IConnectorDescriptor conn,
             TargetConstraint numberOfTargetPartitions) {
-        connectors.put(exchgOp, new Pair<IConnectorDescriptor, TargetConstraint>(conn, numberOfTargetPartitions));
+        connectors.put(exchgOp, Pair.of(conn, numberOfTargetPartitions));
     }
 
     @Override
@@ -164,10 +165,26 @@ public class JobBuilder implements IHyracksJobBuilder {
         return base + "." + pos;
     }
 
-    private void getExtendedOdidForSubplanOp(SubplanOperator op, Map<ILogicalOperator, String> log2phys) {
+    private void getExtendedOdidForNestedOp(AbstractOperatorWithNestedPlans op,
+            Map<ILogicalOperator, String> log2phys) {
         String baseId = getExtendedOdidForMetaOp(op, algebraicOpBelongingToMetaAsterixOp.get(op));
-        op.getNestedPlans().forEach(plan -> plan.getRoots()
-                .forEach(root -> getExtendedOdidForOperator(baseId, root.getValue(), log2phys, 0)));
+        getExtendedOdidForNestedOp(op, log2phys, baseId);
+    }
+
+    private void getExtendedOdidForNestedNonMetaOp(AbstractOperatorWithNestedPlans op, IOperatorDescriptor od,
+            Map<ILogicalOperator, String> log2phys) {
+        getExtendedOdidForNestedOp(op, log2phys, od.getOperatorId().toString());
+    }
+
+    private void getExtendedOdidForNestedOp(AbstractOperatorWithNestedPlans op, Map<ILogicalOperator, String> log2phys,
+            String baseId) {
+        List<ILogicalPlan> nestedPlans = op.getNestedPlans();
+        for (int i = 0; i < op.getNestedPlans().size(); i++) {
+            ILogicalPlan plan = nestedPlans.get(i);
+            for (Mutable<ILogicalOperator> root : plan.getRoots()) {
+                getExtendedOdidForOperator(baseId, root.getValue(), log2phys, i);
+            }
+        }
     }
 
     private int getExtendedOdidForOperator(String baseId, ILogicalOperator op, Map<ILogicalOperator, String> log2phys,
@@ -176,20 +193,31 @@ public class JobBuilder implements IHyracksJobBuilder {
         List<Integer> paths = new ArrayList<>(inputs.size());
         for (int i = 0; i < inputs.size(); i++) {
             ILogicalOperator nextOp = inputs.get(i).getValue();
-            paths.add(i, getExtendedOdidForOperator(baseId, nextOp, log2phys, i + input));
+            //for each input, we need to start numbering from ETS
+            paths.add(i, getExtendedOdidForOperator(baseId, nextOp, log2phys, input));
+            if (nextOp instanceof AbstractOperatorWithNestedPlans) {
+                //then, now that we know our distance from ETS, we can get the IDs for nested ops, which are
+                //concatenated based on our position
+                getExtendedOdidForNestedOp((AbstractOperatorWithNestedPlans) nextOp, log2phys,
+                        baseId + "." + input + "." + (Collections.max(paths) - 1));
+            }
         }
-        int lPath = paths.size() > 0 ? Collections.max(paths) : 0;
-        log2phys.put(op, baseId + "." + input + "." + lPath);
-        return lPath + 1;
+        //the op should be numbered based on the farthest distance from ETS
+        int prevOpIndex = !paths.isEmpty() ? Collections.max(paths) : 0;
+        log2phys.put(op, baseId + "." + input + "." + prevOpIndex);
+        return prevOpIndex + 1;
     }
 
     public Map<Object, String> getLogical2PhysicalMap() {
         Map<ILogicalOperator, String> mergedOperatorMap = new HashMap<>();
         hyracksOps.forEach(((k, v) -> mergedOperatorMap.put(k, v.getOperatorId().toString())));
+        hyracksOps.entrySet().stream().filter(entry -> entry.getKey() instanceof AbstractOperatorWithNestedPlans)
+                .forEach(entry -> getExtendedOdidForNestedNonMetaOp((AbstractOperatorWithNestedPlans) entry.getKey(),
+                        entry.getValue(), mergedOperatorMap));
         algebraicOpBelongingToMetaAsterixOp.forEach((k, v) -> mergedOperatorMap.put(k, getExtendedOdidForMetaOp(k, v)));
-        microOps.keySet().stream().filter(op -> op instanceof SubplanOperator)
-                .forEach(op -> getExtendedOdidForSubplanOp((SubplanOperator) op, mergedOperatorMap));
-        connectors.forEach((k, v) -> mergedOperatorMap.put(k, v.getFirst().getConnectorId().toString()));
+        microOps.keySet().stream().filter(op -> op instanceof AbstractOperatorWithNestedPlans)
+                .forEach(op -> getExtendedOdidForNestedOp((AbstractOperatorWithNestedPlans) op, mergedOperatorMap));
+        connectors.forEach((k, v) -> mergedOperatorMap.put(k, v.getLeft().getConnectorId().toString()));
         return Collections.unmodifiableMap(mergedOperatorMap);
     }
 
@@ -346,12 +374,12 @@ public class JobBuilder implements IHyracksJobBuilder {
             IOperatorDescriptor inOpDesc = findOpDescForAlgebraicOp(inOp);
             IOperatorDescriptor outOpDesc = findOpDescForAlgebraicOp(outOp);
             Pair<IConnectorDescriptor, TargetConstraint> connPair = connectors.get(exchg);
-            IConnectorDescriptor conn = connPair.first;
+            IConnectorDescriptor conn = connPair.getLeft();
             int producerPort = outEdges.get(inOp).indexOf(exchg);
             int consumerPort = inEdges.get(outOp).indexOf(exchg);
             jobSpec.connect(conn, inOpDesc, producerPort, outOpDesc, consumerPort);
-            if (connPair.second != null) {
-                tgtConstraints.put(conn, connPair.second);
+            if (connPair.getRight() != null) {
+                tgtConstraints.put(conn, connPair.getRight());
             }
         }
         return tgtConstraints;
@@ -387,8 +415,8 @@ public class JobBuilder implements IHyracksJobBuilder {
         RecordDescriptor[] internalRecordDescriptors = new RecordDescriptor[n];
         for (int i = 0, ln = opContents.size(); i < ln; i++) {
             Pair<IPushRuntimeFactory, RecordDescriptor> p = opContents.get(i);
-            runtimeFactories[i] = p.first;
-            internalRecordDescriptors[i] = p.second;
+            runtimeFactories[i] = p.getLeft();
+            internalRecordDescriptors[i] = p.getRight();
         }
         ILogicalOperator lastLogicalOp = revMicroOpMap.get(runtimeFactories[n - 1]);
         ArrayList<ILogicalOperator> outOps = outEdges.get(lastLogicalOp);
@@ -400,7 +428,7 @@ public class JobBuilder implements IHyracksJobBuilder {
                 ILogicalOperator outOp = outOps.get(i);
                 outPositions[i] = OperatorManipulationUtil.indexOf(outOp.getInputs(), lastLogicalOp);
                 Pair<IPushRuntimeFactory, RecordDescriptor> microOpPair = microOps.get(outOp);
-                outRuntimeFactories[i] = microOpPair != null ? microOpPair.first : null;
+                outRuntimeFactories[i] = microOpPair != null ? microOpPair.getLeft() : null;
             }
         }
 

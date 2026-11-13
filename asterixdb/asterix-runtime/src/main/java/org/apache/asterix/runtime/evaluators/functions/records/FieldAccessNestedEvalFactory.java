@@ -41,9 +41,9 @@ import org.apache.asterix.om.utils.NonTaggedFormatUtil;
 import org.apache.asterix.om.utils.RecordUtil;
 import org.apache.asterix.runtime.evaluators.functions.PointableHelper;
 import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.dataflow.value.IBinaryComparator;
 import org.apache.hyracks.api.dataflow.value.IBinaryHashFunction;
 import org.apache.hyracks.api.dataflow.value.ISerializerDeserializer;
@@ -271,5 +271,25 @@ public class FieldAccessNestedEvalFactory implements IScalarEvaluatorFactory {
                 }
             }
         };
+    }
+
+    public IScalarEvaluatorFactory getRecordEvalFactory() {
+        return recordEvalFactory;
+    }
+
+    public ARecordType getRecordType() {
+        return recordType;
+    }
+
+    public List<String> getFieldPath() {
+        return fieldPath;
+    }
+
+    public SourceLocation getSourceLoc() {
+        return sourceLoc;
+    }
+
+    public FunctionIdentifier getFunID() {
+        return funID;
     }
 }

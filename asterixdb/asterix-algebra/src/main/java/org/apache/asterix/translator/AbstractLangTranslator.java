@@ -63,13 +63,17 @@ import org.apache.asterix.lang.common.statement.FunctionDecl;
 import org.apache.asterix.lang.common.statement.IndexDropStatement;
 import org.apache.asterix.lang.common.statement.InsertStatement;
 import org.apache.asterix.lang.common.statement.LoadStatement;
+import org.apache.asterix.lang.common.statement.TruncateDatasetStatement;
 import org.apache.asterix.lang.common.statement.TypeDecl;
 import org.apache.asterix.lang.common.statement.TypeDropStatement;
+import org.apache.asterix.lang.common.statement.UpdateStatement;
 import org.apache.asterix.lang.common.statement.UpsertStatement;
+import org.apache.asterix.lang.common.statement.crs.CRSCreateStatement;
+import org.apache.asterix.lang.common.statement.crs.CRSDropStatement;
 import org.apache.asterix.metadata.dataset.hints.DatasetHints;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.functions.AlgebricksBuiltinFunctions;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.logging.log4j.LogManager;
@@ -111,7 +115,7 @@ public abstract class AbstractLangTranslator {
             try {
                 clusterStateManager.waitForState(ClusterState.ACTIVE, maxWaitCycles, TimeUnit.SECONDS);
             } catch (HyracksDataException e) {
-                throw new AlgebricksException(e, TIMEOUT);
+                throw new AlgebricksException(TIMEOUT, e);
             } catch (InterruptedException e) {
                 if (LOGGER.isWarnEnabled()) {
                     LOGGER.warn("Thread interrupted while waiting for cluster to be " + ClusterState.ACTIVE);
@@ -187,6 +191,14 @@ public abstract class AbstractLangTranslator {
                 }
                 break;
 
+            case UPDATE:
+                namespace = getStatementNamespace(((UpdateStatement) stmt).getNamespace(), activeNamespace);
+                invalidOperation = isSystemNamespace(namespace);
+                if (invalidOperation) {
+                    message = formatDmlMessage("Update", namespace, usingDb);
+                }
+                break;
+
             case DELETE:
                 namespace = getStatementNamespace(((DeleteStatement) stmt).getNamespace(), activeNamespace);
                 invalidOperation = isSystemNamespace(namespace);
@@ -236,7 +248,7 @@ public abstract class AbstractLangTranslator {
                 }
                 break;
 
-            case DATASET_DECL:
+            case CREATE_DATASET:
                 DatasetDecl dsCreateStmt = (DatasetDecl) stmt;
                 namespace = getStatementNamespace(((DatasetDecl) stmt).getNamespace(), activeNamespace);
                 invalidOperation = isSystemNamespace(namespace);
@@ -251,10 +263,10 @@ public abstract class AbstractLangTranslator {
                         for (Entry<String, String> hint : hints.entrySet()) {
                             Pair<Boolean, String> validationResult =
                                     DatasetHints.validate(appCtx, hint.getKey(), hint.getValue());
-                            if (!validationResult.first) {
+                            if (!validationResult.getLeft()) {
                                 errorMsgBuffer.append(StringUtils.capitalize(dataset())).append(": ")
                                         .append(dsCreateStmt.getName().getValue()).append(" error in processing hint: ")
-                                        .append(hint.getKey()).append(" ").append(validationResult.second);
+                                        .append(hint.getKey()).append(" ").append(validationResult.getRight());
                                 errorMsgBuffer.append(" \n");
                             }
                         }
@@ -263,6 +275,14 @@ public abstract class AbstractLangTranslator {
                             message = errorMsgBuffer.toString();
                         }
                     }
+                }
+                break;
+
+            case TRUNCATE:
+                namespace = getStatementNamespace(((TruncateDatasetStatement) stmt).getNamespace(), activeNamespace);
+                invalidOperation = isSystemNamespace(namespace);
+                if (invalidOperation) {
+                    message = formatObjectDdlMessage("truncate", dataset(), namespace, usingDb);
                 }
                 break;
 
@@ -282,7 +302,7 @@ public abstract class AbstractLangTranslator {
                 }
                 break;
 
-            case TYPE_DECL:
+            case CREATE_TYPE:
                 namespace = getStatementNamespace(((TypeDecl) stmt).getNamespace(), activeNamespace);
                 invalidOperation = isSystemNamespace(namespace);
                 if (invalidOperation) {
@@ -388,6 +408,22 @@ public abstract class AbstractLangTranslator {
                 invalidOperation = isSystemNamespace(namespace);
                 if (invalidOperation) {
                     message = formatObjectDdlMessage("analyze drop", dataset(), namespace, usingDb);
+                }
+                break;
+
+            case CRS_CREATE:
+                namespace = getStatementNamespace(((CRSCreateStatement) stmt).getNamespace(), activeNamespace);
+                invalidOperation = isSystemNamespace(namespace);
+                if (invalidOperation) {
+                    message = formatObjectDdlMessage("create", "coordinate reference system", namespace, usingDb);
+                }
+                break;
+
+            case CRS_DROP:
+                namespace = getStatementNamespace(((CRSDropStatement) stmt).getNamespace(), activeNamespace);
+                invalidOperation = isSystemNamespace(namespace);
+                if (invalidOperation) {
+                    message = formatObjectDdlMessage("drop", "coordinate reference system", namespace, usingDb);
                 }
                 break;
         }

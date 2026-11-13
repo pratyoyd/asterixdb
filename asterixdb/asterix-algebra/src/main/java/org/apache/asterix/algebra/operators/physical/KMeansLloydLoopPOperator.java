@@ -1,0 +1,97 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.asterix.algebra.operators.physical;
+
+import org.apache.asterix.runtime.operators.kmeans.KMeansCentroidMergeOperatorDescriptor;
+import org.apache.asterix.runtime.operators.kmeans.KMeansLloydControllerOperatorDescriptor;
+import org.apache.asterix.runtime.operators.kmeans.KMeansLloydReleaseOperatorDescriptor;
+import org.apache.asterix.runtime.operators.kmeans.KMeansLoopIO;
+import org.apache.hyracks.algebricks.common.constraints.AlgebricksAbsolutePartitionConstraint;
+import org.apache.hyracks.algebricks.common.constraints.AlgebricksCountPartitionConstraint;
+import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
+import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
+import org.apache.hyracks.algebricks.core.algebra.base.IHyracksJobBuilder;
+import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
+import org.apache.hyracks.algebricks.core.algebra.base.PhysicalOperatorTag;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.KMeansStageOperator;
+import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
+import org.apache.hyracks.api.job.JobSpecification;
+import org.apache.hyracks.dataflow.std.connectors.MToNBroadcastConnectorDescriptor;
+
+/**
+ * One Lloyd refinement run as a three-operator systolic chain, which is the oversampling loop's shape with a
+ * single reduce, since a Lloyd iteration all-reduces only the per-centroid (count, sum) partials.
+ * The Controller is the registered head, so the builder wires the vectors (input 0) and the initial centroids
+ * (input 1) into it; Controller and Release are pinned to the SAME cluster locations so partition i of each
+ * co-locates and shares that NC's permit and run files, while the centroid merge is single-partition. Release
+ * is a sink dead-end, so it is registered as a job root to ensure its branch is scheduled.
+ */
+public class KMeansLloydLoopPOperator extends AbstractKMeansLoopPOperator {
+
+    @Override
+    public PhysicalOperatorTag getOperatorTag() {
+        return PhysicalOperatorTag.KMEANS_LLOYD_LOOP;
+    }
+
+    @Override
+    protected void contributeLoop(IHyracksJobBuilder builder, KMeansStageOperator kop, AbstractLogicalOperator op,
+            RecordDescriptor labelledRecDesc, int vectorColumn, int[] payloadColumns, int centroidColumn,
+            String[] clusterLocations, ILogicalOperator src0, ILogicalOperator src1) throws AlgebricksException {
+        JobSpecification spec = builder.getJobSpec();
+        // Unique + stable per loop instance, and distinct from any oversampling loop's key in the same job.
+        String loopKey = "kmeansLloydLoop#" + kop.getCandidateVariable().getId();
+        // The oversampling loop's vector store under k-means||; null under the random init.
+        String sharedVectorsKey = kop.getVectorStoreVariable() == null ? null
+                : KMeansOversampleLoopPOperator.loopKeyOf(kop.getVectorStoreVariable());
+        int participants = clusterLocations.length;
+
+        KMeansLloydControllerOperatorDescriptor op1 = new KMeansLloydControllerOperatorDescriptor(spec, labelledRecDesc,
+                KMeansLoopIO.PARTIAL_RD, loopKey, sharedVectorsKey, vectorColumn, payloadColumns,
+                kop.getLabelCentroidVariable() != null, centroidColumn, kop.getLoopRounds(), kop.getTopCount(),
+                framesLimit(), kop.getDimension(), metricOf(kop));
+        contributeOpDesc(builder, op, op1);
+        builder.contributeGraphEdge(src0, 0, op, 0);
+        builder.contributeGraphEdge(src1, 0, op, 1);
+
+        KMeansCentroidMergeOperatorDescriptor op2 = new KMeansCentroidMergeOperatorDescriptor(spec,
+                KMeansLoopIO.DRAW_RD, participants, framesLimit(), metricOf(kop));
+        KMeansLloydReleaseOperatorDescriptor op3 = new KMeansLloydReleaseOperatorDescriptor(spec, loopKey);
+
+        // A single-instance loop (an unpartitioned stage) names no node: every operator of it takes a count-1
+        // constraint, which the job builder resolves to the one node it uses for all one-partition operators
+        // of the job. The stages are therefore co-located with each other, which their shared joblet state
+        // requires, and with the input that feeds them.
+        boolean singleInstance = clusterLocations.length == 1;
+        AlgebricksPartitionConstraint coLocated = singleInstance ? new AlgebricksCountPartitionConstraint(1)
+                : new AlgebricksAbsolutePartitionConstraint(clusterLocations);
+        AlgebricksPartitionConstraint singleNode = new AlgebricksCountPartitionConstraint(1);
+        builder.contributeAlgebricksPartitionConstraint(op1, coLocated);
+        builder.contributeAlgebricksPartitionConstraint(op3, coLocated);
+        builder.contributeAlgebricksPartitionConstraint(op2, singleNode);
+
+        // Internal pipelined broadcast edges: Op1.partials -> CentroidMerge -> Release.
+        // (Broadcast into a single-partition merge is a CONCURRENT M-to-1; never the sequential merging
+        // connector, which would deadlock against the permit-paced producers.)
+        spec.connect(new MToNBroadcastConnectorDescriptor(spec), op1, 1, op2, 0);
+        spec.connect(new MToNBroadcastConnectorDescriptor(spec), op2, 0, op3, 0);
+
+        spec.addRoot(op3);
+    }
+}

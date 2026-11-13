@@ -41,8 +41,8 @@ import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.utils.NonTaggedFormatUtil;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Quadruple;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
@@ -79,15 +79,12 @@ public class RTreeAccessMethod implements IAccessMethod {
     // false positive results or not.
     // In R-Tree case with geometry, the functions to be considered to check for false positive results are:
     // ST_INTERSECTS, ST_CONTAINS, ST_CROSSES, ST_OVERLAPS, ST_TOUCHES, ST_WITHIN, ST_DISJOINT.
-    private static final List<Pair<FunctionIdentifier, Boolean>> FUNC_IDENTIFIERS = Collections.unmodifiableList(
-            Arrays.asList(new Pair<FunctionIdentifier, Boolean>(BuiltinFunctions.SPATIAL_INTERSECT, true),
-                    new Pair<FunctionIdentifier, Boolean>(BuiltinFunctions.ST_INTERSECTS, true),
-                    new Pair<FunctionIdentifier, Boolean>(BuiltinFunctions.ST_CONTAINS, true),
-                    new Pair<FunctionIdentifier, Boolean>(BuiltinFunctions.ST_CROSSES, true),
-                    new Pair<FunctionIdentifier, Boolean>(BuiltinFunctions.ST_OVERLAPS, true),
-                    new Pair<FunctionIdentifier, Boolean>(BuiltinFunctions.ST_TOUCHES, true),
-                    new Pair<FunctionIdentifier, Boolean>(BuiltinFunctions.ST_WITHIN, true),
-                    new Pair<FunctionIdentifier, Boolean>(BuiltinFunctions.ST_DISJOINT, true)));
+    private static final List<Pair<FunctionIdentifier, Boolean>> FUNC_IDENTIFIERS =
+            Collections.unmodifiableList(Arrays.asList(Pair.of(BuiltinFunctions.SPATIAL_INTERSECT, true),
+                    Pair.of(BuiltinFunctions.ST_INTERSECTS, true), Pair.of(BuiltinFunctions.ST_CONTAINS, true),
+                    Pair.of(BuiltinFunctions.ST_CROSSES, true), Pair.of(BuiltinFunctions.ST_OVERLAPS, true),
+                    Pair.of(BuiltinFunctions.ST_TOUCHES, true), Pair.of(BuiltinFunctions.ST_WITHIN, true),
+                    Pair.of(BuiltinFunctions.ST_DISJOINT, true)));
 
     public static final RTreeAccessMethod INSTANCE = new RTreeAccessMethod();
 
@@ -150,7 +147,7 @@ public class RTreeAccessMethod implements IAccessMethod {
         Pair<Boolean, Boolean> functionFalsePositiveCheck =
                 AccessMethodUtils.canFunctionGenerateFalsePositiveResultsUsingIndex(funcExpr, FUNC_IDENTIFIERS);
 
-        if (!functionFalsePositiveCheck.first) {
+        if (!functionFalsePositiveCheck.getLeft()) {
             return false;
         }
 
@@ -161,8 +158,8 @@ public class RTreeAccessMethod implements IAccessMethod {
         // If the given index is not built on a POINT or a RECTANGLE field,
         // the query result can include false positives. And the result from secondary index search is an MBR,
         // thus we can't construct original secondary field value to remove any false positive results.
-        if (keyPairType.first.getTypeTag() == BuiltinType.APOINT.getTypeTag()
-                || keyPairType.first.getTypeTag() == BuiltinType.ARECTANGLE.getTypeTag()) {
+        if (keyPairType.getLeft().getTypeTag() == BuiltinType.APOINT.getTypeTag()
+                || keyPairType.getLeft().getTypeTag() == BuiltinType.ARECTANGLE.getTypeTag()) {
             isIndexOnlyPlan = true;
             // The following variable can be changed if a query shape is not a POINT or rectangle.
             requireVerificationAfterSIdxSearch = false;
@@ -181,7 +178,7 @@ public class RTreeAccessMethod implements IAccessMethod {
         if (isIndexOnlyPlan) {
             if (dataset.getDatasetType() == DatasetType.INTERNAL) {
                 AccessMethodUtils.indexOnlyPlanCheck(afterSelectRefs, selectRef, subTree, null, chosenIndex,
-                        analysisCtx, context, indexOnlyPlanInfo);
+                        analysisCtx, context, indexOnlyPlanInfo, false);
                 isIndexOnlyPlan = indexOnlyPlanInfo.getFirst();
             } else {
                 // An index on an external dataset can't be optimized for the index-only plan.
@@ -192,12 +189,11 @@ public class RTreeAccessMethod implements IAccessMethod {
 
         analysisCtx.setIndexOnlyPlanInfo(indexOnlyPlanInfo);
 
-        ILogicalOperator primaryIndexUnnestOp =
-                createIndexSearchPlan(afterSelectRefs, selectRef, selectOp.getCondition(),
-                        subTree.getAssignsAndUnnestsRefs(), subTree, null, chosenIndex, analysisCtx,
-                        AccessMethodUtils.retainInputs(subTree.getDataSourceVariables(),
-                                subTree.getDataSourceRef().getValue(), afterSelectRefs),
-                        false, false, context, null, null);
+        ILogicalOperator primaryIndexUnnestOp = createIndexSearchPlan(afterSelectRefs, selectRef,
+                selectOp.getCondition(), subTree.getAssignsAndUnnestsRefs(), subTree, null, chosenIndex,
+                analysisCtx, AccessMethodUtils.retainInputs(subTree.getDataSourceVariables(),
+                        subTree.getDataSourceRef().getValue(), afterSelectRefs),
+                false, false, context, null, null, new ArrayList<>());
 
         if (primaryIndexUnnestOp == null) {
             return false;
@@ -207,8 +203,10 @@ public class RTreeAccessMethod implements IAccessMethod {
         if (!isIndexOnlyPlan || dataset.getDatasetType() == DatasetType.EXTERNAL) {
             subTree.getDataSourceRef().setValue(primaryIndexUnnestOp);
         } else {
-            // If this is an index-only plan, the topmost operator returned is UNIONALL operator.
-            if (primaryIndexUnnestOp.getOperatorTag() == LogicalOperatorTag.UNIONALL) {
+            // If this is an index-only plan, the topmost operator returned is DISTINCT for 
+            //single collection query & SELECT for join query.
+            if (primaryIndexUnnestOp.getOperatorTag() == LogicalOperatorTag.DISTINCT
+                    || primaryIndexUnnestOp.getOperatorTag() == LogicalOperatorTag.SELECT) {
                 selectRef.setValue(primaryIndexUnnestOp);
             } else {
                 subTree.getDataSourceRef().setValue(primaryIndexUnnestOp);
@@ -226,7 +224,8 @@ public class RTreeAccessMethod implements IAccessMethod {
             List<Mutable<ILogicalOperator>> assignBeforeTopRefs, OptimizableOperatorSubTree indexSubTree,
             OptimizableOperatorSubTree probeSubTree, Index chosenIndex, AccessMethodAnalysisContext analysisCtx,
             boolean retainInput, boolean retainNull, boolean requiresBroadcast, IOptimizationContext context,
-            LogicalVariable newMissingNullPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue)
+            LogicalVariable newMissingNullPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions)
             throws AlgebricksException {
         // TODO: We can probably do something smarter here based on selectivity or MBR area.
         IOptimizableFuncExpr optFuncExpr = AccessMethodUtils.chooseFirstOptFuncExpr(chosenIndex, analysisCtx);
@@ -245,15 +244,9 @@ public class RTreeAccessMethod implements IAccessMethod {
         }
 
         // Get the number of dimensions corresponding to the field indexed by chosenIndex.
-        IAType spatialType = keyPairType.first;
+        IAType spatialType = keyPairType.getLeft();
         int numDimensions = NonTaggedFormatUtil.getNumDimensions(spatialType.getTypeTag());
         int numSecondaryKeys = numDimensions * 2;
-
-        Quadruple<Boolean, Boolean, Boolean, Boolean> indexOnlyPlanInfo = analysisCtx.getIndexOnlyPlanInfo();
-        boolean isIndexOnlyPlan = indexOnlyPlanInfo.getFirst();
-        // We apply index-only plan for an internal dataset.
-        boolean generateInstantTrylockResultFromIndexSearch =
-                dataset.getDatasetType() == DatasetType.INTERNAL && isIndexOnlyPlan ? true : false;
 
         // We made sure that the indexSubTree has a datasource scan.
         AbstractDataSourceOperator dataSourceOp =
@@ -271,7 +264,9 @@ public class RTreeAccessMethod implements IAccessMethod {
         Triple<ILogicalExpression, ILogicalExpression, Boolean> returnedSearchKeyExpr =
                 AccessMethodUtils.createSearchKeyExpr(chosenIndex, optFuncExpr, optFieldType, probeSubTree,
                         SEARCH_KEY_ROUNDING_FUNCTION_PROVIDER);
-
+        if (returnedSearchKeyExpr == null) {
+            return null;
+        }
         for (int i = 0; i < numSecondaryKeys; i++) {
             // The create MBR function "extracts" one field of an MBR around the given spatial object.
             AbstractFunctionCallExpression createMBR =
@@ -310,9 +305,9 @@ public class RTreeAccessMethod implements IAccessMethod {
         }
         context.computeAndSetTypeEnvironmentForOperator(assignSearchKeys);
 
-        ILogicalOperator secondaryIndexUnnestOp = AccessMethodUtils.createSecondaryIndexUnnestMap(dataset, recordType,
-                metaRecordType, chosenIndex, assignSearchKeys, jobGenParams, context, retainInput, retainNull,
-                generateInstantTrylockResultFromIndexSearch, leftOuterMissingValue);
+        ILogicalOperator secondaryIndexUnnestOp =
+                AccessMethodUtils.createSecondaryIndexUnnestMap(dataset, recordType, metaRecordType, chosenIndex,
+                        assignSearchKeys, jobGenParams, context, retainInput, retainNull, leftOuterMissingValue);
 
         // Generates the rest of the upstream plan which feeds the search results into the primary index.
         return dataset.getDatasetType() == DatasetType.EXTERNAL
@@ -321,7 +316,8 @@ public class RTreeAccessMethod implements IAccessMethod {
                 : AccessMethodUtils.createRestOfIndexSearchPlan(afterTopRefs, topRef, conditionRef, assignBeforeTopRefs,
                         dataSourceOp, dataset, recordType, metaRecordType, secondaryIndexUnnestOp, context, true,
                         retainInput, retainNull, false, chosenIndex, analysisCtx, indexSubTree, null,
-                        newMissingNullPlaceHolderForLOJ, leftOuterMissingValue, returnedSearchKeyExpr.third);
+                        newMissingNullPlaceHolderForLOJ, leftOuterMissingValue, returnedSearchKeyExpr.third,
+                        optimizableDisjunctionConditions);
     }
 
     @Override
@@ -363,14 +359,14 @@ public class RTreeAccessMethod implements IAccessMethod {
         }
 
         boolean canContinue = AccessMethodUtils.setIndexOnlyPlanInfo(afterJoinRefs, joinRef, probeSubTree, indexSubTree,
-                chosenIndex, analysisCtx, context, funcExpr, FUNC_IDENTIFIERS);
+                chosenIndex, analysisCtx, context, funcExpr, FUNC_IDENTIFIERS, true);
         if (!canContinue) {
             return false;
         }
 
         ILogicalOperator indexSearchOp = createIndexSearchPlan(afterJoinRefs, joinRef, conditionRef,
                 indexSubTree.getAssignsAndUnnestsRefs(), indexSubTree, probeSubTree, chosenIndex, analysisCtx, true,
-                isLeftOuterJoin, true, context, newMissingNullPlaceHolderVar, leftOuterMissingValue);
+                isLeftOuterJoin, true, context, newMissingNullPlaceHolderVar, leftOuterMissingValue, new ArrayList<>());
 
         if (indexSearchOp == null) {
             return false;

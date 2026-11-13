@@ -20,6 +20,7 @@
 package org.apache.asterix.cloud.clients.azure.blobstorage;
 
 import java.io.BufferedInputStream;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -37,11 +38,15 @@ import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import com.azure.core.util.BinaryData;
+import com.azure.core.util.Context;
 import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.models.AccessTier;
+import com.azure.storage.blob.models.BlobRequestConditions;
 import com.azure.storage.blob.models.BlobStorageException;
+import com.azure.storage.blob.options.BlobParallelUploadOptions;
 import com.azure.storage.blob.specialized.BlockBlobClient;
+import com.azure.storage.common.implementation.Constants;
 
 public class AzBlobStorageBufferedWriter implements ICloudBufferedWriter {
     private static final String PUT_UPLOAD_ID = "putUploadId";
@@ -49,8 +54,8 @@ public class AzBlobStorageBufferedWriter implements ICloudBufferedWriter {
     private static final Logger LOGGER = LogManager.getLogger();
     private final List<String> blockIDArrayList;
     private final ICloudGuardian guardian;
-    private int blockNumber;
     private final String path;
+    private final AccessTier accessTier;
     private String uploadID;
 
     private final BlobContainerClient blobContainerClient;
@@ -60,13 +65,14 @@ public class AzBlobStorageBufferedWriter implements ICloudBufferedWriter {
     private final String bucket;
 
     public AzBlobStorageBufferedWriter(BlobContainerClient blobContainerClient, IRequestProfilerLimiter profiler,
-            ICloudGuardian guardian, String bucket, String path) {
+            ICloudGuardian guardian, String bucket, String path, AccessTier accessTier) {
         this.blobContainerClient = blobContainerClient;
         this.profiler = profiler;
         this.guardian = guardian;
         this.bucket = bucket;
         this.path = path;
         this.blockIDArrayList = new ArrayList<>();
+        this.accessTier = accessTier;
     }
 
     @Override
@@ -78,25 +84,23 @@ public class AzBlobStorageBufferedWriter implements ICloudBufferedWriter {
             throw new IllegalArgumentException(errMsg);
         }
         guardian.checkIsolatedWriteAccess(bucket, path);
-        try {
-            BlockBlobClient blockBlobClient = blobContainerClient.getBlobClient(path).getBlockBlobClient();
-            BufferedInputStream bufferedInputStream = IOUtils.buffer(stream, length);
-            String blockID =
-                    Base64.getEncoder().encodeToString(UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
-            initBlockBlobUploads(blockID);
-            blockIDArrayList.add(blockID);
-            blockBlobClient.stageBlock(blockID, bufferedInputStream, length);
-        } catch (Exception e) {
-            LOGGER.error("Error while uploading blocks of data: {}", e.getMessage());
-            throw new RuntimeException(e);
-        }
-        blockNumber++;
+        BlockBlobClient blockBlobClient = blobContainerClient.getBlobClient(path).getBlockBlobClient();
+        BufferedInputStream bufferedInputStream = IOUtils.buffer(stream, length);
+        String blockID =
+                Base64.getEncoder().encodeToString(UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
+        // deliberately uncaught: CloudRetryableRequestUtil retries AzureException, so re-wrapping the SDK failure
+        // here would hide it from the retry loop and abort the upload on the first, possibly transient, failure
+        blockBlobClient.stageBlock(blockID, bufferedInputStream, length);
+        // recorded only once staged: a retry stages the same bytes under a fresh id, so an id recorded before a
+        // failed attempt would be committed as well, failing the commit if the block never arrived, or writing
+        // the bytes twice if it did and only the reply was lost
+        initBlockBlobUploads(blockID);
+        blockIDArrayList.add(blockID);
     }
 
     private void initBlockBlobUploads(String blockID) {
         if (this.uploadID == null) {
             this.uploadID = blockID;
-            this.blockNumber = 1;
         }
     }
 
@@ -105,8 +109,10 @@ public class AzBlobStorageBufferedWriter implements ICloudBufferedWriter {
         if (uploadID == null) {
             profiler.objectWrite();
             BlobClient blobClient = blobContainerClient.getBlobClient(path);
-            BinaryData binaryData = BinaryData.fromBytes(getDataFromBuffer(buffer));
-            blobClient.upload(binaryData);
+            BlobParallelUploadOptions options =
+                    new BlobParallelUploadOptions(new ByteArrayInputStream(getDataFromBuffer(buffer)))
+                            .setTier(accessTier);
+            blobClient.uploadWithResponse(options, null, null);
             uploadID = PUT_UPLOAD_ID; // uploadID should be updated if the put-object operation succeeds
         } else {
             upload(stream, buffer.limit());
@@ -137,7 +143,9 @@ public class AzBlobStorageBufferedWriter implements ICloudBufferedWriter {
             try {
                 guardian.checkWriteAccess(bucket, path);
                 profiler.objectMultipartUpload();
-                blockBlobClient.commitBlockList(blockIDArrayList);
+                blockBlobClient.commitBlockListWithResponse(blockIDArrayList, null, null, accessTier,
+                        new BlobRequestConditions().setIfNoneMatch(Constants.HeaderConstants.ETAG_WILDCARD), null,
+                        Context.NONE);
                 break;
             } catch (BlobStorageException e) {
                 currRetryAttempt++;

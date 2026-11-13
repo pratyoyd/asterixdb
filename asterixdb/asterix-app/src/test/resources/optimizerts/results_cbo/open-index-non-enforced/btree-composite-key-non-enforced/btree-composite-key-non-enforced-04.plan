@@ -1,9 +1,18 @@
+distribute result [$$23]
 -- DISTRIBUTE_RESULT  |PARTITIONED|
+  exchange
   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+    select (and(gt($$t.getField("c_y"), 1), eq($$t.getField("c_z"), "z2"), eq($$t.getField("c_x"), "x2"))) project: [$$23]
     -- STREAM_SELECT  |PARTITIONED|
+      assign [$$23] <- [$$t.getField("c_value")]
       -- ASSIGN  |PARTITIONED|
+        project ([$$t])
         -- STREAM_PROJECT  |PARTITIONED|
+          exchange
           -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-            -- DATASOURCE_SCAN (test.TestOpen)  |PARTITIONED|
+            data-scan []<-[$$24, $$t] <- test.TestOpen
+            -- DATASOURCE_SCAN  |PARTITIONED|
+              exchange
               -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                empty-tuple-source
                 -- EMPTY_TUPLE_SOURCE  |PARTITIONED|

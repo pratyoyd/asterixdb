@@ -19,7 +19,9 @@
 package org.apache.asterix.lang.sqlpp.visitor.base;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.ListIterator;
 
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.lang.common.base.AbstractClause;
@@ -49,9 +51,11 @@ import org.apache.asterix.lang.common.statement.CopyToStatement;
 import org.apache.asterix.lang.common.statement.FunctionDecl;
 import org.apache.asterix.lang.common.statement.InsertStatement;
 import org.apache.asterix.lang.common.statement.Query;
+import org.apache.asterix.lang.common.statement.UpdateStatement;
 import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.struct.QuantifiedPair;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateClause;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.HavingClause;
@@ -65,10 +69,12 @@ import org.apache.asterix.lang.sqlpp.clause.SelectRegular;
 import org.apache.asterix.lang.sqlpp.clause.SelectSetOperation;
 import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.CaseExpression;
+import org.apache.asterix.lang.sqlpp.expression.ChangeExpression;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationRight;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.asterix.lang.sqlpp.struct.TimeTravelSpec;
+import org.apache.commons.lang3.tuple.Pair;
 
 public class AbstractSqlppSimpleExpressionVisitor
         extends AbstractSqlppQueryExpressionVisitor<Expression, ILangExpression> {
@@ -85,6 +91,7 @@ public class AbstractSqlppSimpleExpressionVisitor
     public Expression visit(FromTerm fromTerm, ILangExpression arg) throws CompilationException {
         // Visit the left expression of a from term.
         fromTerm.setLeftExpression(visit(fromTerm.getLeftExpression(), arg));
+        visitTimeTravel(fromTerm.getTimeTravel(), arg);
 
         // Visits join/unnest/nest clauses.
         for (AbstractBinaryCorrelateClause correlateClause : fromTerm.getCorrelateClauses()) {
@@ -96,6 +103,7 @@ public class AbstractSqlppSimpleExpressionVisitor
     @Override
     public Expression visit(JoinClause joinClause, ILangExpression arg) throws CompilationException {
         joinClause.setRightExpression(visit(joinClause.getRightExpression(), arg));
+        visitTimeTravel(joinClause.getTimeTravel(), arg);
         joinClause.setConditionExpression(visit(joinClause.getConditionExpression(), arg));
         return null;
     }
@@ -134,6 +142,9 @@ public class AbstractSqlppSimpleExpressionVisitor
         }
         if (selectBlock.hasGroupbyClause()) {
             selectBlock.getGroupbyClause().accept(this, arg);
+        }
+        if (selectBlock.hasClusterbyClause()) {
+            selectBlock.getClusterbyClause().accept(this, arg);
         }
         if (selectBlock.hasLetHavingClausesAfterGroupby()) {
             for (AbstractClause clause : selectBlock.getLetHavingListAfterGroupby()) {
@@ -221,6 +232,50 @@ public class AbstractSqlppSimpleExpressionVisitor
             }
         }
         return null;
+    }
+
+    @Override
+    public Expression visit(ClusterbyClause cc, ILangExpression arg) throws CompilationException {
+        cc.setClusteringExpression(visit(cc.getClusteringExpression(), cc));
+        if (cc.hasClusterFieldList()) {
+            for (ListIterator<Pair<Expression, Identifier>> it = cc.getClusterFieldList().listIterator(); it
+                    .hasNext();) {
+                Pair<Expression, Identifier> field = it.next();
+                it.set(Pair.of(visit(field.getLeft(), cc), field.getRight()));
+            }
+        }
+        if (cc.hasWithOptions()) {
+            cc.setWithOptions((RecordConstructor) visit(cc.getWithOptions(), cc));
+        }
+        visitDecorations(cc, cc);
+        return null;
+    }
+
+    /**
+     * Visits the decoration expressions. A decoration carries a variable through the operator, so when a
+     * rewrite has replaced that variable by its expression (an inlined WITH) the decoration is dropped, since
+     * its reads after the clause are gone too. When a rewrite has re-resolved the variable, the decoration's
+     * own variable follows.
+     */
+    protected void visitDecorations(ClusterbyClause cc, ILangExpression arg) throws CompilationException {
+        if (!cc.hasDecorList()) {
+            return;
+        }
+        Iterator<GbyVariableExpressionPair> pairs = cc.getDecorPairList().iterator();
+        while (pairs.hasNext()) {
+            GbyVariableExpressionPair pair = pairs.next();
+            Expression newExpr = visit(pair.getExpr(), arg);
+            if (newExpr.getKind() == Expression.Kind.VARIABLE_EXPRESSION) {
+                pair.setExpr(newExpr);
+                // The decoration binds the same symbol above the operator that the expression reads below it:
+                // the reads after the clause resolve to that symbol, so the pair's variable follows its ident.
+                VariableExpr decorVar = new VariableExpr(((VariableExpr) newExpr).getVar());
+                decorVar.setSourceLocation(pair.getVar().getSourceLocation());
+                pair.setVar(decorVar);
+            } else {
+                pairs.remove();
+            }
+        }
     }
 
     @Override
@@ -352,8 +407,10 @@ public class AbstractSqlppSimpleExpressionVisitor
             winExpr.setFrameEndExpr(visit(winExpr.getFrameEndExpr(), arg));
         }
         if (winExpr.hasWindowFieldList()) {
-            for (Pair<Expression, Identifier> field : winExpr.getWindowFieldList()) {
-                field.first = visit(field.first, arg);
+            for (ListIterator<Pair<Expression, Identifier>> it = winExpr.getWindowFieldList().listIterator(); it
+                    .hasNext();) {
+                Pair<Expression, Identifier> field = it.next();
+                it.set(Pair.of(visit(field.getLeft(), arg), field.getRight()));
             }
         }
     }
@@ -410,6 +467,33 @@ public class AbstractSqlppSimpleExpressionVisitor
     }
 
     @Override
+    public Expression visit(ChangeExpression changeExpr, ILangExpression arg) throws CompilationException {
+        if (changeExpr.hasChangeTargetExpr()) {
+            changeExpr.setChangeTargetExpr(visit(changeExpr.getChangeTargetExpr(), arg));
+        }
+        if (changeExpr.hasCondition()) {
+            changeExpr.setCondition(visit(changeExpr.getCondition(), arg));
+        }
+        if (changeExpr.hasChangeSeq()) {
+            changeExpr.setChangeSeq(visit(changeExpr.getChangeSeq(), arg));
+        }
+        if (changeExpr.hasPriorExpr()) {
+            changeExpr.setPriorExpr(visit(changeExpr.getPriorExpr(), arg));
+        }
+        if (changeExpr.hasPathValueExprs()) {
+            changeExpr.setValueExprs(visit(changeExpr.getValueExprs(), arg));
+            changeExpr.setPathExprs(visit(changeExpr.getPathExprs(), arg));
+        }
+        if (changeExpr.hasDataRemovalRecord()) {
+            changeExpr.setDataRemovalRecord(visit(changeExpr.getDataRemovalRecord(), arg));
+        }
+        if (changeExpr.hasDataTransformRecord()) {
+            changeExpr.setDataTransformRecord(visit(changeExpr.getDataTransformRecord(), arg));
+        }
+        return changeExpr;
+    }
+
+    @Override
     public Expression visit(InsertStatement insertStatement, ILangExpression arg) throws CompilationException {
         Expression returnExpr = insertStatement.getReturnExpression();
         if (returnExpr != null) {
@@ -418,6 +502,11 @@ public class AbstractSqlppSimpleExpressionVisitor
         Query bodyQuery = insertStatement.getQuery();
         bodyQuery.accept(this, arg);
         return null;
+    }
+
+    @Override
+    public Expression visit(UpdateStatement updateStmt, ILangExpression arg) throws CompilationException {
+        return visit((InsertStatement) updateStmt, arg);
     }
 
     public Expression visit(Expression expr, ILangExpression arg) throws CompilationException {
@@ -438,5 +527,17 @@ public class AbstractSqlppSimpleExpressionVisitor
             newExprList.add(visit(expr, arg));
         }
         return newExprList;
+    }
+
+    /**
+     * Visits the value expression of an {@code AT SNAPSHOT} / {@code AT TIMESTAMP} specification, if there is
+     * one. The value has to reduce to a compile-time constant, but it still goes through the regular expression
+     * rewrites (function call resolution, operator-to-function-call conversion, UDF inlining, ...) so that
+     * anything foldable actually gets a chance to fold.
+     */
+    protected void visitTimeTravel(TimeTravelSpec timeTravel, ILangExpression arg) throws CompilationException {
+        if (timeTravel != null) {
+            timeTravel.setValueExpression(visit(timeTravel.getValueExpression(), arg));
+        }
     }
 }

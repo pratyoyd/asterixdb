@@ -40,7 +40,7 @@ import org.apache.asterix.lang.sqlpp.clause.SelectClause;
 import org.apache.asterix.lang.sqlpp.util.SqlppVariableUtil;
 import org.apache.asterix.lang.sqlpp.visitor.CheckSql92AggregateVisitor;
 import org.apache.asterix.om.functions.BuiltinFunctions;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 
 /**
  * A pre-processor that
@@ -62,7 +62,9 @@ public class SqlppGroupByVisitor extends AbstractSqlppExpressionExtractionVisito
         if (selectBlock.hasFromClause()) {
             if (selectBlock.hasGroupbyClause()) {
                 rewriteSelectWithGroupBy(selectBlock, arg);
-            } else {
+            } else if (!selectBlock.hasClusterbyClause()) {
+                // A CLUSTER BY block is grouped by its clause; an implicit GROUP ALL here would sit under the
+                // operator and take the clustering expression's binding away from it.
                 rewriteSelectWithoutGroupBy(selectBlock);
             }
         }
@@ -84,8 +86,8 @@ public class SqlppGroupByVisitor extends AbstractSqlppExpressionExtractionVisito
         if (gbyClause.hasGroupFieldList()) {
             groupFieldList = new ArrayList<>();
             for (Pair<Expression, Identifier> groupField : gbyClause.getGroupFieldList()) {
-                Expression newFieldExpr = groupField.first.accept(this, arg);
-                groupFieldList.add(new Pair<>(newFieldExpr, groupField.second));
+                Expression newFieldExpr = groupField.getLeft().accept(this, arg);
+                groupFieldList.add(Pair.of(newFieldExpr, groupField.getRight()));
             }
         } else {
             groupFieldList = createGroupFieldList(selectBlock);

@@ -24,9 +24,9 @@ import java.util.List;
 import java.util.Set;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.common.utils.ListSet;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.IHyracksJobBuilder;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -44,12 +44,14 @@ import org.apache.hyracks.algebricks.core.algebra.operators.logical.AggregateOpe
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.GroupByOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.IOperatorSchema;
 import org.apache.hyracks.algebricks.core.algebra.properties.ILocalStructuralProperty;
+import org.apache.hyracks.algebricks.core.algebra.properties.INodeDomain;
 import org.apache.hyracks.algebricks.core.algebra.properties.IPartitioningRequirementsCoordinator;
 import org.apache.hyracks.algebricks.core.algebra.properties.IPhysicalPropertiesVector;
 import org.apache.hyracks.algebricks.core.algebra.properties.LocalGroupingProperty;
 import org.apache.hyracks.algebricks.core.algebra.properties.PhysicalRequirements;
 import org.apache.hyracks.algebricks.core.algebra.properties.StructuralPropertiesVector;
 import org.apache.hyracks.algebricks.core.algebra.properties.UnorderedPartitionedProperty;
+import org.apache.hyracks.algebricks.core.algebra.util.OperatorPropertiesUtil;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenContext;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenHelper;
 import org.apache.hyracks.algebricks.core.jobgen.impl.OperatorSchemaImpl;
@@ -108,9 +110,11 @@ public class ExternalGroupByPOperator extends AbstractGroupByPOperator {
         AbstractLogicalOperator aop = (AbstractLogicalOperator) op;
         if (aop.getExecutionMode() == ExecutionMode.PARTITIONED) {
             StructuralPropertiesVector[] pv = new StructuralPropertiesVector[1];
-            pv[0] = new StructuralPropertiesVector(
-                    UnorderedPartitionedProperty.of(new ListSet<>(columnList), context.getComputationNodeDomain()),
-                    null);
+            INodeDomain nodeDomain = context.getComputationNodeDomain();
+            int[][] partitionsMap = context.getMetadataProvider().getPartitionsMap(nodeDomain);
+            UnorderedPartitionedProperty pp =
+                    OperatorPropertiesUtil.createUnorderedProperty(nodeDomain, partitionsMap, columnList);
+            pv[0] = new StructuralPropertiesVector(pp, null);
             return new PhysicalRequirements(pv, IPartitioningRequirementsCoordinator.NO_COORDINATION);
         } else {
             return emptyUnaryRequirements();
@@ -164,7 +168,7 @@ public class ExternalGroupByPOperator extends AbstractGroupByPOperator {
 
         List<LogicalVariable> keyAndDecVariables = new ArrayList<LogicalVariable>();
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : gby.getGroupByList()) {
-            keyAndDecVariables.add(p.first);
+            keyAndDecVariables.add(p.getLeft());
         }
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : gby.getDecorList()) {
             keyAndDecVariables.add(GroupByOperator.getDecorVariable(p));
@@ -237,6 +241,6 @@ public class ExternalGroupByPOperator extends AbstractGroupByPOperator {
     public Pair<int[], int[]> getInputOutputDependencyLabels(ILogicalOperator op) {
         int[] inputDependencyLabels = new int[] { 0 };
         int[] outputDependencyLabels = new int[] { 1 };
-        return new Pair<int[], int[]>(inputDependencyLabels, outputDependencyLabels);
+        return Pair.of(inputDependencyLabels, outputDependencyLabels);
     }
 }

@@ -37,7 +37,11 @@ public class AlgebricksConfig {
     public static final boolean ARRAY_INDEX_DEFAULT = true;
     public static final boolean CBO_DEFAULT = true;
     public static final boolean CBO_TEST_DEFAULT = false;
+    public static final int CBO_MAX_JOINS_DEFAULT = 15;
+    public static final int CBO_MAX_JOINS_UPPER_BOUND = 19;
     public static final boolean FORCE_JOIN_ORDER_DEFAULT = false;
+    public static final boolean REWRITE_DISJUNCTION_DEFAULT = false;
+    public static final boolean AGGREGATE_DISTINCT_HASH_DEFAULT = true;
     public static final String QUERY_PLAN_SHAPE_ZIGZAG = "zigzag";
     public static final String QUERY_PLAN_SHAPE_LEFTDEEP = "leftdeep";
     public static final String QUERY_PLAN_SHAPE_RIGHTDEEP = "rightdeep";
@@ -48,6 +52,17 @@ public class AlgebricksConfig {
     public static final boolean COLUMN_FILTER_DEFAULT = true;
     public static final boolean ORDERED_FIELDS = true;
     public static final int MAX_VARIABLE_OCCURRENCES_INLINING_DEFAULT = 128;
+    public static final int HASH_BASED_OR_THRESHOLD_DEFAULT = 40;
+    public static final int MAX_EXPRESSION_TREE_SIZE_DEFAULT = 100;
+    public static final int COMMON_EXPRESSION_LIMIT_DEFAULT = 100;
+    public static final int HDFS_SPLIT_PARALLEL_DEFAULT = Runtime.getRuntime().availableProcessors();
+    public static final boolean QUERY_PLAN_CACHE_DEFAULT = true;
+    /**
+     * Ceiling on {@code num_clusters}: the k-means that trains the index holds every centroid in memory,
+     * so the cluster count is what bounds the memory a build takes. A backstop rather than a
+     * recommendation — a build normally uses sqrt(rows per storage partition), far below this.
+     */
+    public static final int DEFAULT_VECTOR_INDEX_MAX_NUM_CLUSTERS = 65536;
     public static final boolean INTERACTIVE_MODE_DEFAULT = false;
     public static final boolean BLOCKING_MODE_DEFAULT = false;
     public static final boolean PLAQUE_ENABLED_DEFAULT = false;

@@ -26,18 +26,20 @@ import java.util.List;
 
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.expressions.AbstractLogicalExpression;
+import org.apache.hyracks.algebricks.core.algebra.expressions.VariableReferenceExpression;
 import org.apache.hyracks.algebricks.core.algebra.metadata.IProjectionFiltrationInfo;
 import org.apache.hyracks.algebricks.core.algebra.metadata.IWriteDataSink;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.OrderOperator.IOrder;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.TimeTravel;
 import org.apache.hyracks.algebricks.core.algebra.util.OperatorManipulationUtil;
 import org.apache.hyracks.algebricks.core.algebra.visitors.ILogicalOperatorVisitor;
 
@@ -74,10 +76,10 @@ public class OperatorDeepCopyVisitor implements ILogicalOperatorVisitor<ILogical
         List<Pair<LogicalVariable, Mutable<ILogicalExpression>>> decoList = new ArrayList<>();
         ArrayList<ILogicalPlan> newSubplans = new ArrayList<>();
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> pair : op.getGroupByList()) {
-            groupByList.add(new Pair<>(pair.first, deepCopyExpressionRef(pair.second)));
+            groupByList.add(Pair.of(pair.getLeft(), deepCopyExpressionRef(pair.getRight())));
         }
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> pair : op.getDecorList()) {
-            decoList.add(new Pair<>(pair.first, deepCopyExpressionRef(pair.second)));
+            decoList.add(Pair.of(pair.getLeft(), deepCopyExpressionRef(pair.getRight())));
         }
         GroupByOperator gbyOp = new GroupByOperator(groupByList, decoList, newSubplans, op.isGroupAll());
         for (ILogicalPlan plan : op.getNestedPlans()) {
@@ -166,6 +168,7 @@ public class OperatorDeepCopyVisitor implements ILogicalOperatorVisitor<ILogical
     public ILogicalOperator visitSubplanOperator(SubplanOperator op, Void arg) throws AlgebricksException {
         ArrayList<ILogicalPlan> newSubplans = new ArrayList<>();
         SubplanOperator subplanOp = new SubplanOperator(newSubplans);
+        subplanOp.setFailSafe(op.isFailSafe());
         for (ILogicalPlan plan : op.getNestedPlans()) {
             newSubplans.add(OperatorManipulationUtil.deepCopy(plan, subplanOp));
         }
@@ -204,9 +207,46 @@ public class OperatorDeepCopyVisitor implements ILogicalOperatorVisitor<ILogical
     }
 
     @Override
+    public ILogicalOperator visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+        // vectorRef is null for RECLUSTER, the single-input mode.
+        Mutable<ILogicalExpression> vectorRefCopy = op.getVectorVariable() == null ? null
+                : new MutableObject<>(new VariableReferenceExpression(op.getVectorVariable()));
+        KMeansStageOperator opCopy = new KMeansStageOperator(vectorRefCopy,
+                new MutableObject<ILogicalExpression>(new VariableReferenceExpression(op.getPoolVariable())),
+                op.getCandidateVariable(), op.getCandidateVarType(), op.getTopCount(), op.getMode(), op.getSeed(),
+                op.getLoopRounds(), op.getDimension(), op.getMetric());
+        opCopy.setVectorStoreVariable(op.getVectorStoreVariable());
+        for (int i = 0; i < op.getRowVariables().size(); i++) {
+            opCopy.addRowVariable(op.getRowVariables().get(i), op.getRowVariableTypes().get(i));
+        }
+        opCopy.setLabelCentroidVariable(op.getLabelCentroidVariable(), op.getLabelCentroidVarType());
+        return opCopy;
+    }
+
+    @Override
+    public ILogicalOperator visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
+        ClusterByOperator opCopy =
+                new ClusterByOperator(new MutableObject<>(new VariableReferenceExpression(op.getVectorVariable())),
+                        op.getClusterIdVariable(), op.getClusterIdVarType(), op.getCentroidVariable(),
+                        op.getCentroidVarType(), op.getMembersVariable(), op.getMembersVarType(), op.getOptions());
+        if (op.getMemberRecordRef() != null) {
+            opCopy.setMemberRecordRef(deepCopyExpressionRef(op.getMemberRecordRef()));
+        }
+        opCopy.setMembersTypeComputer(op.getMembersTypeComputer());
+        opCopy.setAssignedCentroidVariable(op.getAssignedCentroidVariable());
+        for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : op.getDecorList()) {
+            opCopy.addDecorExpression(p.getLeft(), deepCopyExpressionRef(p.getRight()).getValue());
+        }
+        for (ILogicalPlan plan : op.getNestedPlans()) {
+            opCopy.getNestedPlans().add(OperatorManipulationUtil.deepCopy(plan, opCopy));
+        }
+        return opCopy;
+    }
+
+    @Override
     public ILogicalOperator visitUnnestOperator(UnnestOperator op, Void arg) throws AlgebricksException {
         return new UnnestOperator(op.getVariable(), deepCopyExpressionRef(op.getExpressionRef()),
-                op.getPositionalVariable(), op.getPositionalVariableType());
+                op.getPositionalVariable(), op.getPositionalVariableType(), deepCopyTimeTravel(op.getTimeTravel()));
     }
 
     @Override
@@ -378,7 +418,7 @@ public class OperatorDeepCopyVisitor implements ILogicalOperatorVisitor<ILogical
             List<Pair<IOrder, Mutable<ILogicalExpression>>> ordersAndExprs) {
         List<Pair<IOrder, Mutable<ILogicalExpression>>> newOrdersAndExprs = new ArrayList<>();
         for (Pair<IOrder, Mutable<ILogicalExpression>> pair : ordersAndExprs) {
-            newOrdersAndExprs.add(new Pair<>(pair.first, deepCopyExpressionRef(pair.second)));
+            newOrdersAndExprs.add(Pair.of(pair.getLeft(), deepCopyExpressionRef(pair.getRight())));
         }
         return newOrdersAndExprs;
     }
@@ -397,13 +437,14 @@ public class OperatorDeepCopyVisitor implements ILogicalOperatorVisitor<ILogical
     public ILogicalOperator visitLeftOuterUnnestOperator(LeftOuterUnnestOperator op, Void arg)
             throws AlgebricksException {
         return new LeftOuterUnnestOperator(op.getVariable(), deepCopyExpressionRef(op.getExpressionRef()),
-                op.getPositionalVariable(), op.getPositionalVariableType(), op.getMissingValue());
+                op.getPositionalVariable(), op.getPositionalVariableType(), op.getMissingValue(),
+                deepCopyTimeTravel(op.getTimeTravel()));
     }
 
     @Override
     public ILogicalOperator visitWindowOperator(WindowOperator op, Void arg) throws AlgebricksException {
         List<Mutable<ILogicalExpression>> newPartitionExprs = new ArrayList<>();
-        deepCopyExpressionRefs(op.getPartitionExpressions(), newPartitionExprs);
+        deepCopyExpressionRefs(newPartitionExprs, op.getPartitionExpressions());
         List<Pair<IOrder, Mutable<ILogicalExpression>>> newOrderExprs =
                 deepCopyOrderAndExpression(op.getOrderExpressions());
         List<Pair<IOrder, Mutable<ILogicalExpression>>> newFrameValueExprs =
@@ -448,5 +489,10 @@ public class OperatorDeepCopyVisitor implements ILogicalOperatorVisitor<ILogical
     public ILogicalOperator visitEagerMergeOperator(EagerMergeOperator op, Void arg) throws AlgebricksException {
         List<LogicalVariable> newVars = new ArrayList<>();
         return new EagerMergeOperator(this.deepCopyVars(newVars, op.getGroupByColumns()));
+    }
+
+    private TimeTravel deepCopyTimeTravel(TimeTravel timeTravel) throws AlgebricksException {
+        return timeTravel == null ? null
+                : new TimeTravel(deepCopyExpressionRef(timeTravel.getValueExpressionRef()), timeTravel.getType());
     }
 }

@@ -21,7 +21,9 @@ package org.apache.hyracks.control.cc.job;
 
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -51,6 +53,7 @@ import org.apache.hyracks.control.common.controllers.CCConfig;
 import org.apache.hyracks.control.common.ipc.NodeControllerRemoteProxy;
 import org.apache.hyracks.control.common.logs.LogFile;
 import org.apache.hyracks.control.common.work.NoOpCallback;
+import org.apache.hyracks.ipc.exceptions.IPCException;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -273,6 +276,109 @@ public class JobManagerTest {
         verify(jobManager, times(0)).finalComplete(any());
     }
 
+    /**
+     * A job whose submission fails after the listeners were told of its creation is never started, never
+     * finished and never reported to the client, so nothing else can release what they registered for it. The
+     * atomic statement protocol registers a global transaction there, and its repository is drained only by
+     * the statement that holds the job id, so a stranded entry is retained for the lifetime of the CC.
+     */
+    @Test
+    public void queueFullNotifiesCreationFailed() throws HyracksException {
+        IJobCapacityController jobCapacityController = mock(IJobCapacityController.class);
+        ClusterControllerService ccs = mockClusterControllerService(0);
+        IJobManager jobManager = new JobManager(ccConfig, ccs, jobCapacityController);
+
+        JobRun run = mockJobRun(1);
+        JobSpecification job = mock(JobSpecification.class);
+        when(run.getJobSpecification()).thenReturn(job);
+        when(jobCapacityController.allocate(job, run.getJobId(), none))
+                .thenReturn(IJobCapacityController.JobSubmissionStatus.QUEUE);
+
+        boolean jobQueueFull = false;
+        try {
+            jobManager.add(run);
+        } catch (HyracksException e) {
+            jobQueueFull = e.matches(ErrorCode.JOB_QUEUE_FULL);
+        }
+
+        Assert.assertTrue(jobQueueFull);
+        verify(ccs.getContext()).notifyJobSubmissionFailed(run.getJobId(), job);
+    }
+
+    /**
+     * The same, for a submission that fails unchecked. Queueing and execution can both throw a
+     * RuntimeException, and an unknown submission status throws IllegalStateException, none of which the
+     * HyracksDataException catch in {@code add} sees.
+     */
+    @Test
+    public void uncheckedSubmissionFailureNotifiesCreationFailed() throws HyracksException {
+        IJobCapacityController jobCapacityController = mock(IJobCapacityController.class);
+        ClusterControllerService ccs = mockClusterControllerService();
+        IJobManager jobManager = new JobManager(ccConfig, ccs, jobCapacityController);
+
+        JobRun run = mockJobRun(1);
+        JobSpecification job = mock(JobSpecification.class);
+        when(run.getJobSpecification()).thenReturn(job);
+        when(jobCapacityController.allocate(job, run.getJobId(), none))
+                .thenReturn(IJobCapacityController.JobSubmissionStatus.EXECUTE);
+        doThrow(new IllegalStateException("cannot start")).when(run).setStatus(eq(JobStatus.RUNNING), any());
+
+        boolean failed = false;
+        try {
+            jobManager.add(run);
+        } catch (IllegalStateException e) {
+            failed = true;
+        }
+
+        Assert.assertTrue(failed);
+        verify(ccs.getContext()).notifyJobSubmissionFailed(run.getJobId(), job);
+    }
+
+    /**
+     * The negative control: a job that is accepted is released by its completion, so notifying a failed
+     * creation for it would deregister a transaction the statement is still going to commit.
+     */
+    @Test
+    public void acceptedSubmissionDoesNotNotifyCreationFailed() throws HyracksException {
+        IJobCapacityController jobCapacityController = mock(IJobCapacityController.class);
+        ClusterControllerService ccs = mockClusterControllerService();
+        IJobManager jobManager = new JobManager(ccConfig, ccs, jobCapacityController);
+
+        JobRun run = mockJobRun(1);
+        JobSpecification job = mock(JobSpecification.class);
+        when(run.getJobSpecification()).thenReturn(job);
+        when(jobCapacityController.allocate(job, run.getJobId(), none))
+                .thenReturn(IJobCapacityController.JobSubmissionStatus.EXECUTE);
+
+        jobManager.add(run);
+
+        verify(ccs.getContext(), never()).notifyJobSubmissionFailed(any(), any());
+    }
+
+    /**
+     * A node that has gone away stays registered until its heartbeats lapse, so cleaning up a job on it fails
+     * with a bare IPC failure. Uncoded, that reaches the client as an internal error rather than as the node
+     * being unreachable.
+     */
+    @Test
+    public void unreachableNodeFailsCleanupAsNodeUnreachable() throws Exception {
+        IJobCapacityController jobCapacityController = mock(IJobCapacityController.class);
+        ClusterControllerService ccs = mockClusterControllerService();
+        IJobManager jobManager = new JobManager(ccConfig, ccs, jobCapacityController);
+        NodeControllerRemoteProxy nodeController =
+                ccs.getNodeManager().getNodeControllerState("node1").getNodeController();
+        doThrow(new IPCException(new IOException("Connection failed"))).when(nodeController).cleanUpJoblet(any(),
+                any());
+
+        JobRun run = mockJobRun(1);
+        try {
+            jobManager.prepareComplete(run, JobStatus.FAILURE, Collections.emptyList());
+            Assert.fail("cleanup on an unreachable node should fail");
+        } catch (HyracksException e) {
+            Assert.assertTrue(String.valueOf(e), e.matches(ErrorCode.NODE_UNREACHABLE));
+        }
+    }
+
     private JobRun mockJobRun(long id) {
         JobRun run = mock(JobRun.class, Mockito.RETURNS_DEEP_STUBS);
         when(run.getExceptions()).thenReturn(Collections.emptyList());
@@ -287,6 +393,15 @@ public class JobManagerTest {
         when(run.getParticipatingNodeIds()).thenReturn(nodes);
         when(run.getCleanupPendingNodeIds()).thenReturn(nodes);
         return run;
+    }
+
+    /** @param jobQueueCapacity the capacity the job queue is built with, rather than the configured one */
+    private ClusterControllerService mockClusterControllerService(int jobQueueCapacity) {
+        ClusterControllerService ccs = mockClusterControllerService();
+        CCConfig queueConfig = mock(CCConfig.class);
+        when(queueConfig.getJobQueueCapacity()).thenReturn(jobQueueCapacity);
+        when(ccs.getCCConfig()).thenReturn(queueConfig);
+        return ccs;
     }
 
     private ClusterControllerService mockClusterControllerService() {

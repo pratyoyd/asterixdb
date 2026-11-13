@@ -62,6 +62,7 @@ import org.apache.hyracks.storage.common.IIndexCursorStats;
 import org.apache.hyracks.storage.common.IModificationOperationCallback;
 import org.apache.hyracks.storage.common.ISearchOperationCallback;
 import org.apache.hyracks.storage.common.ISearchPredicate;
+import org.apache.hyracks.storage.common.ISketchSampler;
 import org.apache.hyracks.storage.common.MultiComparator;
 import org.apache.hyracks.storage.common.NoOpIndexCursorStats;
 import org.apache.hyracks.storage.common.buffercache.IBufferCache;
@@ -990,8 +991,9 @@ public class BTree extends AbstractTreeIndex {
 
     @Override
     public IIndexBulkLoader createBulkLoader(float fillFactor, boolean verifyInput, long numElementsHint,
-            boolean checkIfEmptyIndex, IPageWriteCallback callback) throws HyracksDataException {
-        return new BTreeNSMBulkLoader(fillFactor, verifyInput, callback, this);
+            boolean checkIfEmptyIndex, ISketchSampler sampler, IPageWriteCallback callback)
+            throws HyracksDataException {
+        return new BTreeNSMBulkLoader(fillFactor, verifyInput, callback, sampler, this);
     }
 
     @SuppressWarnings("rawtypes")

@@ -18,5 +18,5 @@
  */
 
 USE test;
-// cannot use array index
-FROM query_index("test", "ds1", "ds1_array_idx") as v SELECT VALUE v;
+// too few arguments
+FROM query_index("test", "ds1") AS v SELECT VALUE v;

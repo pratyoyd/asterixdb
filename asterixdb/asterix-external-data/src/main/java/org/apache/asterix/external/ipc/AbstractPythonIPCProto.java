@@ -31,7 +31,7 @@ import org.apache.asterix.external.api.IExternalLangIPCProto;
 import org.apache.asterix.external.library.msgpack.MsgPackPointableVisitor;
 import org.apache.asterix.om.pointables.PointableAllocator;
 import org.apache.asterix.om.types.IAType;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.MutablePair;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IValueReference;
 import org.apache.hyracks.data.std.util.ArrayBackedValueStorage;
@@ -42,6 +42,7 @@ import org.msgpack.core.buffer.ArrayBufferInput;
 
 public abstract class AbstractPythonIPCProto {
     public static final int HEADER_SIZE_LEN_INCLUSIVE = 21;
+    public static final int DEFAULT_BUF_SIZE = 32768;
     protected final PythonMessageBuilder messageBuilder;
     protected final DataOutputStream sockOut;
     protected final ArrayBufferInput unpackerInput;
@@ -50,9 +51,9 @@ public abstract class AbstractPythonIPCProto {
     protected final PointableAllocator pointableAllocator;
     protected final MsgPackPointableVisitor pointableVisitor;
     private final ByteBuffer headerBuffer = ByteBuffer.allocate(HEADER_SIZE_LEN_INCLUSIVE);
-    protected ByteBuffer recvBuffer = ByteBuffer.allocate(32768);
+    protected ByteBuffer recvBuffer = ByteBuffer.allocate(DEFAULT_BUF_SIZE);
     protected long routeId;
-    protected Pair<ByteBuffer, Exception> bufferBox;
+    protected MutablePair<ByteBuffer, Exception> bufferBox;
     protected long maxFunctionId;
 
     public AbstractPythonIPCProto(OutputStream sockOut) {
@@ -81,13 +82,13 @@ public abstract class AbstractPythonIPCProto {
         }
     }
 
-    public long init(String module, String clazz, String fn) throws IOException, AsterixException {
+    public long init(String module, String clazz, String fn, boolean batched) throws IOException, AsterixException {
         long functionId = maxFunctionId++;
         recvBuffer.clear();
         recvBuffer.position(0);
         recvBuffer.limit(0);
         messageBuilder.reset();
-        messageBuilder.init(module, clazz, fn);
+        messageBuilder.init(module, clazz, fn, batched);
         sendHeader(functionId, messageBuilder.getLength());
         sendMsg();
         receiveMsg();

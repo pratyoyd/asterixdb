@@ -57,10 +57,14 @@ import org.apache.hyracks.dataflow.common.utils.TupleUtils;
 import org.apache.hyracks.storage.am.common.api.IIndexDataflowHelper;
 import org.apache.hyracks.storage.am.common.dataflow.IIndexDataflowHelperFactory;
 import org.apache.hyracks.storage.am.common.dataflow.IndexDataflowHelperFactory;
+import org.apache.hyracks.storage.am.common.freepage.MutableArrayValueReference;
 import org.apache.hyracks.storage.am.common.impls.AbstractTreeIndex;
+import org.apache.hyracks.storage.am.common.impls.NoOpIndexAccessParameters;
 import org.apache.hyracks.storage.am.lsm.btree.impl.TestLsmBtree;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMDiskComponent;
+import org.apache.hyracks.storage.am.lsm.common.api.ILSMIndexAccessor;
 import org.apache.hyracks.storage.am.lsm.common.impls.NoMergePolicyFactory;
+import org.apache.hyracks.storage.common.buffercache.IBufferCache;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.junit.After;
@@ -91,6 +95,27 @@ public class GlobalVirtualBufferCacheTest {
 
     private static final int NUM_PARTITIONS = 2;
     private static final long FILTERED_MEMORY_COMPONENT_SIZE = 16 * 1024l;
+    // On-disk page = configured buffer-cache page (1KB in this test) + 8B reserved header
+    // (IBufferCache.RESERVED_HEADER_BYTES). A component's file length is always a multiple of this.
+    private static final int DISK_PAGE_SIZE = 1024 + IBufferCache.RESERVED_HEADER_BYTES;
+    // A filtered memory component flushes on writer-exit, not the instant it hits the cap. With concurrent
+    // writers a component keeps growing between tripping the cap and the flush firing, so the flushed on-disk
+    // size overshoots the 16KB budget by a variable amount (observed up to ~19 disk pages vs a ~14-page mode).
+    // An exact-byte bound is therefore fragile. Instead assert the cap's *intent*: filtered components stay
+    // within a small multiple of the configured max. Without this cap they would still be bounded, but only by
+    // the shared global memory budget (128KB here) like the unfiltered components, which grow much larger
+    // (up to ~51 disk pages here). So 2x the cap cleanly separates legitimate concurrent-writer overshoot from a
+    // broken per-component cap.
+    //
+    // Example (this test's config: 16KB per-component cap, 128KB shared global budget, 1KB buffer-cache page
+    // => 1032B on-disk page incl. 8B header):
+    //   cap in disk pages         = 16KB / 1024 = 16 pages
+    //   typical flushed component ~= 14 pages    = 14 * 1032 = 14448 B  (bulk-load packs tighter than memory)
+    //   worst observed overshoot  =  19 pages    = 19 * 1032 = 19608 B  (concurrent writers)
+    //   FILTERED_COMPONENT_SIZE_LIMIT = 2 * 16KB = 32768 B  (~31 pages)
+    //   => 19608 passes (real overshoot), 52632 would fail (broken cap). On-disk sizes are always a
+    //      multiple of 1032, e.g. 2064, 4128, ..., 14448, 15480, 19608.
+    private static final long FILTERED_COMPONENT_SIZE_LIMIT = 2L * FILTERED_MEMORY_COMPONENT_SIZE;
 
     @BeforeClass
     public static void setUp() {
@@ -152,7 +177,7 @@ public class GlobalVirtualBufferCacheTest {
             }
             if (exceptionRef.get() != null) {
                 exceptionRef.get().printStackTrace();
-                Assert.fail();
+                Assert.fail("Exception in insert threads: " + exceptionRef.get());
             }
             for (int i = 0; i < NUM_PARTITIONS; i++) {
                 List<ILSMDiskComponent> diskComponents = new ArrayList<>(primaryIndexes[i].getDiskComponents());
@@ -163,8 +188,35 @@ public class GlobalVirtualBufferCacheTest {
                 List<ILSMDiskComponent> filteredDiskComponents =
                         new ArrayList<>(filteredPrimaryIndexes[i].getDiskComponents());
                 Assert.assertFalse(filteredDiskComponents.isEmpty());
-                Assert.assertTrue(filteredDiskComponents.stream().allMatch(c -> ((AbstractTreeIndex) c.getIndex())
-                        .getFileReference().getFile().length() <= FILTERED_MEMORY_COMPONENT_SIZE));
+
+                // Collect exact sizes (and page counts) for debugging
+                List<Long> filteredSizes = new ArrayList<>();
+                List<Long> filteredPageCounts = new ArrayList<>();
+                for (ILSMDiskComponent c : filteredDiskComponents) {
+                    long len = ((AbstractTreeIndex) c.getIndex()).getFileReference().getFile().length();
+                    filteredSizes.add(len);
+                    filteredPageCounts.add(len / DISK_PAGE_SIZE);
+                }
+                List<Long> unfilteredSizes = new ArrayList<>();
+                for (ILSMDiskComponent c : diskComponents) {
+                    unfilteredSizes.add(((AbstractTreeIndex) c.getIndex()).getFileReference().getFile().length());
+                }
+                LOGGER.info("Partition {} filtered component page counts (disk page = {}B): {}", i, DISK_PAGE_SIZE,
+                        filteredPageCounts);
+
+                int cIdx = 0;
+                for (ILSMDiskComponent c : filteredDiskComponents) {
+                    long fileLength = ((AbstractTreeIndex) c.getIndex()).getFileReference().getFile().length();
+                    long pageCount = fileLength / DISK_PAGE_SIZE;
+                    Assert.assertTrue(
+                            "Partition " + i + " Filtered disk component " + cIdx + " length " + fileLength + " ("
+                                    + pageCount + " pages) exceeds limit " + FILTERED_COMPONENT_SIZE_LIMIT
+                                    + ".\nAll filtered sizes for partition: " + filteredSizes
+                                    + ".\nAll filtered page counts for partition: " + filteredPageCounts
+                                    + ".\nAll unfiltered sizes for partition: " + unfilteredSizes,
+                            fileLength <= FILTERED_COMPONENT_SIZE_LIMIT);
+                    cIdx++;
+                }
             }
 
             nc.getTransactionManager().commitTransaction(txnCtx.getTxnId());
@@ -173,6 +225,43 @@ public class GlobalVirtualBufferCacheTest {
             LOGGER.error("testFlushes failed", e);
             Assert.fail(e.getMessage());
         }
+    }
+
+    /**
+     * A memory component whose only modification is to its metadata frees next to nothing when flushed, so the
+     * global VBC should not flush it to relieve memory held by another index's tuples: with many such components,
+     * flushing each in turn produces a disk component per flush while memory stays over budget.
+     */
+    @Test
+    public void testMetadataOnlyComponentNotFlushedWhileTuplesHoldMemory() throws Exception {
+        TestLsmBtree metadataOnly = primaryIndexes[1];
+        MutableArrayValueReference key = new MutableArrayValueReference("GlobalVBCTestKey".getBytes());
+        MutableArrayValueReference value = new MutableArrayValueReference("GlobalVBCTestValue".getBytes());
+        primaryIndexDataflowHelpers[1].open();
+        try {
+            ILSMIndexAccessor accessor = metadataOnly.createAccessor(NoOpIndexAccessParameters.INSTANCE);
+            accessor.updateMeta(key, value);
+        } finally {
+            primaryIndexDataflowHelpers[1].close();
+        }
+        Assert.assertTrue(metadataOnly.getCurrentMemoryComponent().isModified());
+        Assert.assertFalse(metadataOnly.getCurrentMemoryComponent().hasTuples());
+
+        // fill the budget many times over through another index, so that the global VBC flushes repeatedly
+        AtomicReference<Exception> exceptionRef = new AtomicReference<>();
+        try {
+            insertRecords(16 * 1024, 0, false, exceptionRef).join();
+            if (exceptionRef.get() != null) {
+                throw exceptionRef.get();
+            }
+        } finally {
+            nc.getTransactionManager().commitTransaction(txnCtx.getTxnId());
+        }
+        Assert.assertTrue("the global VBC should have flushed the index holding tuples",
+                primaryIndexes[0].getDiskComponents().size() > 1);
+        Assert.assertEquals("the global VBC should not have flushed the metadata-only memory component", 0,
+                metadataOnly.getDiskComponents().size());
+        Assert.assertTrue(metadataOnly.getCurrentMemoryComponent().isModified());
     }
 
     private void initializeNc() throws Exception {

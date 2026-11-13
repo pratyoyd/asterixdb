@@ -21,6 +21,7 @@ package org.apache.hyracks.dataflow.std.sort.util;
 
 import java.nio.ByteBuffer;
 
+import org.apache.hyracks.api.comm.FrameConstants;
 import org.apache.hyracks.api.comm.FrameHelper;
 import org.apache.hyracks.api.comm.IFrameTupleAccessor;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
@@ -36,6 +37,14 @@ import org.apache.hyracks.util.IntSerDeUtils;
 public class DeletableFrameTupleAppender implements IAppendDeletableFrameTupleAccessor {
 
     private static final int SIZE_DELETED_SPACE = 4;
+
+    /**
+     * The bytes a frame reserves at its end for its own bookkeeping -- the tuple count and the
+     * deleted space -- and which are therefore not available to hold tuples. A caller sizing a
+     * frame for a given amount of tuple data has to add this to it; see
+     * {@link #getContiguousFreeSpace()}, which subtracts it.
+     */
+    public static final int FRAME_META_SIZE = FrameConstants.SIZE_LEN + SIZE_DELETED_SPACE;
     private final RecordDescriptor recordDescriptor;
     private ByteBuffer buffer;
     private int tupleCountOffset;

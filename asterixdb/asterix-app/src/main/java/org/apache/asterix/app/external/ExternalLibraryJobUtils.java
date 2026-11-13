@@ -36,12 +36,14 @@ import org.apache.asterix.external.operators.LibraryDeployPrepareOperatorDescrip
 import org.apache.asterix.external.operators.LibraryUndeployOperatorDescriptor;
 import org.apache.asterix.metadata.declared.MetadataProvider;
 import org.apache.asterix.runtime.utils.RuntimeUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraintHelper;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.api.dataflow.IOperatorDescriptor;
 import org.apache.hyracks.api.io.FileSplit;
+import org.apache.hyracks.api.job.HyracksJobProperty;
+import org.apache.hyracks.api.job.JobKind;
 import org.apache.hyracks.api.job.JobSpecification;
 import org.apache.hyracks.dataflow.std.file.IFileSplitProvider;
 
@@ -66,6 +68,10 @@ public class ExternalLibraryJobUtils {
 
         JobSpecification abortJobSpec = createLibraryAbortJobSpec(namespace, libraryName, appCtx, splitsAndConstraint);
 
+        prepareJobSpec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DDL);
+        commitJobSpec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DDL);
+        abortJobSpec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DDL);
+
         return new Triple<>(prepareJobSpec, commitJobSpec, abortJobSpec);
     }
 
@@ -76,7 +82,7 @@ public class ExternalLibraryJobUtils {
         IOperatorDescriptor opDesc = new LibraryDeployPrepareOperatorDescriptor(jobSpec, namespace, libraryName,
                 language, downloadURI, authToken);
         AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(jobSpec, opDesc,
-                splitsAndConstraint.second);
+                splitsAndConstraint.getRight());
         jobSpec.addRoot(opDesc);
         return jobSpec;
     }
@@ -86,7 +92,7 @@ public class ExternalLibraryJobUtils {
         JobSpecification jobSpec = RuntimeUtils.createJobSpecification(appCtx);
         IOperatorDescriptor opDesc = new LibraryDeployCommitOperatorDescriptor(jobSpec, namespace, libraryName);
         AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(jobSpec, opDesc,
-                splitsAndConstraint.second);
+                splitsAndConstraint.getRight());
         return jobSpec;
     }
 
@@ -95,7 +101,7 @@ public class ExternalLibraryJobUtils {
         JobSpecification jobSpec = RuntimeUtils.createJobSpecification(appCtx);
         IOperatorDescriptor opDesc = new LibraryDeployAbortOperatorDescriptor(jobSpec, namespace, libraryName);
         AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(jobSpec, opDesc,
-                splitsAndConstraint.second);
+                splitsAndConstraint.getRight());
         return jobSpec;
     }
 
@@ -108,9 +114,9 @@ public class ExternalLibraryJobUtils {
         JobSpecification jobSpec = RuntimeUtils.createJobSpecification(appCtx);
         IOperatorDescriptor opDesc = new LibraryUndeployOperatorDescriptor(jobSpec, namespace, libraryName);
         AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(jobSpec, opDesc,
-                splitsAndConstraint.second);
+                splitsAndConstraint.getRight());
         jobSpec.addRoot(opDesc);
-
+        jobSpec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DDL);
         return jobSpec;
     }
 
@@ -120,12 +126,17 @@ public class ExternalLibraryJobUtils {
         return StoragePathUtil.splitProviderAndPartitionConstraints(splits);
     }
 
-    private static FileSplit[] getSplits(IClusterStateManager clusterStateManager) {
+    static FileSplit[] getSplits(IClusterStateManager clusterStateManager) {
         ClusterPartition[] clusterPartitions = clusterStateManager.getClusterPartitons();
         Arrays.sort(clusterPartitions,
                 Comparator.comparing(ClusterPartition::getNodeId).thenComparingInt(ClusterPartition::getIODeviceNum));
         List<FileSplit> splits = new ArrayList<>();
         for (ClusterPartition partition : clusterPartitions) {
+            // a failed node's partitions stay registered, deactivated, until it is removed or rejoins; when
+            // compute partitions are fixed (cloud) nothing takes them over, so a job sent there cannot start
+            if (!partition.isActive()) {
+                continue;
+            }
             String activeNodeId = partition.getActiveNodeId();
             int n = splits.size();
             if (n > 0 && splits.get(n - 1).getNodeName().equals(activeNodeId)) {

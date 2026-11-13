@@ -26,12 +26,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.FileReference;
-import org.apache.hyracks.api.io.IFileHandle;
 import org.apache.hyracks.api.io.IIOManager;
 import org.apache.hyracks.storage.common.buffercache.AbstractBufferedFileIOManager;
 import org.apache.hyracks.storage.common.buffercache.BufferCache;
 import org.apache.hyracks.storage.common.buffercache.BufferCacheHeaderHelper;
 import org.apache.hyracks.storage.common.buffercache.CachedPage;
+import org.apache.hyracks.storage.common.buffercache.IBufferCache;
 import org.apache.hyracks.storage.common.buffercache.IPageReplacementStrategy;
 import org.apache.hyracks.storage.common.buffercache.context.IBufferCacheReadContext;
 import org.apache.hyracks.storage.common.buffercache.context.IBufferCacheWriteContext;
@@ -41,6 +41,8 @@ import org.apache.hyracks.storage.common.compression.file.NoOpLAFWriter;
 import org.apache.hyracks.util.IThreadStats;
 
 public class BufferedFileHandle extends AbstractBufferedFileIOManager {
+    private static final ByteBuffer ZERO_HEADER_TAIL = ByteBuffer.allocate(IBufferCache.RESERVED_HEADER_BYTES * 1024);
+
     private final int fileId;
     private final AtomicInteger refCount;
 
@@ -77,9 +79,8 @@ public class BufferedFileHandle extends AbstractBufferedFileIOManager {
         final BufferCacheHeaderHelper header = checkoutHeaderHelper();
         try {
             setPageInfo(cPage);
-            IFileHandle handle = getFileHandle();
             int pageSize = bufferCache.getPageSizeWithHeader();
-            long bytesRead = header.readFromFile(ioManager, handle, getFirstPageOffset(cPage), pageSize);
+            long bytesRead = readHeaderFromFile(header, getFirstPageOffset(cPage), pageSize);
 
             if (!verifyBytesRead(bufferCache.getPageSizeWithHeader(), bytesRead)) {
                 return;
@@ -114,7 +115,6 @@ public class BufferedFileHandle extends AbstractBufferedFileIOManager {
             IBufferCacheWriteContext context) throws HyracksDataException {
         final ByteBuffer buf = cPage.getBuffer();
         final boolean contiguousLargePages = getPageId(cPage.getDiskPageId()) + 1 == extraBlockPageId;
-        IFileHandle handle = getFileHandle();
         long bytesWritten;
         long offset;
         try {
@@ -122,21 +122,61 @@ public class BufferedFileHandle extends AbstractBufferedFileIOManager {
             buf.position(0);
             ByteBuffer[] buffers = header.prepareWrite(cPage);
             offset = getFirstPageOffset(cPage);
-            bytesWritten = context.write(ioManager, handle, offset, buffers);
+            bytesWritten = writeToFile(context, offset, buffers);
         } finally {
             returnHeaderHelper(header);
         }
 
+        long extraPagesEnd = offset + bytesWritten;
         if (totalPages > 1 && !contiguousLargePages) {
             buf.limit(totalPages * bufferCache.getPageSize());
-            bytesWritten += writeExtraToFile(buf, getExtraPageOffset(cPage));
+            long extraOffset = getExtraPageOffset(cPage);
+            long extraBytes = writeExtraToFile(buf, extraOffset);
+            bytesWritten += extraBytes;
+            extraPagesEnd = extraOffset + extraBytes;
         }
 
-        final int expectedWritten = bufferCache.getPageSizeWithHeader() + bufferCache.getPageSize() * (totalPages - 1);
+        if (totalPages > 1) {
+            bytesWritten += writeLargePageHeaderTail(totalPages, extraPagesEnd);
+        }
+
+        // A page occupies totalPages slots of getPageSizeWithHeader() each, and after the tail is written it
+        // fills every one of them.
+        final long expectedWritten = (long) bufferCache.getPageSizeWithHeader() * totalPages;
         verifyBytesWritten(expectedWritten, bytesWritten);
 
         cPage.setCompressedPageOffset(offset);
         cPage.setCompressedPageSize((int) bytesWritten);
+    }
+
+    /**
+     * Writes the bytes a large page leaves unwritten at its tail.
+     * <p>
+     * A page is addressed as {@code pageId * (pageSize + RESERVED_HEADER_BYTES)}, so a page spanning N slots
+     * owns {@code N * (pageSize + RESERVED_HEADER_BYTES)} bytes, but only one {@code RESERVED_HEADER_BYTES}
+     * header is written for the whole page: extra pages carry no header of their own. That leaves
+     * {@code RESERVED_HEADER_BYTES * (N - 1)} bytes at the end of the page unwritten. Reads never look there,
+     * so on a local file it can be left as a hole, but a file whose writes are mirrored to an append-only cloud
+     * stream cannot skip forward: the stream would fall behind the page offsets by that much and every
+     * subsequent write would be misaligned. Writing the tail out keeps the two byte-identical, and zeros are
+     * what a local hole reads back as anyway.
+     *
+     * @param totalPages number of slots the page spans
+     * @param tailOffset first unwritten byte, i.e. the end of the page's payload
+     * @return the number of bytes written
+     */
+    private long writeLargePageHeaderTail(int totalPages, long tailOffset) throws HyracksDataException {
+        long remaining = (long) IBufferCache.RESERVED_HEADER_BYTES * (totalPages - 1);
+        long written = 0;
+        final ByteBuffer zeros = ZERO_HEADER_TAIL.duplicate();
+        while (remaining > 0) {
+            int chunk = (int) Math.min(remaining, zeros.capacity());
+            zeros.position(0);
+            zeros.limit(chunk);
+            written += writeExtraToFile(zeros, tailOffset + written);
+            remaining -= chunk;
+        }
+        return written;
     }
 
     @Override

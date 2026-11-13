@@ -47,10 +47,10 @@ import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.om.types.EnumDeserializer;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.runtime.evaluators.functions.PointableHelper;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
 import org.apache.hyracks.algebricks.runtime.evaluators.ConstantEvalFactory;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.dataflow.value.ISerializerDeserializer;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.SourceLocation;
@@ -80,11 +80,13 @@ public abstract class AbstractComparisonEvaluator implements IScalarEvaluator {
     private final ILogicalBinaryComparator logicalComparator;
     private final IAObject leftConstant;
     private final IAObject rightConstant;
+    private final boolean checkUnknown;
 
     AbstractComparisonEvaluator(IScalarEvaluatorFactory evalLeftFactory, IAType leftType,
             IScalarEvaluatorFactory evalRightFactory, IAType rightType, IEvaluatorContext ctx, SourceLocation sourceLoc,
-            boolean isEquality) throws HyracksDataException {
+            boolean isEquality, boolean checkUnknown) throws HyracksDataException {
         this.ctx = ctx;
+        this.checkUnknown = checkUnknown;
         this.evalLeft = evalLeftFactory.createScalarEvaluator(ctx);
         this.evalRight = evalRightFactory.createScalarEvaluator(ctx);
         this.sourceLoc = sourceLoc;
@@ -103,7 +105,7 @@ public abstract class AbstractComparisonEvaluator implements IScalarEvaluator {
         evalLeft.evaluate(tuple, argLeft);
         evalRight.evaluate(tuple, argRight);
 
-        if (PointableHelper.checkAndSetMissingOrNull(result, argLeft, argRight)) {
+        if (checkUnknown && PointableHelper.checkAndSetMissingOrNull(result, argLeft, argRight)) {
             return;
         }
         leftVal.set(argLeft.getByteArray(), argLeft.getStartOffset() + 1, argLeft.getLength() - 1,

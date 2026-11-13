@@ -71,6 +71,7 @@ public class ExitUtil {
     private static final MutableLong shutdownHaltDelay = new MutableLong(10 * 60 * 1000L); // 10 minutes default
     private static final ExecutorService haltThreadDumpExecutor = Executors.newSingleThreadExecutor();
     private static final long HALT_THREADDUMP_TIMEOUT_SECONDS = 60;
+    private static volatile boolean exiting;
 
     static {
         watchdogThread.start();
@@ -89,6 +90,7 @@ public class ExitUtil {
                 LOGGER.warn("ignoring duplicate request to exit with status " + status
                         + "; already exiting with status " + exitThread.status + "...");
             } else {
+                exiting = true;
                 exitThread.setStatus(status, new Throwable("exit callstack"));
                 exitThread.start();
             }
@@ -100,19 +102,42 @@ public class ExitUtil {
         exit(status);
     }
 
-    public static void halt(int status) {
-        halt(status, Level.FATAL);
+    /**
+     * Indicates whether this JVM has begun to terminate, either through {@link #exit(int)} or because its shutdown
+     * hooks have started to run (e.g. on SIGTERM). Callers that would otherwise halt on a failure can use this to
+     * tell a genuine fault apart from the fallout of a termination already under way -- during the latter, halting
+     * only costs whatever remains of an orderly shutdown.
+     *
+     * @return {@code true} if termination has begun
+     */
+    public static boolean isExiting() {
+        if (exiting) {
+            return true;
+        }
+        // no API exposes "shutdown in progress" directly; registering a hook is refused once it is
+        Thread probe = new Thread();
+        try {
+            Runtime.getRuntime().addShutdownHook(probe);
+            Runtime.getRuntime().removeShutdownHook(probe);
+            return false;
+        } catch (IllegalStateException e) {
+            return true;
+        }
     }
 
-    public static synchronized void halt(int status, Level logLevel) {
+    public static void halt(int status) {
+        halt(status, Level.FATAL, LOGGER);
+    }
+
+    public static synchronized void halt(int status, Level logLevel, Logger threadDumpLogger) {
         try {
             boolean interrupted = Thread.interrupted();
             LOGGER.log(logLevel, "JVM halting with status {} (halting thread {}, interrupted {})", status,
                     Thread.currentThread(), interrupted);
             Future<?> future = haltThreadDumpExecutor.submit(() -> {
-                LOGGER.log(logLevel, "Thread dump at halt: {}", ThreadDumpUtil.takeDumpString());
-                // try to give time for the log to be emitted...
-                LogManager.shutdown();
+                threadDumpLogger.log(logLevel, "Thread dump at halt: {}", ThreadDumpUtil.takeDumpString());
+                // try to give time for the log to be emitted by asking the log manager to shut down...
+                LogManager.shutdown(false, true);
             });
             future.get(HALT_THREADDUMP_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (Exception e) {

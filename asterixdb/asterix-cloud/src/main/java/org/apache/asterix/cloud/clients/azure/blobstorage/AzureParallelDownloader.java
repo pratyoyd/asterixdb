@@ -19,129 +19,162 @@
 
 package org.apache.asterix.cloud.clients.azure.blobstorage;
 
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
-import org.apache.asterix.cloud.clients.IParallelDownloader;
+import org.apache.asterix.cloud.clients.AbstractParallelDownloader;
 import org.apache.asterix.cloud.clients.profiler.IRequestProfilerLimiter;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.FileReference;
+import org.apache.hyracks.api.util.ExceptionUtils;
 import org.apache.hyracks.control.nc.io.IOManager;
+import org.apache.hyracks.util.ExponentialRetryPolicy;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import com.azure.core.http.rest.PagedIterable;
-import com.azure.storage.blob.BlobClient;
-import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.BlobAsyncClient;
+import com.azure.storage.blob.BlobContainerAsyncClient;
 import com.azure.storage.blob.models.BlobItem;
 import com.azure.storage.blob.models.ListBlobsOptions;
 
-public class AzureParallelDownloader implements IParallelDownloader {
-    public static final String STORAGE_SUB_DIR = "storage";
-    private final IOManager ioManager;
-    private final BlobContainerClient blobContainerClient;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
+
+public class AzureParallelDownloader extends AbstractParallelDownloader {
+    private static final Logger LOGGER = LogManager.getLogger();
+    private final BlobContainerAsyncClient blobContainerAsyncClient;
     private final IRequestProfilerLimiter profiler;
     private final AzBlobStorageClientConfig config;
-    private static final Logger LOGGER = LogManager.getLogger();
+    private final Retry retryPolicy;
 
-    public AzureParallelDownloader(IOManager ioManager, BlobContainerClient blobContainerClient,
+    public AzureParallelDownloader(IOManager ioManager, BlobContainerAsyncClient blobContainerAsyncClient,
             IRequestProfilerLimiter profiler, AzBlobStorageClientConfig config) {
-        this.ioManager = ioManager;
-        this.blobContainerClient = blobContainerClient;
+        this.blobContainerAsyncClient = blobContainerAsyncClient;
         this.profiler = profiler;
         this.config = config;
+        this.retryPolicy = ReactiveExponentialRetryPolicy.retryPolicy(new ExponentialRetryPolicy());
     }
 
     @Override
     public void downloadFiles(Collection<FileReference> toDownload) throws HyracksDataException {
-        for (FileReference fileReference : toDownload) {
-            BlobClient blobClient =
-                    blobContainerClient.getBlobClient(config.getPrefix() + fileReference.getRelativePath());
-            Path absPath = Path.of(fileReference.getAbsolutePath());
-            Path parentPath = absPath.getParent();
-            OutputStream fileOutputStream = null;
-            try {
-                createDirectories(parentPath);
-                fileOutputStream = Files.newOutputStream(absPath);
-                blobClient.downloadStream(fileOutputStream);
-                fileOutputStream.close();
-            } catch (IOException e) {
-                throw HyracksDataException.create(e);
-            } finally {
-                closeOutputStream(fileOutputStream);
-            }
+        try {
+            downloadFilesAndWait(toDownload);
+        } catch (IOException e) {
+            throw HyracksDataException.create(e);
         }
     }
 
-    private static void closeOutputStream(OutputStream fileOutputStream) throws HyracksDataException {
-        if (fileOutputStream != null) {
-            try {
-                fileOutputStream.close();
-            } catch (IOException e) {
-                throw HyracksDataException.create(e);
+    private void downloadFilesAndWait(Collection<FileReference> toDownload) throws IOException {
+        List<Mono<Void>> downloads = new ArrayList<>();
+        int maxConcurrent = config.getRequestsMaxPendingHttpConnections();
+
+        for (FileReference fileReference : toDownload) {
+            profiler.objectGet();
+
+            Path absPath = Path.of(fileReference.getAbsolutePath());
+            Path parentPath = absPath.getParent();
+            createDirectories(parentPath);
+
+            BlobAsyncClient blobAsyncClient =
+                    blobContainerAsyncClient.getBlobAsyncClient(config.getPrefix() + fileReference.getRelativePath());
+
+            // overwrite: a download replaces whatever the local cache holds, and a retry must be able to
+            // replace a partially written file from the previous attempt
+            Mono<Void> downloadTask = blobAsyncClient.downloadToFile(absPath.toString(), true).then();
+            downloads.add(downloadTask);
+
+            if (maxConcurrent > 0 && downloads.size() >= maxConcurrent) {
+                waitForFileDownloads(downloads);
+                downloads.clear();
             }
+        }
+
+        if (!downloads.isEmpty()) {
+            waitForFileDownloads(downloads);
+        }
+    }
+
+    private void waitForFileDownloads(List<Mono<Void>> downloads) throws HyracksDataException {
+        runBlockingWithExceptionHandling(() -> Flux.fromIterable(downloads)
+                .flatMapDelayError(mono -> mono.retryWhen(retryPolicy), downloads.size(), downloads.size()).then()
+                .block());
+    }
+
+    @Override
+    public Set<FileReference> downloadDirectories(Collection<FileReference> directories) throws HyracksDataException {
+
+        Set<FileReference> failedFiles = new HashSet<>();
+        List<Mono<Void>> directoryDownloads = new ArrayList<>();
+
+        for (FileReference directory : directories) {
+            Mono<Void> directoryTask = downloadDirectoryAsync(directory, failedFiles).onErrorResume(e -> {
+                LOGGER.info("Failed to download directory {}", directory, e);
+                return Mono.empty(); // Continue even if a directory fails
+            });
+            directoryDownloads.add(directoryTask);
+        }
+
+        int concurrency = config.getRequestsMaxPendingHttpConnections();
+        runBlockingWithExceptionHandling(() -> Flux.fromIterable(directoryDownloads)
+                .flatMapDelayError(mono -> mono.retryWhen(retryPolicy), concurrency, concurrency).then().block());
+
+        return failedFiles;
+    }
+
+    private Mono<Void> downloadDirectoryAsync(FileReference directory, Set<FileReference> failedFiles) {
+        return getBlobItems(directory).flatMap(blobItem -> {
+            profiler.objectGet();
+            return downloadBlobAsync(directory, blobItem, failedFiles);
+        }, config.getRequestsMaxPendingHttpConnections()).then().doOnError(error -> {
+            LOGGER.info("Failed to download blobs under {}", getListPrefix(directory), error);
+            failedFiles.add(directory); // Record directory failure
+        });
+    }
+
+    private Mono<Void> downloadBlobAsync(FileReference directory, BlobItem blobItem, Set<FileReference> failedFiles) {
+        FileReference diskDestFile = toLocalFile(directory, blobItem.getName());
+        try {
+            Path absDiskBlobPath = getDiskDestPath(diskDestFile);
+            Path parentDiskPath = absDiskBlobPath.getParent();
+
+            createDirectories(parentDiskPath);
+
+            BlobAsyncClient blobAsyncClient = blobContainerAsyncClient.getBlobAsyncClient(blobItem.getName());
+
+            // overwrite: a download replaces whatever the local cache holds, and a retry must be able to
+            // replace a partially written file from the previous attempt
+            return blobAsyncClient.downloadToFile(absDiskBlobPath.toString(), true).doOnError(error -> {
+                LOGGER.info("Failed to download blob {} into {}", blobItem.getName(), diskDestFile, error);
+                failedFiles.add(diskDestFile);
+            }).then();
+        } catch (Exception e) {
+            LOGGER.info("Failed to prepare download of blob {} into {}", blobItem.getName(), diskDestFile, e);
+            failedFiles.add(diskDestFile);
+            return Mono.error(HyracksDataException.create(e));
         }
     }
 
     @Override
-    public Collection<FileReference> downloadDirectories(Collection<FileReference> directories)
-            throws HyracksDataException {
-        Set<FileReference> failedFiles = new HashSet<>();
-        for (FileReference directory : directories) {
-            PagedIterable<BlobItem> blobsInDir = getBlobItems(directory);
-            for (BlobItem blobItem : blobsInDir) {
-                profiler.objectGet();
-                download(blobItem, failedFiles);
-            }
-        }
-        return failedFiles;
-    }
-
-    private void download(BlobItem blobItem, Set<FileReference> failedFiles) throws HyracksDataException {
-        BlobClient blobClient = blobContainerClient.getBlobClient(blobItem.getName());
-        FileReference diskDestFile = ioManager.resolve(createDiskSubPath(blobItem.getName()));
-        Path absDiskBlobPath = getDiskDestPath(diskDestFile);
-        Path parentDiskPath = absDiskBlobPath.getParent();
-        createDirectories(parentDiskPath);
-        FileOutputStream outputStreamToDest = getOutputStreamToDest(diskDestFile);
-        try {
-            blobClient.downloadStream(outputStreamToDest);
-        } catch (Exception e) {
-            FileReference failedFile = ioManager.resolve(blobItem.getName());
-            failedFiles.add(failedFile);
-        }
-    }
-
-    private String createDiskSubPath(String blobName) {
-        if (!blobName.startsWith(STORAGE_SUB_DIR)) {
-            blobName = blobName.substring(blobName.indexOf(STORAGE_SUB_DIR));
-        }
-        return blobName;
-    }
-
-    private FileOutputStream getOutputStreamToDest(FileReference destFile) throws HyracksDataException {
-        try {
-            return new FileOutputStream(destFile.getAbsolutePath());
-        } catch (FileNotFoundException ex) {
-            throw HyracksDataException.create(ex);
-        }
+    protected String getPrefix() {
+        return config.getPrefix();
     }
 
     private void createDirectories(Path parentPath) throws HyracksDataException {
-        if (Files.notExists(parentPath))
+        if (Files.notExists(parentPath)) {
             try {
                 Files.createDirectories(parentPath);
             } catch (IOException ex) {
                 throw HyracksDataException.create(ex);
             }
+        }
     }
 
     private Path getDiskDestPath(FileReference destFile) throws HyracksDataException {
@@ -152,10 +185,13 @@ public class AzureParallelDownloader implements IParallelDownloader {
         }
     }
 
-    private PagedIterable<BlobItem> getBlobItems(FileReference directoryToDownload) {
-        ListBlobsOptions listBlobsOptions =
-                new ListBlobsOptions().setPrefix(config.getPrefix() + directoryToDownload.getRelativePath());
-        return blobContainerClient.listBlobs(listBlobsOptions, null);
+    private Flux<BlobItem> getBlobItems(FileReference directoryToDownload) {
+        ListBlobsOptions listBlobsOptions = new ListBlobsOptions().setPrefix(getListPrefix(directoryToDownload));
+        return blobContainerAsyncClient.listBlobs(listBlobsOptions);
+    }
+
+    private String getListPrefix(FileReference directoryToDownload) {
+        return config.getPrefix() + directoryToDownload.getRelativePath();
     }
 
     @Override
@@ -164,5 +200,16 @@ public class AzureParallelDownloader implements IParallelDownloader {
         // handles the same for the apps.
         // Ref: https://github.com/Azure/azure-sdk-for-java/issues/17903
         // Hence this implementation is a no op.
+    }
+
+    private static void runBlockingWithExceptionHandling(Runnable runnable) throws HyracksDataException {
+        try {
+            runnable.run();
+        } catch (Exception e) {
+            if (ExceptionUtils.causedByInterrupt(e)) {
+                Thread.currentThread().interrupt();
+            }
+            throw HyracksDataException.create(e);
+        }
     }
 }

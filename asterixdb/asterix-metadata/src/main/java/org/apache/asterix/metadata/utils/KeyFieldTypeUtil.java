@@ -18,10 +18,13 @@
  */
 package org.apache.asterix.metadata.utils;
 
+import static org.apache.asterix.om.types.AOrderedListType.FULL_OPEN_ORDEREDLIST_TYPE;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+import org.apache.asterix.common.config.DatasetConfig;
 import org.apache.asterix.common.config.DatasetConfig.DatasetType;
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.common.exceptions.ErrorCode;
@@ -36,8 +39,8 @@ import org.apache.asterix.om.types.AbstractCollectionType;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.utils.NonTaggedFormatUtil;
 import org.apache.asterix.om.utils.RecordUtil;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.api.exceptions.SourceLocation;
 import org.apache.hyracks.util.LogRedactionUtil;
@@ -104,6 +107,7 @@ public class KeyFieldTypeUtil {
      *
      * @deprecated use {@link #getKeyProjectType(ARecordType, List, SourceLocation)}
      */
+    @Deprecated
     public static List<IAType> getKeyTypes(ARecordType recordType, ARecordType metaRecordType, List<List<String>> keys,
             List<Integer> keySourceIndicators) throws AlgebricksException {
         List<IAType> keyTypes = new ArrayList<>();
@@ -130,6 +134,18 @@ public class KeyFieldTypeUtil {
      */
     public static List<Pair<IAType, Boolean>> getBTreeIndexKeyTypes(Index index, ARecordType recordType,
             ARecordType metaRecordType) throws AlgebricksException {
+        if (index.getIndexType() == DatasetConfig.IndexType.SAMPLE) {
+            Index.SampleIndexDetails indexDetails = (Index.SampleIndexDetails) index.getIndexDetails();
+            List<Integer> keySourceIndicators = indexDetails.getKeyFieldSourceIndicators();
+            List<Pair<IAType, Boolean>> indexKeyTypes = new ArrayList<>();
+            for (int i = 0; i < indexDetails.getKeyFieldNames().size(); i++) {
+                Pair<IAType, Boolean> keyPairType = Index.getNonNullableOpenFieldType(index,
+                        indexDetails.getKeyFieldTypes().get(i), indexDetails.getKeyFieldNames().get(i),
+                        chooseSource(keySourceIndicators, i, recordType, metaRecordType));
+                indexKeyTypes.add(keyPairType);
+            }
+            return indexKeyTypes;
+        }
         Index.ValueIndexDetails indexDetails = (Index.ValueIndexDetails) index.getIndexDetails();
         List<Integer> keySourceIndicators = indexDetails.getKeyFieldSourceIndicators();
         List<Pair<IAType, Boolean>> indexKeyTypes = new ArrayList<>();
@@ -155,7 +171,26 @@ public class KeyFieldTypeUtil {
                         (e.getSourceIndicator() == Index.RECORD_INDICATOR) ? recordType : metaRecordType;
                 Pair<IAType, Boolean> keyPairType = ArrayIndexUtil.getNonNullableOpenFieldType(e.getTypeList().get(i),
                         e.getUnnestList(), e.getProjectList().get(i), sourceType);
-                indexKeyTypes.add(keyPairType.first);
+                indexKeyTypes.add(keyPairType.getLeft());
+            }
+        }
+        return indexKeyTypes;
+    }
+
+    /**
+     * @see KeyFieldTypeUtil#getBTreeIndexKeyTypes(Index, ARecordType, ARecordType)
+     */
+    public static List<Pair<IAType, Boolean>> getArrayIndexKeyTypes(Index index, ARecordType recordType,
+            ARecordType metaRecordType) throws AlgebricksException {
+        Index.ArrayIndexDetails indexDetails = (Index.ArrayIndexDetails) index.getIndexDetails();
+        List<Pair<IAType, Boolean>> indexKeyTypes = new ArrayList<>();
+        for (Index.ArrayIndexElement e : indexDetails.getElementList()) {
+            for (int i = 0; i < e.getProjectList().size(); i++) {
+                ARecordType sourceType =
+                        (e.getSourceIndicator() == Index.RECORD_INDICATOR) ? recordType : metaRecordType;
+                Pair<IAType, Boolean> keyPairType = ArrayIndexUtil.getNonNullableOpenFieldType(e.getTypeList().get(i),
+                        e.getUnnestList(), e.getProjectList().get(i), sourceType);
+                indexKeyTypes.add(keyPairType);
             }
         }
         return indexKeyTypes;
@@ -181,12 +216,23 @@ public class KeyFieldTypeUtil {
         ARecordType targetRecType = chooseSource(keySourceIndicators, 0, recordType, metaRecordType);
         Pair<IAType, Boolean> keyPairType = Index.getNonNullableOpenFieldType(index,
                 indexDetails.getKeyFieldTypes().get(0), indexDetails.getKeyFieldNames().get(0), targetRecType);
-        IAType keyType = keyPairType.first;
+        IAType keyType = keyPairType.getLeft();
         IAType nestedKeyType = NonTaggedFormatUtil.getNestedSpatialType(keyType.getTypeTag());
         int numKeys = KeyFieldTypeUtil.getNumSecondaryKeys(index, targetRecType, metaRecordType);
         for (int i = 0; i < numKeys; i++) {
             indexKeyTypes.add(nestedKeyType);
         }
+        return indexKeyTypes;
+    }
+
+    public static List<IAType> getVectorIndexKeyTypes(Index index, ARecordType recordType, ARecordType metaRecordType)
+            throws AlgebricksException {
+        Index.VectorIndexDetails indexDetails = (Index.VectorIndexDetails) index.getIndexDetails();
+        // Vector field is always sourced from the record (not the meta record).
+        Pair<IAType, Boolean> keyPairType = Index.getNonNullableOpenFieldType(index, FULL_OPEN_ORDEREDLIST_TYPE,
+                indexDetails.getKeyFieldNames().get(0), recordType);
+        List<IAType> indexKeyTypes = new ArrayList<>();
+        indexKeyTypes.add(keyPairType.getLeft());
         return indexKeyTypes;
     }
 
@@ -221,8 +267,10 @@ public class KeyFieldTypeUtil {
                 Pair<IAType, Boolean> keyPairType = Index.getNonNullableOpenFieldType(index,
                         indexDetails.getKeyFieldTypes().get(0), indexDetails.getKeyFieldNames().get(0),
                         chooseSource(keySourceIndicators, 0, recordType, metaRecordType));
-                IAType keyType = keyPairType.first;
+                IAType keyType = keyPairType.getLeft();
                 return NonTaggedFormatUtil.getNumDimensions(keyType.getTypeTag()) * 2;
+            case VTREE:
+                return ((Index.VectorIndexDetails) index.getIndexDetails()).getKeyFieldNames().size();
             default:
                 throw new CompilationException(ErrorCode.COMPILATION_UNKNOWN_INDEX_TYPE, index.getIndexType());
         }

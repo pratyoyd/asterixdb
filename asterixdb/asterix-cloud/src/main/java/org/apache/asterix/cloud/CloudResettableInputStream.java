@@ -24,6 +24,7 @@ import java.nio.ByteBuffer;
 
 import org.apache.asterix.cloud.clients.ICloudBufferedWriter;
 import org.apache.asterix.cloud.clients.ICloudWriter;
+import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.cloud.io.request.ICloudBeforeRetryRequest;
 import org.apache.hyracks.cloud.io.request.ICloudRequest;
@@ -70,11 +71,6 @@ public class CloudResettableInputStream extends InputStream implements ICloudWri
      */
 
     @Override
-    public int write(ByteBuffer header, ByteBuffer page) throws HyracksDataException {
-        return write(header) + write(page);
-    }
-
-    @Override
     public int write(ByteBuffer page) throws HyracksDataException {
         open();
         return write(page.array(), page.position(), page.remaining());
@@ -82,6 +78,7 @@ public class CloudResettableInputStream extends InputStream implements ICloudWri
 
     @Override
     public void write(int b) throws HyracksDataException {
+        open();
         if (writeBuffer.remaining() == 0) {
             uploadAndWait();
         }
@@ -158,7 +155,7 @@ public class CloudResettableInputStream extends InputStream implements ICloudWri
                     CloudRetryableRequestUtil.runWithNoRetryOnInterruption(request, retry);
                 } catch (Exception e) {
                     LOGGER.error(e);
-                    throw HyracksDataException.create(e);
+                    throw HyracksDataException.create(ErrorCode.FAILED_IO_OPERATION, e);
                 }
             }
             bufferedWriter.finish();
@@ -190,7 +187,7 @@ public class CloudResettableInputStream extends InputStream implements ICloudWri
         try {
             close();
         } catch (IOException e) {
-            throw HyracksDataException.create(e);
+            throw HyracksDataException.create(ErrorCode.FAILED_IO_OPERATION, e);
         }
     }
 
@@ -203,7 +200,7 @@ public class CloudResettableInputStream extends InputStream implements ICloudWri
             CloudRetryableRequestUtil.runWithNoRetryOnInterruption(request, retry);
         } catch (Exception e) {
             LOGGER.error(e);
-            throw HyracksDataException.create(e);
+            throw HyracksDataException.create(ErrorCode.FAILED_IO_OPERATION, e);
         }
 
         writeBuffer.clear();

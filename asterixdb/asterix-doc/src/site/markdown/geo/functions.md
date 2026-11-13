@@ -333,6 +333,45 @@ There are primitive functions that take as input geometry/es and return a primit
   
         0.30901547439030225
 
+### st_distance_sphere ###
+* Return the minimum distance in meters between two point geometries using spherical (haversine) calculation.
+
+* Example:
+  * Command:
+
+        st_distance_sphere(st_geom_from_text('POINT(0 0)'), st_geom_from_text('POINT(1 0)'));
+  * Result:
+
+        111195.0662708989
+
+### st_distance_spheroid ###
+* Return the minimum geodesic distance in meters between two geometries using the WGS84 ellipsoid.
+* If an input geometry has a known SRID that is not `4326`, the function emits a warning and still computes distance using WGS84.
+
+* Example:
+  * Command:
+
+        st_distance_spheroid(st_geom_from_text('POINT(-73.985428 40.748817)', 4326), st_geom_from_text('POINT(-0.118092 51.509865)', 4326));
+  * Result:
+
+        5581421.87552557
+
+### st_transform ###
+* Transform geometry coordinates from a source SRID to a target SRID.
+* Syntax: `st_transform(geometry, source_srid, target_srid)`
+* `source_srid` and `target_srid` must be integer constants.
+* CRS definitions are resolved from metadata. Register them with:
+  * `CREATE COORDINATE REFERENCE SYSTEM ...`
+  * `LOAD COORDINATE REFERENCE SYSTEM FROM PATH ...`
+
+* Example:
+  * Command:
+
+        round(st_x(st_transform(st_geom_from_text('POINT(-0.118092 51.509865)', 4326), 4326, 3857)));
+  * Result:
+
+        -13146
+
 ## <a id="predicate">Spatial Predicate</a>
 Spatial predicate functions test for a relationship between two geometries and return a Boolean value (true/false).
 
@@ -482,6 +521,42 @@ Spatial predicate functions test for a relationship between two geometries and r
 ### st_within ###
 * Return true if the geometry A is completely inside geometry B.
 
+### st_is_valid ###
+* Return TRUE if the geometry is topologically valid.
+
+* Example:
+  * Command:
+
+        st_is_valid(st_geom_from_text("POLYGON((0 0, 1 1, 1 0, 0 1, 0 0))"));
+  * Result:
+
+        false
+* Example:
+  * Command:
+
+        st_is_valid(st_geom_from_text("POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))"));
+  * Result:
+
+        true
+
+### st_dwithin ###
+* Return TRUE if the two geometries are within the specified distance of one another.
+
+* Example:
+  * Command:
+
+        st_dwithin(st_geom_from_text('POINT(0 0)'), st_geom_from_text('POINT(1 0)'), 2.0);
+  * Result:
+
+        true
+* Example:
+  * Command:
+
+        st_dwithin(st_geom_from_text('POINT(0 0)'), st_geom_from_text('POINT(5 0)'), 2.0);
+  * Result:
+
+        false
+
 ## <a id="analysis">Spatial Analysis</a>
 Spatial analysis functions take as input one or more geometries and return a geometry as output.
 
@@ -616,6 +691,61 @@ Spatial analysis functions take as input one or more geometries and return a geo
   * Result:
   
         {"type":"MultiLineString","coordinates":[[[0,2],[1,2],[2,2],[1,1]],[[5,2],[4,2],[3,3],[4,4],[5,5],[6,6]]],"crs":null}
+
+### st_convex_hull ###
+* Return a geometry that represents the convex hull of the input geometry.
+
+* Example:
+  * Command:
+
+        st_convex_hull(st_geom_from_text('MULTIPOINT(0 0, 1 0, 1 1, 0 1, 0.5 0.5)'));
+  * Result:
+
+        {"type":"Polygon","coordinates":[[[0,0],[0,1],[1,1],[1,0],[0,0]]]}
+
+### st_centroid ###
+* Return a point geometry representing the geometric center of the input geometry.
+
+* Example:
+  * Command:
+
+        st_centroid(st_geom_from_text('POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))'));
+  * Result:
+
+        {"type":"Point","coordinates":[5,5]}
+
+### st_reverse ###
+* Return the geometry with vertex order reversed.
+
+* Example:
+  * Command:
+
+        st_reverse(st_geom_from_text('LINESTRING(0 0, 1 1, 2 2)'));
+  * Result:
+
+        {"type":"LineString","coordinates":[[2,2],[1,1],[0,0]]}
+
+### st_flip_coordinates ###
+* Return the geometry with X and Y coordinates swapped.
+
+* Example:
+  * Command:
+
+        st_flip_coordinates(st_geom_from_text('POINT(1 2)'));
+  * Result:
+
+        {"type":"Point","coordinates":[2,1]}
+
+### st_buffer ###
+* Return a geometry that represents all points whose distance from the input geometry is less than or equal to the specified distance.
+
+* Example:
+  * Command:
+
+        st_area(st_buffer(st_geom_from_text('POINT(0 0)'), 1.0)) > 3.0;
+  * Result:
+
+        true
 
 ### st_polygonize ###
 * Aggregate. Creates a GeometryCollection containing possible polygons formed from the constituent linework of a set of geometries.

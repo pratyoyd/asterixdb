@@ -43,7 +43,9 @@ import org.apache.asterix.lang.common.statement.CopyToStatement;
 import org.apache.asterix.lang.common.statement.FunctionDecl;
 import org.apache.asterix.lang.common.statement.InsertStatement;
 import org.apache.asterix.lang.common.statement.Query;
+import org.apache.asterix.lang.common.statement.UpdateStatement;
 import org.apache.asterix.lang.common.struct.QuantifiedPair;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.HavingClause;
@@ -57,6 +59,7 @@ import org.apache.asterix.lang.sqlpp.clause.SelectRegular;
 import org.apache.asterix.lang.sqlpp.clause.SelectSetOperation;
 import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.CaseExpression;
+import org.apache.asterix.lang.sqlpp.expression.ChangeExpression;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.util.SqlppVariableUtil;
@@ -109,6 +112,11 @@ public final class CheckDatasetOnlyResolutionVisitor
     @Override
     public Boolean visit(CopyToStatement stmtCopy, VariableExpr arg) throws CompilationException {
         return contains(stmtCopy.getQuery(), arg);
+    }
+
+    @Override
+    public Boolean visit(UpdateStatement updateStmt, VariableExpr arg) throws CompilationException {
+        return contains(updateStmt.getQuery(), arg);
     }
 
     @Override
@@ -207,6 +215,11 @@ public final class CheckDatasetOnlyResolutionVisitor
     }
 
     @Override
+    public Boolean visit(ClusterbyClause cc, VariableExpr arg) throws CompilationException {
+        return false;
+    }
+
+    @Override
     public Boolean visit(LimitClause lc, VariableExpr arg) throws CompilationException {
         return false;
     }
@@ -258,6 +271,11 @@ public final class CheckDatasetOnlyResolutionVisitor
 
     @Override
     public Boolean visit(CaseExpression caseExpr, VariableExpr arg) throws CompilationException {
+        return false;
+    }
+
+    @Override
+    public Boolean visit(ChangeExpression changeExpr, VariableExpr arg) throws CompilationException {
         return false;
     }
 

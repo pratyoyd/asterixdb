@@ -20,11 +20,15 @@ package org.apache.hyracks.control.common.config;
 
 import java.net.MalformedURLException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hyracks.api.config.IOptionType;
 import org.apache.hyracks.util.StorageUtil;
 import org.apache.logging.log4j.Level;
@@ -32,6 +36,9 @@ import org.apache.logging.log4j.Level;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import it.unimi.dsi.fastutil.ints.IntArrayList;
+import it.unimi.dsi.fastutil.ints.IntList;
 
 public class OptionTypes {
 
@@ -57,7 +64,10 @@ public class OptionTypes {
 
         @Override
         public Short parse(JsonNode node) {
-            return node.isNull() ? null : validateShort(node.asInt());
+            if (node.isNull()) {
+                return null;
+            }
+            return node.isTextual() ? parse(node.asText()) : validateShort((int) integralValue(node, Integer.class));
         }
 
         @Override
@@ -66,36 +76,16 @@ public class OptionTypes {
         }
 
         @Override
-        public void serializeJSONField(String fieldName, Object value, ObjectNode node) {
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
             node.put(fieldName, (short) value);
         }
     };
 
     public static final IOptionType<Integer> INTEGER = new IntegerOptionType();
 
-    public static final IOptionType<Double> DOUBLE = new IOptionType<Double>() {
-        @Override
-        public Double parse(String s) {
-            return Double.parseDouble(s);
-        }
+    public static final IOptionType<Double> DOUBLE = new DoubleOptionType();
 
-        @Override
-        public Double parse(JsonNode node) {
-            return node.isNull() ? null : node.asDouble();
-        }
-
-        @Override
-        public Class<Double> targetType() {
-            return Double.class;
-        }
-
-        @Override
-        public void serializeJSONField(String fieldName, Object value, ObjectNode node) {
-            node.put(fieldName, (double) value);
-        }
-    };
-
-    public static final IOptionType<String> STRING = new IOptionType<String>() {
+    public static final IOptionType<String> STRING = new IOptionType<>() {
         @Override
         public String parse(String s) {
             return s;
@@ -112,22 +102,40 @@ public class OptionTypes {
         }
 
         @Override
-        public void serializeJSONField(String fieldName, Object value, ObjectNode node) {
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
             node.put(fieldName, (String) value);
         }
     };
 
     public static final IOptionType<Long> LONG = new LongOptionType();
 
+    public static final IOptionType<Long> POSITIVE_LONG = new RangedLongOptionType(1, Long.MAX_VALUE);
+
     public static final IOptionType<Boolean> BOOLEAN = new IOptionType<Boolean>() {
         @Override
         public Boolean parse(String s) {
-            return Boolean.parseBoolean(s);
+            // Boolean.parseBoolean would read any typo as false, silently disabling an option that defaults to true
+            String value = s == null ? null : s.trim();
+            if ("true".equalsIgnoreCase(value)) {
+                return true;
+            } else if ("false".equalsIgnoreCase(value)) {
+                return false;
+            }
+            throw new IllegalArgumentException("boolean value must be true or false, but was " + s);
         }
 
         @Override
         public Boolean parse(JsonNode node) {
-            return node.isNull() ? null : node.asBoolean();
+            if (node.isNull()) {
+                return null;
+            }
+            if (node.isBoolean()) {
+                return node.booleanValue();
+            }
+            if (node.isTextual()) {
+                return parse(node.asText());
+            }
+            throw new IllegalArgumentException("boolean value must be true or false, but was " + node);
         }
 
         @Override
@@ -136,7 +144,7 @@ public class OptionTypes {
         }
 
         @Override
-        public void serializeJSONField(String fieldName, Object value, ObjectNode node) {
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
             node.put(fieldName, (boolean) value);
         }
     };
@@ -165,7 +173,7 @@ public class OptionTypes {
         }
 
         @Override
-        public String serializeToJSON(Object value) {
+        public String serializeToJSONUnsafe(Object value) {
             return value == null ? null : ((Level) value).name();
         }
 
@@ -175,8 +183,8 @@ public class OptionTypes {
         }
 
         @Override
-        public void serializeJSONField(String fieldName, Object value, ObjectNode node) {
-            node.put(fieldName, serializeToJSON(value));
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
+            node.put(fieldName, serializeToJSONUnsafe(value));
         }
     };
 
@@ -211,7 +219,7 @@ public class OptionTypes {
         }
 
         @Override
-        public void serializeJSONField(String fieldName, Object value, ObjectNode node) {
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
             if (value == null) {
                 node.putNull(fieldName);
             } else {
@@ -221,7 +229,103 @@ public class OptionTypes {
         }
     };
 
-    public static final IOptionType<java.net.URL> URL = new IOptionType<java.net.URL>() {
+    public static final IOptionType<int[]> INT_ARRAY = new IOptionType<>() {
+        @Override
+        public int[] parse(String s) {
+            if (s == null) {
+                return null;
+            }
+            return Stream.of(StringUtils.splitByWholeSeparator(s, ","))
+                    .mapToInt(token -> Integer.parseInt(token.trim())).toArray();
+        }
+
+        @Override
+        public int[] parse(JsonNode node) {
+            if (node.isNull()) {
+                return null;
+            }
+            IntList strings = new IntArrayList();
+            if (node instanceof ArrayNode) {
+                node.elements().forEachRemaining(n -> strings.add(
+                        n.isTextual() ? Integer.parseInt(n.asText().trim()) : (int) integralValue(n, Integer.class)));
+                return strings.toIntArray();
+            } else {
+                return parse(node.asText());
+            }
+        }
+
+        @Override
+        public Class<int[]> targetType() {
+            return int[].class;
+        }
+
+        @Override
+        public String serializeToIni(Object value) {
+            return StringUtils.join((int[]) value, ',');
+        }
+
+        @Override
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
+            if (value == null) {
+                node.putNull(fieldName);
+            } else {
+                ArrayNode array = node.putArray(fieldName);
+                IntStream.of((int[]) value).forEachOrdered(array::add);
+            }
+        }
+    };
+
+    public static final IOptionType<long[]> LONG_BYTE_UNIT_ARRAY = new IOptionType<>() {
+        @Override
+        public long[] parse(String s) {
+            if (s == null) {
+                return null;
+            }
+            return Stream.of(StringUtils.splitByWholeSeparator(s, ","))
+                    .mapToLong(token -> StorageUtil.getByteValue(token.trim())).toArray();
+        }
+
+        @Override
+        public long[] parse(JsonNode node) {
+            if (node.isNull()) {
+                return null;
+            }
+            if (node instanceof ArrayNode) {
+                long[] result = new long[node.size()];
+                int i = 0;
+                for (JsonNode n : node) {
+                    result[i++] = n.isTextual() ? StorageUtil.getByteValue(n.asText()) : integralValue(n, Long.class);
+                }
+                return result;
+            } else {
+                return parse(node.asText());
+            }
+        }
+
+        @Override
+        public Class<long[]> targetType() {
+            return long[].class;
+        }
+
+        @Override
+        public String serializeToIni(Object value) {
+            return value == null ? null
+                    : StringUtils.join(
+                            Arrays.stream((long[]) value).mapToObj(StorageUtil::toHumanReadableSize).toArray(), ',');
+        }
+
+        @Override
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
+            if (value == null) {
+                node.putNull(fieldName);
+            } else {
+                ArrayNode array = node.putArray(fieldName);
+                LongStream.of((long[]) value).forEachOrdered(array::add);
+            }
+        }
+    };
+
+    public static final IOptionType<java.net.URL> URL = new IOptionType<>() {
         @Override
         public java.net.URL parse(String s) {
             try {
@@ -242,7 +346,7 @@ public class OptionTypes {
         }
 
         @Override
-        public void serializeJSONField(String fieldName, Object value, ObjectNode node) {
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
             node.put(fieldName, value == null ? null : String.valueOf(value));
         }
     };
@@ -260,6 +364,34 @@ public class OptionTypes {
         return new RangedIntegerOptionType(minValueInclusive, maxValueInclusive);
     }
 
+    public static IOptionType<Double> getRangedDoubleType(final double minValueInclusive,
+            final double maxValueInclusive) {
+        return new RangedDoubleOptionType(minValueInclusive, maxValueInclusive);
+    }
+
+    public static IOptionType<Long> getRangedLongType(final long minValueInclusive, final long maxValueInclusive) {
+        return new RangedLongOptionType(minValueInclusive, maxValueInclusive);
+    }
+
+    public static IOptionType<Integer> getRangedIntegerByteUnit(final int minValueInclusive,
+            final int maxValueInclusive) {
+        return new IntegerByteUnit(minValueInclusive, maxValueInclusive);
+    }
+
+    /**
+     * Reads an integral JSON number exactly. Jackson's asInt()/asLong() would coerce text to 0, truncate
+     * fractions and wrap values outside the target range, so a stored value could come back as something that
+     * was never written.
+     */
+    private static long integralValue(JsonNode node, Class<? extends Number> target) {
+        if (!node.isIntegralNumber()
+                || (target == Integer.class ? !node.canConvertToInt() : !node.canConvertToLong())) {
+            throw new IllegalArgumentException("expected an integral value fitting a "
+                    + target.getSimpleName().toLowerCase() + ", but was " + node);
+        }
+        return node.longValue();
+    }
+
     public static class IntegerOptionType implements IOptionType<Integer> {
         @Override
         public Integer parse(String s) {
@@ -268,7 +400,10 @@ public class OptionTypes {
 
         @Override
         public Integer parse(JsonNode node) {
-            return node.isNull() ? null : node.asInt();
+            if (node.isNull()) {
+                return null;
+            }
+            return node.isTextual() ? parse(node.asText()) : (int) integralValue(node, Integer.class);
         }
 
         @Override
@@ -277,7 +412,7 @@ public class OptionTypes {
         }
 
         @Override
-        public void serializeJSONField(String fieldName, Object value, ObjectNode node) {
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
             node.put(fieldName, (int) value);
         }
     }
@@ -295,6 +430,15 @@ public class OptionTypes {
         public Integer parse(String value) {
             int intValue = super.parse(value);
             rangeCheck(intValue);
+            return intValue;
+        }
+
+        @Override
+        public Integer parse(JsonNode node) {
+            Integer intValue = super.parse(node);
+            if (intValue != null) {
+                rangeCheck(intValue);
+            }
             return intValue;
         }
 
@@ -362,6 +506,15 @@ public class OptionTypes {
             return longValue;
         }
 
+        @Override
+        public Long parse(JsonNode node) {
+            Long longValue = super.parse(node);
+            if (longValue != null) {
+                rangeCheck(longValue);
+            }
+            return longValue;
+        }
+
         void rangeCheck(long longValue) {
             if (longValue < minValue || longValue > maxValue) {
                 if (maxValue == Long.MAX_VALUE) {
@@ -418,7 +571,10 @@ public class OptionTypes {
 
         @Override
         public Long parse(JsonNode node) {
-            return node.isNull() ? null : node.asLong();
+            if (node.isNull()) {
+                return null;
+            }
+            return node.isTextual() ? parse(node.asText()) : integralValue(node, Long.class);
         }
 
         @Override
@@ -427,8 +583,90 @@ public class OptionTypes {
         }
 
         @Override
-        public void serializeJSONField(String fieldName, Object value, ObjectNode node) {
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
             node.put(fieldName, (long) value);
+        }
+    }
+
+    private static class DoubleOptionType implements IOptionType<Double> {
+        @Override
+        public Double parse(String s) {
+            return requireFinite(Double.parseDouble(s));
+        }
+
+        @Override
+        public Double parse(JsonNode node) {
+            if (node.isNull()) {
+                return null;
+            }
+            if (node.isTextual()) {
+                return parse(node.asText());
+            }
+            if (!node.isNumber()) {
+                throw new IllegalArgumentException("expected a numeric value, but was " + node);
+            }
+            return requireFinite(node.doubleValue());
+        }
+
+        private static double requireFinite(double value) {
+            if (!Double.isFinite(value)) {
+                throw new IllegalArgumentException("double value must be finite, but was " + value);
+            }
+            return value;
+        }
+
+        @Override
+        public Class<Double> targetType() {
+            return Double.class;
+        }
+
+        @Override
+        public void serializeJSONFieldUnsafe(String fieldName, Object value, ObjectNode node) {
+            node.put(fieldName, (double) value);
+        }
+    }
+
+    private static class RangedDoubleOptionType extends DoubleOptionType {
+        private final double minValue;
+        private final double maxValue;
+
+        RangedDoubleOptionType(double minValue, double maxValue) {
+            this.minValue = minValue;
+            this.maxValue = maxValue;
+        }
+
+        @Override
+        public Double parse(String value) {
+            double doubleValue = super.parse(value);
+            rangeCheck(doubleValue);
+            return doubleValue;
+        }
+
+        @Override
+        public Double parse(JsonNode node) {
+            Double doubleValue = super.parse(node);
+            if (doubleValue != null) {
+                rangeCheck(doubleValue);
+            }
+            return doubleValue;
+        }
+
+        void rangeCheck(double doubleValue) {
+            if (Double.isNaN(doubleValue)) {
+                throw new IllegalArgumentException("double value cannot be NaN");
+            }
+            if (doubleValue < minValue || doubleValue > maxValue) {
+                if (maxValue == Double.MAX_VALUE) {
+                    if (minValue == 0.0) {
+                        throw new IllegalArgumentException("double value must not be negative, but was " + doubleValue);
+                    } else if (minValue == Double.MIN_VALUE) {
+                        throw new IllegalArgumentException(
+                                "double value must be greater than " + Double.MIN_VALUE + ", but was " + doubleValue);
+                    }
+                }
+                throw new IllegalArgumentException("double value must be between " + minValue + "-" + maxValue
+                        + " (inclusive), but was " + doubleValue);
+            }
         }
     }
 

@@ -40,8 +40,19 @@ public abstract class AbstractLSMWithBuddyDiskComponent extends AbstractLSMWithB
 
     @Override
     public void markAsValid(boolean persist, IPageWriteFailureCallback callback) throws HyracksDataException {
-        super.markAsValid(persist, callback);
-        ComponentUtils.markAsValid(getBuddyIndex(), persist, callback);
+        try {
+            super.markAsValid(persist, callback);
+            ComponentUtils.markAsValid(getBuddyIndex(), persist, callback);
+        } catch (HyracksDataException ex) {
+            returnPages();
+            throw ex;
+        }
+    }
+
+    @Override
+    public void returnPages() {
+        getBuddyIndex().getPageManager().returnAllPages();
+        super.returnPages();
     }
 
     @Override
@@ -80,10 +91,10 @@ public abstract class AbstractLSMWithBuddyDiskComponent extends AbstractLSMWithB
     @Override
     protected IChainedComponentBulkLoader createIndexBulkLoader(float fillFactor, boolean verifyInput,
             long numElementsHint, boolean checkIfEmptyIndex, IPageWriteCallback callback) throws HyracksDataException {
-        IIndexBulkLoader indexBulkLoader =
-                getIndex().createBulkLoader(fillFactor, verifyInput, numElementsHint, checkIfEmptyIndex, callback);
-        IIndexBulkLoader buddyBulkLoader =
-                getBuddyIndex().createBulkLoader(fillFactor, verifyInput, numElementsHint, checkIfEmptyIndex, callback);
+        IIndexBulkLoader indexBulkLoader = getIndex().createBulkLoader(fillFactor, verifyInput, numElementsHint,
+                checkIfEmptyIndex, getSampler(), callback);
+        IIndexBulkLoader buddyBulkLoader = getBuddyIndex().createBulkLoader(fillFactor, verifyInput, numElementsHint,
+                checkIfEmptyIndex, getSampler(), callback);
         return new IndexWithBuddyBulkLoader(indexBulkLoader, buddyBulkLoader);
     }
 

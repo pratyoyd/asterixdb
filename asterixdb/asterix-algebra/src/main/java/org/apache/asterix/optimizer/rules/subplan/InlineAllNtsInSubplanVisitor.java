@@ -39,8 +39,8 @@ import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.optimizer.rules.util.EquivalenceClassUtils;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -173,12 +173,12 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
         // Maps group by key variables if the corresponding expressions are
         // VariableReferenceExpressions.
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> keyVarExprRef : op.getGroupByList()) {
-            ILogicalExpression expr = keyVarExprRef.second.getValue();
+            ILogicalExpression expr = keyVarExprRef.getRight().getValue();
             if (expr.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                 VariableReferenceExpression varExpr = (VariableReferenceExpression) expr;
                 LogicalVariable sourceVar = varExpr.getVariableReference();
-                updateInputToOutputVarMapping(sourceVar, keyVarExprRef.first, false);
-                groupKeyVars.add(keyVarExprRef.first);
+                updateInputToOutputVarMapping(sourceVar, keyVarExprRef.getLeft(), false);
+                groupKeyVars.add(keyVarExprRef.getLeft());
             }
         }
 
@@ -189,7 +189,7 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
                 LogicalVariable newVar = context.newVar();
                 VariableReferenceExpression keyVarRef = new VariableReferenceExpression(keyVar);
                 keyVarRef.setSourceLocation(op.getSourceLocation());
-                op.getGroupByList().add(new Pair<>(newVar, new MutableObject<>(keyVarRef)));
+                op.getGroupByList().add(Pair.of(newVar, new MutableObject<>(keyVarRef)));
                 addedGroupKeyMapping.put(keyVar, newVar);
             }
         }
@@ -197,7 +197,7 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
         // Updates decor list.
         Iterator<Pair<LogicalVariable, Mutable<ILogicalExpression>>> decorExprIter = op.getDecorList().iterator();
         while (decorExprIter.hasNext()) {
-            ILogicalExpression expr = decorExprIter.next().second.getValue();
+            ILogicalExpression expr = decorExprIter.next().getRight().getValue();
             if (expr.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
                 VariableReferenceExpression varExpr = (VariableReferenceExpression) expr;
                 if (correlatedKeyVars.contains(varExpr.getVariableReference())) {
@@ -244,34 +244,34 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
         }
 
         // Get live variables before limit (or running aggregate) operator.
-        Set<LogicalVariable> inputLiveVars = new HashSet<LogicalVariable>();
+        Set<LogicalVariable> inputLiveVars = new HashSet<>();
         VariableUtilities.getSubplanLocalLiveVariables(op.getInputs().get(0).getValue(), inputLiveVars);
 
         // Creates a record construction assign operator.
         Pair<ILogicalOperator, LogicalVariable> assignOpAndRecordVar =
                 createRecordConstructorAssignOp(inputLiveVars, op.getSourceLocation());
-        ILogicalOperator assignOp = assignOpAndRecordVar.first;
-        LogicalVariable recordVar = assignOpAndRecordVar.second;
+        ILogicalOperator assignOp = assignOpAndRecordVar.getLeft();
+        LogicalVariable recordVar = assignOpAndRecordVar.getRight();
         ILogicalOperator inputOp = op.getInputs().get(0).getValue();
         assignOp.getInputs().add(new MutableObject<>(inputOp));
 
         // Rewrites limit (or running aggregate) to a group-by with limit (or running aggregate) as its nested operator.
-        Pair<ILogicalOperator, LogicalVariable> gbyOpAndAggVar =
+        Pair<GroupByOperator, LogicalVariable> gbyOpAndAggVar =
                 wrapLimitOrRunningAggregateInGroupBy(op, recordVar, inputLiveVars);
-        ILogicalOperator gbyOp = gbyOpAndAggVar.first;
-        LogicalVariable aggVar = gbyOpAndAggVar.second;
+        GroupByOperator gbyOp = gbyOpAndAggVar.getLeft();
+        LogicalVariable aggVar = gbyOpAndAggVar.getRight();
         gbyOp.getInputs().add(new MutableObject<>(assignOp));
 
         // Adds an unnest operators on top of the group-by operator.
         Pair<ILogicalOperator, LogicalVariable> unnestOpAndUnnestVar =
                 createUnnestForAggregatedList(aggVar, op.getSourceLocation());
-        ILogicalOperator unnestOp = unnestOpAndUnnestVar.first;
-        LogicalVariable unnestVar = unnestOpAndUnnestVar.second;
+        ILogicalOperator unnestOp = unnestOpAndUnnestVar.getLeft();
+        LogicalVariable unnestVar = unnestOpAndUnnestVar.getRight();
         unnestOp.getInputs().add(new MutableObject<>(gbyOp));
 
         // Adds field accesses to recover input live variables.
         ILogicalOperator fieldAccessAssignOp =
-                createFieldAccessAssignOperator(unnestVar, inputLiveVars, op.getSourceLocation());
+                createFieldAccessAssignOperator(unnestVar, inputLiveVars, op.getSourceLocation(), gbyOp);
         fieldAccessAssignOp.getInputs().add(new MutableObject<>(unnestOp));
 
         OperatorManipulationUtil.computeTypeEnvironmentBottomUp(fieldAccessAssignOp, context);
@@ -298,10 +298,10 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
         Mutable<ILogicalExpression> recordExprRef = new MutableObject<ILogicalExpression>(openRecConstr);
         AssignOperator assignOp = new AssignOperator(recordVar, recordExprRef);
         assignOp.setSourceLocation(sourceLoc);
-        return new Pair<>(assignOp, recordVar);
+        return Pair.of(assignOp, recordVar);
     }
 
-    private Pair<ILogicalOperator, LogicalVariable> wrapLimitOrRunningAggregateInGroupBy(ILogicalOperator op,
+    private Pair<GroupByOperator, LogicalVariable> wrapLimitOrRunningAggregateInGroupBy(ILogicalOperator op,
             LogicalVariable recordVar, Set<LogicalVariable> inputLiveVars) throws AlgebricksException {
         SourceLocation sourceLoc = op.getSourceLocation();
         GroupByOperator gbyOp = new GroupByOperator();
@@ -315,8 +315,8 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
             LogicalVariable newVar = context.newVar();
             VariableReferenceExpression keyVarRef = new VariableReferenceExpression(keyVar);
             keyVarRef.setSourceLocation(sourceLoc);
-            gbyOp.getGroupByList().add(new Pair<>(newVar, new MutableObject<>(keyVarRef)));
-            keyVarNewVarPairs.add(new Pair<>(keyVar, newVar));
+            gbyOp.getGroupByList().add(Pair.of(newVar, new MutableObject<>(keyVarRef)));
+            keyVarNewVarPairs.add(Pair.of(keyVar, newVar));
         }
 
         // Creates an aggregate operator doing LISTIFY, as the root of the
@@ -364,9 +364,9 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
 
         // Updates variable mapping for ancestor operators.
         for (Pair<LogicalVariable, LogicalVariable> keyVarNewVar : keyVarNewVarPairs) {
-            updateInputToOutputVarMapping(keyVarNewVar.first, keyVarNewVar.second, false);
+            updateInputToOutputVarMapping(keyVarNewVar.getLeft(), keyVarNewVar.getRight(), false);
         }
-        return new Pair<>(gbyOp, aggVar);
+        return Pair.of(gbyOp, aggVar);
     }
 
     private Pair<ILogicalOperator, LogicalVariable> createUnnestForAggregatedList(LogicalVariable aggVar,
@@ -383,11 +383,11 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
         unnestExpr.setSourceLocation(sourceLoc);
         UnnestOperator unnestOp = new UnnestOperator(unnestVar, new MutableObject<>(unnestExpr));
         unnestOp.setSourceLocation(sourceLoc);
-        return new Pair<>(unnestOp, unnestVar);
+        return Pair.of(unnestOp, unnestVar);
     }
 
     private ILogicalOperator createFieldAccessAssignOperator(LogicalVariable recordVar,
-            Set<LogicalVariable> inputLiveVars, SourceLocation sourceLoc) {
+            Set<LogicalVariable> inputLiveVars, SourceLocation sourceLoc, GroupByOperator gbyOp) {
         List<LogicalVariable> fieldAccessVars = new ArrayList<>();
         List<Mutable<ILogicalExpression>> fieldAccessExprs = new ArrayList<>();
         // Adds field access by name.
@@ -396,7 +396,21 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
                 // field Var
                 LogicalVariable newVar = context.newVar();
                 fieldAccessVars.add(newVar);
-                // fieldAcess expr
+                List<LogicalVariable> groupByVarList = gbyOp.getGroupByVarList();
+                int i = groupByVarList.indexOf(inputLiveVar);
+                if (i >= 0) {
+                    // this means the input live variable used to be in correlatedKeyVars, but was removed from
+                    // correlatedKeyVars since it was added as a group-by key and re-assigned to a new variable in the
+                    // group-by operator, e.g. GROUP-BY [$1 = $inputLiveVar]. In this case, we can directly access it
+                    // without field access expression via $1.
+                    LogicalVariable gbyOutVar = gbyOp.getGroupByList().get(i).getLeft();
+                    VariableReferenceExpression gbyOutVarRef = new VariableReferenceExpression(gbyOutVar);
+                    gbyOutVarRef.setSourceLocation(sourceLoc);
+                    fieldAccessExprs.add(new MutableObject<>(gbyOutVarRef));
+                    updateInputToOutputVarMapping(gbyOutVar, newVar, false);
+                    continue;
+                }
+                // fieldAccess expr
                 List<Mutable<ILogicalExpression>> argRefs = new ArrayList<>();
                 VariableReferenceExpression recordVarRef = new VariableReferenceExpression(recordVar);
                 recordVarRef.setSourceLocation(sourceLoc);
@@ -477,7 +491,7 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
         for (LogicalVariable keyVar : correlatedKeyVars) {
             VariableReferenceExpression keyVarRef = new VariableReferenceExpression(keyVar);
             keyVarRef.setSourceLocation(op.getSourceLocation());
-            orderExprList.add(new Pair<>(OrderOperator.ASC_ORDER, new MutableObject<>(keyVarRef)));
+            orderExprList.add(Pair.of(OrderOperator.ASC_ORDER, new MutableObject<>(keyVarRef)));
         }
         orderExprList.addAll(op.getOrderExpressions());
 
@@ -609,6 +623,17 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
             }
         }
         return op;
+    }
+
+    @Override
+    public ILogicalOperator visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+        return visitSingleInputOperator(op);
+    }
+
+    @Override
+    public ILogicalOperator visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
+        throw new CompilationException(ErrorCode.COMPILATION_ERROR, op.getSourceLocation(),
+                "ClusterBy operator should have been disqualified for this rewriting!");
     }
 
     @Override
@@ -755,7 +780,7 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
             LogicalVariable newVar = context.newVar();
             VariableReferenceExpression keyVarRef = new VariableReferenceExpression(keyVar);
             keyVarRef.setSourceLocation(sourceLoc);
-            gbyOp.getGroupByList().add(new Pair<>(newVar, new MutableObject<>(keyVarRef)));
+            gbyOp.getGroupByList().add(Pair.of(newVar, new MutableObject<>(keyVarRef)));
             updateInputToOutputVarMapping(keyVar, newVar, false);
         }
 
@@ -818,7 +843,7 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
         }
 
         for (Pair<IOrder, Mutable<ILogicalExpression>> orderExpr : orderingExprs) {
-            orderExpr.second.getValue().substituteVar(oldVar, newVar);
+            orderExpr.getRight().getValue().substituteVar(oldVar, newVar);
         }
 
         if (currentVarToSubplanInputVarMap.containsKey(oldVar)) {
@@ -829,7 +854,7 @@ class InlineAllNtsInSubplanVisitor implements IQueryOperatorVisitor<ILogicalOper
             subplanInputVarToCurrentVarMap.put(oldVar, newVar);
             currentVarToSubplanInputVarMap.put(newVar, oldVar);
         } else {
-            varMapIntroducedByRewriting.add(new Pair<>(oldVar, newVar));
+            varMapIntroducedByRewriting.add(Pair.of(oldVar, newVar));
         }
     }
 

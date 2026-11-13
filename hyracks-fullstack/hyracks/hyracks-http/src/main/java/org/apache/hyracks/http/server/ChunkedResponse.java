@@ -39,6 +39,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.DefaultHttpResponse;
+import io.netty.handler.codec.http.DefaultLastHttpContent;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
@@ -58,12 +59,17 @@ import io.netty.util.ReferenceCountUtil;
  * If flush() is called on the writer and even if it is less than chunkSize, then the initial response will be sent
  * with headers, followed by the buffered bytes as the first chunk.
  * When chunking, an output buffer is allocated only when the previous buffer has been sent
- * If an error occurs after sending the first chunk, the connection will close abruptly.
+ * If an error occurs after sending the first chunk, the error is sent as the last chunk and the connection is then
+ * closed; if the error cannot be sent (no error content, or the channel is no longer writable), the connection is
+ * closed without terminating the response.
+ * If a write to the channel failed, the body on the wire is missing a stretch of what the servlet wrote, so the
+ * response is never terminated as a complete one whatever its status says.
  * Here is a breakdown of the possible cases.
  * 1. smaller than chunkSize, no error -> full response
  * 2. smaller than chunkSize, error -> full response
- * 3. larger than chunkSize, error after header-> close connection. release buffer and release error
+ * 3. larger than chunkSize, error after header -> error as last chunk, then close connection
  * 4. larger than chunkSize, no error. -> header, data, empty response
+ * 5. a failed write -> close connection, or a non-chunked error response where no chunk was sent
  */
 public class ChunkedResponse implements IServletResponse {
 
@@ -124,16 +130,31 @@ public class ChunkedResponse implements IServletResponse {
                 } else {
                     outputStream.close();
                 }
-                if (errorBuf == null && response.status() == HttpResponseStatus.OK) {
+                boolean writeFailed = outputStream.writeFailed();
+                if (errorBuf == null && !writeFailed && response.status() == HttpResponseStatus.OK) {
                     if (!done) {
                         respond(LastHttpContent.EMPTY_LAST_CONTENT);
                     }
                 } else {
                     // There was an error
                     if (headerSent) {
-                        LOGGER.log(Level.WARN, "Error after header write of chunked response");
-                        future = ctx.channel().close().addListener(handler);
+                        //Send the error content without re-sending the header
+                        if (errorBuf != null && errorBuf.refCnt() > 0 && ctx.channel().isWritable()) {
+                            sendErrorContentWithoutHeader();
+                        } else {
+                            // the error cannot be written, so close rather than leave the client waiting
+                            LOGGER.log(Level.WARN,
+                                    "Error after header write of chunked response; cannot send the error content "
+                                            + "(errorBuf={}, writable={}, writeFailed={})",
+                                    errorBuf, ctx.channel().isWritable(), writeFailed);
+                            future = ctx.channel().close().addListener(handler);
+                        }
                     } else {
+                        if (writeFailed && response.status() == HttpResponseStatus.OK) {
+                            // nothing went out, so the failure can still be reported in the status line; a body the
+                            // channel refused must not be answered with a success
+                            response.setStatus(HttpResponseStatus.INTERNAL_SERVER_ERROR);
+                        }
                         // we didn't send anything to the user, we need to send an non-chunked error response
                         fullResponse(response.protocolVersion(), response.status(),
                                 errorBuf == null ? ctx.alloc().buffer(0, 0) : errorBuf, response.headers());
@@ -161,7 +182,11 @@ public class ChunkedResponse implements IServletResponse {
 
     public void beforeFlush() {
         if (!headerSent && response.status() == HttpResponseStatus.OK) {
-            ctx.write(response, ctx.channel().voidPromise());
+            // a snapshot, not the shared response: the write is queued, and a servlet that fails meanwhile would
+            // set an error status on it. Once a chunk is in flight the error goes out as the last chunk, see close()
+            DefaultHttpResponse sentHeader = new DefaultHttpResponse(response.protocolVersion(), response.status());
+            sentHeader.headers().set(response.headers());
+            ctx.write(sentHeader, ctx.channel().voidPromise());
             headerSent = true;
         }
     }
@@ -203,6 +228,16 @@ public class ChunkedResponse implements IServletResponse {
         respond(fullResponse);
         headerSent = true;
         done = true;
+    }
+
+    private void sendErrorContentWithoutHeader() {
+        // the header is already on the wire, so the error goes out as the last chunk, which also ends the response
+        future = ctx.writeAndFlush(new DefaultLastHttpContent(errorBuf)).addListener(handler);
+        // The responsibility of releasing the error buffer is now with the netty pipeline since it is
+        // forwarded within the http content. We must nullify buffer to avoid releasing the buffer twice.
+        errorBuf = null;
+        // the response carries an error in a body that was already partially sent; don't reuse the channel
+        future.addListener(f -> ctx.channel().close());
     }
 
     @Override

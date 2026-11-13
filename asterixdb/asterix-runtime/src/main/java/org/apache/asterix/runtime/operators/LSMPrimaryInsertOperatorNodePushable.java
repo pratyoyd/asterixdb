@@ -32,7 +32,6 @@ import org.apache.asterix.common.messaging.AtomicJobPreparedMessage;
 import org.apache.asterix.common.transactions.ILogMarkerCallback;
 import org.apache.asterix.common.transactions.PrimaryIndexLogMarkerCallback;
 import org.apache.asterix.transaction.management.opcallbacks.LockThenSearchOperationCallback;
-import org.apache.hyracks.api.comm.VSizeFrame;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.dataflow.value.ITuplePartitionerFactory;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
@@ -231,12 +230,10 @@ public class LSMPrimaryInsertOperatorNodePushable extends LSMIndexInsertUpdateDe
     public void open() throws HyracksDataException {
         flushedPartialTuples = false;
         accessor = new FrameTupleAccessor(inputRecDesc);
-        writeBuffer = new VSizeFrame(ctx);
+        writeBuffer = ctx.allocateVSizeFrame();
         try {
             INcApplicationContext appCtx =
                     (INcApplicationContext) ctx.getJobletContext().getServiceContext().getApplicationContext();
-            writer.open();
-            writerOpen = true;
             for (int i = 0; i < partitions.length; i++) {
                 IIndexDataflowHelper indexHelper = indexHelpers[i];
                 indexHelpersOpen[i] = true;
@@ -282,11 +279,13 @@ public class LSMPrimaryInsertOperatorNodePushable extends LSMIndexInsertUpdateDe
                 LSMIndexUtil.checkAndSetFirstLSN((AbstractLSMIndex) index,
                         appCtx.getTransactionSubsystem().getLogManager());
             }
+            writer.open();
+            writerOpen = true;
             createTupleProcessors(sourceLoc);
             keySearchCmp =
                     BTreeUtils.getSearchMultiComparator(((ITreeIndex) indexes[0]).getComparatorFactories(), frameTuple);
             searchPred = new RangePredicate(frameTuple, frameTuple, true, true, keySearchCmp, keySearchCmp, null, null);
-            appender = new FrameTupleAppender(new VSizeFrame(ctx), true);
+            appender = new FrameTupleAppender(ctx.allocateVSizeFrame(), true);
             frameTuple = new FrameTupleReference();
             batchController = TaskUtil.getOrDefault(KEY_BATCH_CONTROLLER, ctx, StandardBatchController.INSTANCE);
         } catch (Throwable e) { // NOSONAR: Re-thrown

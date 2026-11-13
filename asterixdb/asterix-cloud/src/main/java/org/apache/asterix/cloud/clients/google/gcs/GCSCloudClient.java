@@ -19,6 +19,7 @@
 package org.apache.asterix.cloud.clients.google.gcs;
 
 import static org.apache.asterix.cloud.clients.google.gcs.GCSClientConfig.DELETE_BATCH_SIZE;
+import static org.apache.asterix.external.util.google.GCSConstants.DEFAULT_NO_RETRY_ON_THREAD_INTERRUPT_STRATEGY;
 
 import java.io.FilenameFilter;
 import java.io.IOException;
@@ -31,6 +32,8 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 
 import org.apache.asterix.cloud.IWriteBufferProvider;
 import org.apache.asterix.cloud.clients.CloudFile;
@@ -43,10 +46,12 @@ import org.apache.asterix.cloud.clients.profiler.IRequestProfilerLimiter;
 import org.apache.asterix.cloud.clients.profiler.RequestLimiterNoOpProfiler;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.common.exceptions.RuntimeDataException;
+import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.FileReference;
 import org.apache.hyracks.api.util.CleanupUtils;
 import org.apache.hyracks.api.util.IoUtil;
+import org.apache.hyracks.cloud.io.ICloudProperties;
 import org.apache.hyracks.control.nc.io.IOManager;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -55,26 +60,28 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.api.client.http.apache.v2.ApacheHttpTransport;
 import com.google.api.gax.paging.Page;
 import com.google.cloud.BaseServiceException;
 import com.google.cloud.ReadChannel;
+import com.google.cloud.http.HttpTransportOptions;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.HttpStorageOptions;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.Storage.BlobListOption;
 import com.google.cloud.storage.Storage.CopyRequest;
 import com.google.cloud.storage.StorageBatch;
 import com.google.cloud.storage.StorageBatchResult;
-import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.StorageOptions;
 
 public class GCSCloudClient implements ICloudClient {
     private static final Logger LOGGER = LogManager.getLogger();
-    private final Storage gcsClient;
-    private final GCSClientConfig config;
+    private volatile Storage gcsClient;
+    private volatile GCSClientConfig config;
     private final ICloudGuardian guardian;
-    private final IRequestProfilerLimiter profilerLimiter;
+    private final IRequestProfilerLimiter profiler;
     private final int writeBufferSize;
 
     public GCSCloudClient(GCSClientConfig config, Storage gcsClient, ICloudGuardian guardian) {
@@ -85,11 +92,12 @@ public class GCSCloudClient implements ICloudClient {
         long profilerInterval = config.getProfilerLogInterval();
         GCSRequestRateLimiter limiter = new GCSRequestRateLimiter(config);
         if (profilerInterval > 0) {
-            profilerLimiter = new CountRequestProfilerLimiter(profilerInterval, limiter);
+            profiler = new CountRequestProfilerLimiter(profilerInterval, limiter);
         } else {
-            profilerLimiter = new RequestLimiterNoOpProfiler(limiter);
+            profiler = new RequestLimiterNoOpProfiler(limiter);
         }
         guardian.setCloudClient(this);
+        LOGGER.debug("created GCS cloud client with config: {}", config);
     }
 
     public GCSCloudClient(GCSClientConfig config, ICloudGuardian guardian) throws HyracksDataException {
@@ -103,21 +111,20 @@ public class GCSCloudClient implements ICloudClient {
 
     @Override
     public IRequestProfilerLimiter getProfilerLimiter() {
-        return profilerLimiter;
+        return profiler;
     }
 
     @Override
     public ICloudWriter createWriter(String bucket, String path, IWriteBufferProvider bufferProvider) {
-        return new GCSWriter(bucket, config.getPrefix() + path, gcsClient, profilerLimiter, guardian, writeBufferSize);
+        return new GCSWriter(bucket, config.getPrefix() + path, gcsClient, profiler, guardian, writeBufferSize);
     }
 
     @Override
     public Set<CloudFile> listObjects(String bucket, String path, FilenameFilter filter) {
         guardian.checkReadAccess(bucket, path);
-        profilerLimiter.objectsList();
+        profiler.objectsList();
         Page<Blob> blobs = gcsClient.list(bucket, BlobListOption.prefix(config.getPrefix() + path),
                 BlobListOption.fields(Storage.BlobField.SIZE));
-
         Set<CloudFile> files = new HashSet<>();
         for (Blob blob : blobs.iterateAll()) {
             if (filter.accept(null, IoUtil.getFileNameFromPath(blob.getName()))) {
@@ -130,7 +137,7 @@ public class GCSCloudClient implements ICloudClient {
     @Override
     public int read(String bucket, String path, long offset, ByteBuffer buffer) throws HyracksDataException {
         guardian.checkReadAccess(bucket, path);
-        profilerLimiter.objectGet();
+        profiler.objectGet();
         BlobId blobId = BlobId.of(bucket, config.getPrefix() + path);
         long readTo = offset + buffer.remaining();
         int totalRead = 0;
@@ -139,7 +146,7 @@ public class GCSCloudClient implements ICloudClient {
                 from.seek(offset + totalRead);
                 totalRead += from.read(buffer);
             }
-        } catch (IOException | StorageException ex) {
+        } catch (IOException | BaseServiceException ex) {
             throw HyracksDataException.create(ex);
         }
 
@@ -150,27 +157,30 @@ public class GCSCloudClient implements ICloudClient {
     }
 
     @Override
-    public byte[] readAllBytes(String bucket, String path) {
+    public byte[] readAllBytes(String bucket, String path) throws HyracksDataException {
         guardian.checkReadAccess(bucket, path);
-        profilerLimiter.objectGet();
+        profiler.objectGet();
         BlobId blobId = BlobId.of(bucket, config.getPrefix() + path);
         try {
             return gcsClient.readAllBytes(blobId);
-        } catch (StorageException e) {
-            return null;
+        } catch (BaseServiceException ex) {
+            if (ex.getCode() == 404) {
+                return null;
+            }
+            throw HyracksDataException.create(ex);
         }
     }
 
     @Override
     public InputStream getObjectStream(String bucket, String path, long offset, long length) {
         guardian.checkReadAccess(bucket, path);
-        profilerLimiter.objectGet();
+        profiler.objectGet();
         ReadChannel reader = null;
         try {
             reader = gcsClient.reader(bucket, config.getPrefix() + path).limit(offset + length);
             reader.seek(offset);
             return Channels.newInputStream(reader);
-        } catch (StorageException | IOException ex) {
+        } catch (BaseServiceException | IOException ex) {
             throw new RuntimeException(CleanupUtils.close(reader, ex));
         }
     }
@@ -178,7 +188,7 @@ public class GCSCloudClient implements ICloudClient {
     @Override
     public void write(String bucket, String path, byte[] data) {
         guardian.checkWriteAccess(bucket, path);
-        profilerLimiter.objectWrite();
+        profiler.objectWrite();
         BlobInfo blobInfo = BlobInfo.newBuilder(bucket, config.getPrefix() + path).build();
         gcsClient.create(blobInfo, data);
     }
@@ -186,10 +196,10 @@ public class GCSCloudClient implements ICloudClient {
     @Override
     public void copy(String bucket, String srcPath, FileReference destPath) {
         guardian.checkReadAccess(bucket, srcPath);
-        profilerLimiter.objectsList();
+        profiler.objectsList();
         Page<Blob> blobs = gcsClient.list(bucket, BlobListOption.prefix(config.getPrefix() + srcPath));
         for (Blob blob : blobs.iterateAll()) {
-            profilerLimiter.objectCopy();
+            profiler.objectCopy();
             BlobId source = blob.getBlobId();
             String targetName = destPath.getChildPath(IoUtil.getFileNameFromPath(source.getName()));
             BlobId target = BlobId.of(bucket, targetName);
@@ -200,22 +210,35 @@ public class GCSCloudClient implements ICloudClient {
     }
 
     @Override
+    public void deleteObject(String bucket, String path) throws HyracksDataException {
+        try {
+            if (path.isEmpty()) {
+                return;
+            }
+            guardian.checkWriteAccess(bucket, path);
+            profiler.objectDelete();
+            BlobId blobId = BlobId.of(bucket, config.getPrefix() + path);
+            gcsClient.delete(blobId);
+        } catch (Exception ex) {
+            throw HyracksDataException.create(ex);
+        }
+    }
+
+    @Override
     public void deleteObjects(String bucket, Collection<String> paths) throws HyracksDataException {
         if (paths.isEmpty()) {
             return;
         }
 
         List<StorageBatchResult<Boolean>> deleteResponses = new ArrayList<>();
-        StorageBatch batchRequest;
         Iterator<String> pathIter = paths.iterator();
         while (pathIter.hasNext()) {
-            batchRequest = gcsClient.batch();
+            StorageBatch batchRequest = gcsClient.batch();
             for (int i = 0; pathIter.hasNext() && i < DELETE_BATCH_SIZE; i++) {
                 BlobId blobId = BlobId.of(bucket, config.getPrefix() + pathIter.next());
                 guardian.checkWriteAccess(bucket, blobId.getName());
                 deleteResponses.add(batchRequest.delete(blobId));
             }
-
             batchRequest.submit();
             Iterator<String> deletePathIter = paths.iterator();
             for (StorageBatchResult<Boolean> deleteResponse : deleteResponses) {
@@ -231,18 +254,18 @@ public class GCSCloudClient implements ICloudClient {
                     }
                 } catch (BaseServiceException e) {
                     LOGGER.warn("Failed to delete object {} while deleting {}", deletedPath, paths, e);
-                    throw new RuntimeDataException(ErrorCode.CLOUD_IO_FAILURE, e, "DELETE", deletedPath,
+                    throw RuntimeDataException.create(ErrorCode.CLOUD_IO_FAILURE, e, "DELETE", deletedPath,
                             paths.toString());
                 }
             }
-            profilerLimiter.objectDelete();
+            profiler.objectDelete();
         }
     }
 
     @Override
     public long getObjectSize(String bucket, String path) {
         guardian.checkReadAccess(bucket, path);
-        profilerLimiter.objectGet();
+        profiler.objectGet();
         Blob blob =
                 gcsClient.get(bucket, config.getPrefix() + path, Storage.BlobGetOption.fields(Storage.BlobField.SIZE));
         if (blob == null) {
@@ -254,7 +277,7 @@ public class GCSCloudClient implements ICloudClient {
     @Override
     public boolean exists(String bucket, String path) {
         guardian.checkReadAccess(bucket, path);
-        profilerLimiter.objectGet();
+        profiler.objectGet();
         Blob blob = gcsClient.get(bucket, config.getPrefix() + path,
                 Storage.BlobGetOption.fields(Storage.BlobField.values()));
         return blob != null && blob.exists();
@@ -263,21 +286,21 @@ public class GCSCloudClient implements ICloudClient {
     @Override
     public boolean isEmptyPrefix(String bucket, String path) {
         guardian.checkReadAccess(bucket, path);
-        profilerLimiter.objectsList();
+        profiler.objectsList();
         Page<Blob> blobs = gcsClient.list(bucket, BlobListOption.prefix(config.getPrefix() + path));
-        return !blobs.hasNextPage();
+        return !blobs.iterateAll().iterator().hasNext();
     }
 
     @Override
     public IParallelDownloader createParallelDownloader(String bucket, IOManager ioManager)
             throws HyracksDataException {
-        return new GCSParallelDownloader(bucket, ioManager, config, profilerLimiter);
+        return new GCSParallelDownloader(bucket, ioManager, config, profiler);
     }
 
     @Override
     public JsonNode listAsJson(ObjectMapper objectMapper, String bucket) {
         guardian.checkReadAccess(bucket, "/");
-        profilerLimiter.objectsList();
+        profiler.objectsList();
         Page<Blob> blobs = gcsClient.list(bucket, BlobListOption.fields(Storage.BlobField.SIZE));
         ArrayNode objectsInfo = objectMapper.createArrayNode();
 
@@ -301,13 +324,58 @@ public class GCSCloudClient implements ICloudClient {
         }
     }
 
+    @Override
+    public void reloadConfiguration(ICloudProperties newProperties) throws HyracksDataException {
+        GCSClientConfig newConfig = GCSClientConfig.of(newProperties);
+        Storage newGcsClient = buildClient(newConfig);
+        Storage oldGcsClient = gcsClient;
+        gcsClient = newGcsClient;
+        config = newConfig;
+        LOGGER.debug("reloaded GCS cloud client with config: {}", config);
+        try {
+            // TODO(mblow): configurable delay before closing the old clients to allow in-flight requests to complete.
+            oldGcsClient.close();
+        } catch (Exception e) {
+            LOGGER.warn("error closing old GCS client after reload", e);
+        }
+    }
+
+    @Override
+    public Predicate<Exception> getObjectNotFoundExceptionPredicate() {
+        return ex -> (ex instanceof BaseServiceException bse)&& bse.getCode() == 404;
+    }
+
     private static Storage buildClient(GCSClientConfig config) throws HyracksDataException {
         StorageOptions.Builder builder = StorageOptions.newBuilder().setCredentials(config.createCredentialsProvider());
+        builder.setStorageRetryStrategy(DEFAULT_NO_RETRY_ON_THREAD_INTERRUPT_STRATEGY);
 
         if (config.getEndpoint() != null && !config.getEndpoint().isEmpty()) {
             builder.setHost(config.getEndpoint());
         }
+        builder.setTransportOptions(transportOptions(config));
         return builder.build().getService();
+    }
+
+    /**
+     * The transport both GCS clients use: Apache HTTP, which applies the connection idle and lifetime limits and
+     * carries the request metrics.
+     */
+    static HttpTransportOptions transportOptions(GCSClientConfig config) {
+        HttpClientBuilder hcb = ApacheHttpTransport.newDefaultHttpClientBuilder();
+        // the default pool allows 20 connections per route, and every request goes to the one storage endpoint, so
+        // the parallel downloader's workers (2 per processor) would queue for them
+        int maxConnections =
+                config.getRequestsMaxHttpConnections() > 0 ? config.getRequestsMaxHttpConnections() : Integer.MAX_VALUE;
+        hcb.setMaxConnTotal(maxConnections).setMaxConnPerRoute(maxConnections);
+        if (config.getMaxIdleSeconds() > 0) {
+            hcb.evictIdleConnections(config.getMaxIdleSeconds(), TimeUnit.SECONDS);
+        }
+        if (config.getMaxLifetimeSeconds() > 0) {
+            hcb.setConnectionTimeToLive(config.getMaxLifetimeSeconds(), TimeUnit.SECONDS);
+        }
+        ApacheHttpTransport transport = new ApacheHttpTransport(new GCSRequestMetricsHttpClient(hcb.build()));
+        return HttpStorageOptions.defaults().getDefaultTransportOptions().toBuilder()
+                .setHttpTransportFactory(() -> transport).build();
     }
 
     private String stripCloudPrefix(String objectName) {

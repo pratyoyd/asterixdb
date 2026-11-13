@@ -194,7 +194,7 @@ public class AsterixHyracksIntegrationUtil {
         // Wait until cluster becomes active
         ((ICcApplicationContext) cc.getApplicationContext()).getClusterStateManager().waitForState(ClusterState.ACTIVE);
         hcc = new HyracksConnection(cc.getConfig().getClientListenAddress(), cc.getConfig().getClientListenPort(),
-                cc.getNetworkSecurityManager().getSocketChannelFactory());
+                cc.getNetworkSecurityManager().getSocketChannelFactory(), cc.getExecutor());
         this.ncs = nodeControllers.toArray(new NodeControllerService[0]);
     }
 
@@ -230,7 +230,7 @@ public class AsterixHyracksIntegrationUtil {
         ccConfig.setClientListenAddress(Inet4Address.getLoopbackAddress().getHostAddress());
         ccConfig.setClientListenPort(DEFAULT_HYRACKS_CC_CLIENT_PORT);
         ccConfig.setClusterListenPort(DEFAULT_HYRACKS_CC_CLUSTER_PORT);
-        ccConfig.setResultTTL(RESULT_TTL);
+        ccConfig.setResultTTLMillis(RESULT_TTL);
         ccConfig.setResultSweepThreshold(1000L);
         ccConfig.setEnforceFrameWriterProtocol(true);
         configManager.set(ControllerConfig.Option.DEFAULT_DIR, joinPath(getDefaultStoragePath(), "asterixdb"));
@@ -259,7 +259,7 @@ public class AsterixHyracksIntegrationUtil {
         ncConfig.setDataListenAddress(Inet4Address.getLoopbackAddress().getHostAddress());
         ncConfig.setResultListenAddress(Inet4Address.getLoopbackAddress().getHostAddress());
         ncConfig.setMessagingListenAddress(Inet4Address.getLoopbackAddress().getHostAddress());
-        ncConfig.setResultTTL(RESULT_TTL);
+        ncConfig.setResultTTLMillis(RESULT_TTL);
         ncConfig.setResultSweepThreshold(1000L);
         ncConfig.setVirtualNC();
         configManager.set(ControllerConfig.Option.DEFAULT_DIR, joinPath(getDefaultStoragePath(), "asterixdb", ncName));

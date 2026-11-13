@@ -1,0 +1,54 @@
+distribute result [$$52]
+-- DISTRIBUTE_RESULT  |PARTITIONED|
+  exchange
+  -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+    assign [$$52] <- [object-concat-strict({"o_d_id": $$54, "o_w_id": $$53, "o_id": $$55, "c_id": $$69, "o_carrier_id": $$65, "o_ol_cnt": $$71}, to-object-var-str($$c))] project: [$$52]
+    -- ASSIGN  |PARTITIONED|
+      project ([$$54, $$53, $$55, $$69, $$65, $$71, $$c])
+      -- STREAM_PROJECT  |PARTITIONED|
+        exchange
+        -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+          left outer join (and(eq($$53, $$77), eq($$54, $$78), eq($$55, $$79)))
+          -- HYBRID_HASH_JOIN [$$53, $$54, $$55][$$77, $$78, $$79]  |PARTITIONED|
+            exchange
+            -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+              assign [$$71, $$65, $$69] <- [$$o.getField("o_ol_cnt"), $$o.getField("o_carrier_id"), $$o.getField("c_id")] project: [$$54, $$53, $$55, $$69, $$65, $$71]
+              -- ASSIGN  |PARTITIONED|
+                exchange
+                -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                  data-scan []<-[$$53, $$54, $$55, $$o] <- test.orders
+                  -- DATASOURCE_SCAN  |PARTITIONED|
+                    exchange
+                    -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                      empty-tuple-source
+                      -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
+            exchange
+            -- HASH_PARTITION_EXCHANGE [$$77, $$78, $$79]  |PARTITIONED|
+              project ([$$c, $$77, $$78, $$79])
+              -- STREAM_PROJECT  |PARTITIONED|
+                exchange
+                -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                  join (and(eq($$56, $$77), eq($$57, $$78), eq($$58, $$72)))
+                  -- HYBRID_HASH_JOIN [$$77, $$78, $$72][$$56, $$57, $$58]  |PARTITIONED|
+                    exchange
+                    -- HASH_PARTITION_EXCHANGE [$$77, $$78, $$72]  |PARTITIONED|
+                      select (gt($$73.getField("o_carrier_id"), 8)) project: [$$77, $$78, $$79, $$72]
+                      -- STREAM_SELECT  |PARTITIONED|
+                        assign [$$72] <- [$$73.getField("o_c_id")]
+                        -- ASSIGN  |PARTITIONED|
+                          exchange
+                          -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                            data-scan []<-[$$77, $$78, $$79, $$73] <- test.orders
+                            -- DATASOURCE_SCAN  |PARTITIONED|
+                              exchange
+                              -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                                empty-tuple-source
+                                -- EMPTY_TUPLE_SOURCE  |PARTITIONED|
+                    exchange
+                    -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                      data-scan []<-[$$56, $$57, $$58, $$c] <- test.customer
+                      -- DATASOURCE_SCAN  |PARTITIONED|
+                        exchange
+                        -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                          empty-tuple-source
+                          -- EMPTY_TUPLE_SOURCE  |PARTITIONED|

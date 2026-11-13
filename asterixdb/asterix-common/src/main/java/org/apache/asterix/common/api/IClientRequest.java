@@ -81,6 +81,13 @@ public interface IClientRequest {
     void markCancellable();
 
     /**
+     * Mark the request as not cancellable if it has not been cancelled yet.
+     *
+     * @return true if the request was marked as not cancellable. Otherwise, false without changing anything.
+     */
+    boolean markUncancellable();
+
+    /**
      * @return true if the request can be cancelled. Otherwise false.
      */
     boolean isCancellable();
@@ -91,7 +98,13 @@ public interface IClientRequest {
      * @param appCtx
      * @throws HyracksDataException
      */
-    void cancel(ICcApplicationContext appCtx) throws HyracksDataException;
+    boolean cancel(ICcApplicationContext appCtx) throws HyracksDataException;
+
+    /**
+     * Called when the request is archived.
+     * The request is archived when it is completed or cancelled and removed from the list of running requests.
+     */
+    void archived();
 
     /**
      * @return A json string representation of this request
@@ -133,5 +146,23 @@ public interface IClientRequest {
      * @param exceptions exceptions encountered if any
      */
     void jobFinished(JobId jobId, JobStatus jobStatus, List<Exception> exceptions);
+
+    /**
+     * Called when a handle to the given job's results was returned to the client, i.e. they must be
+     * kept until fetched or expired.
+     *
+     * @param jobId the job id
+     */
+    void markResultPending(JobId jobId);
+
+    /**
+     * Called when the given job's results were swept, i.e. they can no longer be fetched.
+     *
+     * @param jobId the job id
+     */
+    void resultSwept(JobId jobId);
+
+    /** @return true if the client may still fetch the results of any job of this request */
+    boolean hasPendingResults();
 
 }

@@ -24,7 +24,6 @@ import static org.apache.hyracks.api.util.ExceptionUtils.getMessageOrToString;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +39,7 @@ import org.apache.asterix.external.api.IRecordDataParser;
 import org.apache.asterix.external.input.filter.embedder.IExternalFilterValueEmbedder;
 import org.apache.asterix.external.input.record.reader.stream.AvroConverterContext;
 import org.apache.asterix.external.util.ExternalDataConstants;
+import org.apache.asterix.external.util.TimestampZoneProjector;
 import org.apache.asterix.om.base.ABoolean;
 import org.apache.asterix.om.base.ANull;
 import org.apache.asterix.om.pointables.base.DefaultOpenFieldType;
@@ -52,7 +52,6 @@ import org.apache.avro.generic.GenericArray;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
-import org.apache.hyracks.api.exceptions.Warning;
 import org.apache.hyracks.data.std.api.IMutableValueStorage;
 import org.apache.hyracks.data.std.api.IValueReference;
 
@@ -61,8 +60,7 @@ public class AvroDataParser extends AbstractDataParser implements IRecordDataPar
     private final IExternalFilterValueEmbedder valueEmbedder;
 
     public AvroDataParser(IExternalDataRuntimeContext context, Map<String, String> conf) {
-        List<Warning> warnings = new ArrayList<>();
-        parserContext = new AvroConverterContext(conf, warnings);
+        parserContext = new AvroConverterContext(conf, context.getTaskContext().getWarningCollector());
         valueEmbedder = context.getValueEmbedder();
     }
 
@@ -88,17 +86,16 @@ public class AvroDataParser extends AbstractDataParser implements IRecordDataPar
             Object fieldValue = record.get(fieldName);
             ATypeTag typeTag = getTypeTag(fieldSchema, fieldValue);
 
-            IValueReference value = null;
+            IValueReference value;
             if (valueEmbedder.shouldEmbed(fieldName, typeTag)) {
                 value = valueEmbedder.getEmbeddedValue();
-            } else if (fieldValue != null) {
+            } else {
                 valueBuffer.reset();
                 parseValue(fieldSchema, fieldValue, valueBuffer.getDataOutput());
                 value = valueBuffer;
             }
 
-            if (value != null) {
-                // Ignore missing values
+            if (value != null || typeTag == ATypeTag.NULL) {
                 objectBuilder.addField(parserContext.getSerializedFieldName(fieldName), value);
             }
         }
@@ -153,21 +150,23 @@ public class AvroDataParser extends AbstractDataParser implements IRecordDataPar
         if (actualSchema != null) {
             parseValue(actualSchema, value, out);
         } else {
-            throw new RuntimeDataException(ErrorCode.TYPE_UNSUPPORTED, unionSchema.getType());
+            throw createUnsupportedException(unionSchema);
         }
     }
 
     private Schema getActualSchema(Schema unionSchema, Object value) {
         List<Schema> possibleTypes = unionSchema.getTypes();
+        Schema nullSchema = null;
         for (Schema possibleType : possibleTypes) {
             Schema.Type schemaType = possibleType.getType();
-            if (schemaType != NULL) {
-                if (matchesType(value, schemaType)) {
-                    return possibleType;
-                }
+            if (schemaType == NULL) {
+                nullSchema = possibleType;
+            } else if (matchesType(value, schemaType)) {
+                return possibleType;
             }
         }
-        return null;
+        // value is null — return the null branch of the union if present
+        return value == null ? nullSchema : null;
     }
 
     private boolean matchesType(Object value, Schema.Type schemaType) {
@@ -235,8 +234,9 @@ public class AvroDataParser extends AbstractDataParser implements IRecordDataPar
         }
 
         if (value == null) {
-            // The 'value' is missing
-            return ATypeTag.MISSING;
+            // A null value (e.g. the null branch of a nullable union) maps to NULL, not MISSING.
+            // Avro records always carry every declared field, so there is no true "missing" here.
+            return ATypeTag.NULL;
         }
 
         switch (schemaType) {
@@ -264,9 +264,9 @@ public class AvroDataParser extends AbstractDataParser implements IRecordDataPar
                 if (actualSchema != null) {
                     return getTypeTag(actualSchema, value);
                 }
+                throw createUnsupportedException(schema);
             default:
                 throw createUnsupportedException(schema);
-
         }
     }
 
@@ -288,44 +288,41 @@ public class AvroDataParser extends AbstractDataParser implements IRecordDataPar
                 parserContext.serializeDate(value, out);
             }
         } else if (logicalType instanceof LogicalTypes.TimeMicros) {
+            // time-micros is a time of day with no reference to any timezone; it must not be shifted
+            // by the configured offset (unlike timestamp-millis/micros, which are UTC instants).
             int timeInMillis = (int) TimeUnit.MICROSECONDS.toMillis(((Number) value).longValue());
-            int offset = parserContext.getTimeZoneOffset();
-            timeInMillis = timeInMillis + offset;
-            if (parserContext.isTimeAsLong()) {
-                serializeLong(timeInMillis, out);
-            } else {
-                parserContext.serializeTime(timeInMillis + offset, out);
-            }
-        } else if (logicalType instanceof LogicalTypes.TimeMillis) {
-            int timeInMillis = ((Number) value).intValue();
-            int offset = parserContext.getTimeZoneOffset();
-            timeInMillis = timeInMillis + offset;
             if (parserContext.isTimeAsLong()) {
                 serializeLong(timeInMillis, out);
             } else {
                 parserContext.serializeTime(timeInMillis, out);
             }
-        } else if (logicalType instanceof LogicalTypes.TimestampMicros
-                || logicalType instanceof LogicalTypes.LocalTimestampMicros) {
+        } else if (logicalType instanceof LogicalTypes.TimeMillis) {
+            // time-millis is a time of day with no reference to any timezone; it must not be shifted
+            // by the configured offset (unlike timestamp-millis/micros, which are UTC instants).
+            int timeInMillis = ((Number) value).intValue();
+            if (parserContext.isTimeAsLong()) {
+                serializeLong(timeInMillis, out);
+            } else {
+                parserContext.serializeTime(timeInMillis, out);
+            }
+        } else if (logicalType instanceof LogicalTypes.TimestampMicros) {
             long timeStampInMicros = ((Number) value).longValue();
-            int offset = parserContext.getTimeZoneOffset();
             long timeStampInMillis = TimeUnit.MICROSECONDS.toMillis(timeStampInMicros);
-            timeStampInMillis = timeStampInMillis + offset;
-            if (parserContext.isTimestampAsLong()) {
-                serializeLong(timeStampInMillis, out);
-            } else {
-                parserContext.serializeDateTime(timeStampInMillis, out);
-            }
-        } else if (logicalType instanceof LogicalTypes.TimestampMillis
-                || logicalType instanceof LogicalTypes.LocalTimestampMillis) {
+            serializeTimestampMillis(timeStampInMillis, true, out);
+        } else if (logicalType instanceof LogicalTypes.TimestampMillis) {
             long timeStampInMillis = ((Number) value).longValue();
-            int offset = parserContext.getTimeZoneOffset();
-            timeStampInMillis = timeStampInMillis + offset;
-            if (parserContext.isTimestampAsLong()) {
-                serializeLong(timeStampInMillis, out);
-            } else {
-                parserContext.serializeDateTime(timeStampInMillis, out);
-            }
+            serializeTimestampMillis(timeStampInMillis, true, out);
+        } else if (logicalType instanceof LogicalTypes.LocalTimestampMicros) {
+            // local-timestamp-micros is already wall-clock time with no associated timezone;
+            // unlike timestamp-micros (a UTC instant), it must not be shifted by the configured offset.
+            long timeStampInMicros = ((Number) value).longValue();
+            long timeStampInMillis = TimeUnit.MICROSECONDS.toMillis(timeStampInMicros);
+            serializeTimestampMillis(timeStampInMillis, false, out);
+        } else if (logicalType instanceof LogicalTypes.LocalTimestampMillis) {
+            // local-timestamp-millis is already wall-clock time with no associated timezone;
+            // unlike timestamp-millis (a UTC instant), it must not be shifted by the configured offset.
+            long timeStampInMillis = ((Number) value).longValue();
+            serializeTimestampMillis(timeStampInMillis, false, out);
         } else {
             throw createUnsupportedException(logicalType.getName());
         }
@@ -422,4 +419,22 @@ public class AvroDataParser extends AbstractDataParser implements IRecordDataPar
         return new RuntimeDataException(ErrorCode.TYPE_UNSUPPORTED, "Avro Parser, Invalid Logical Type: ", logicalType);
     }
 
+    /**
+     * The configured timezone is a rendering choice, so only a datetime takes the shift; an epoch long is an
+     * absolute instant and never does. {@link TimestampZoneProjector#isShiftedOnRead} owns that rule, so pushdown
+     * sees the same one.
+     *
+     * @param utcAdjusted whether the source type is a UTC instant rather than a wall-clock reading
+     */
+    private void serializeTimestampMillis(long epochMillis, boolean utcAdjusted, DataOutput out)
+            throws HyracksDataException {
+        boolean asLong = parserContext.isTimestampAsLong();
+        long value = TimestampZoneProjector.isShiftedOnRead(utcAdjusted, asLong)
+                ? parserContext.applyTimeZone(epochMillis) : epochMillis;
+        if (asLong) {
+            serializeLong(value, out);
+        } else {
+            parserContext.serializeDateTime(value, out);
+        }
+    }
 }

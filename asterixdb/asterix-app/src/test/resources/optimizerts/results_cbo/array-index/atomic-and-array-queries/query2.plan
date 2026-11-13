@@ -1,12 +1,24 @@
+distribute result [$$43]
 -- DISTRIBUTE_RESULT  |PARTITIONED|
+  exchange
   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+    assign [$$43] <- [{"D": $$D, "DI": $$DI}] project: [$$43]
     -- ASSIGN  |PARTITIONED|
+      select (and(eq($$DI.getField("field3"), 3), eq($$DI.getField("field3_notindexed"), 3), eq($$DI.getField("field2"), 2)))
       -- STREAM_SELECT  |PARTITIONED|
+        unnest $$DI <- scan-collection($$48) project: [$$D, $$DI]
         -- UNNEST  |PARTITIONED|
+          select (and(eq($$D.getField("field4"), 4), eq($$D.getField("field1"), 1), eq($$D.getField("field4_notindexed"), 4)))
           -- STREAM_SELECT  |PARTITIONED|
+            assign [$$48] <- [$$D.getField("items")]
             -- ASSIGN  |PARTITIONED|
+              project ([$$D])
               -- STREAM_PROJECT  |PARTITIONED|
+                exchange
                 -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                  -- DATASOURCE_SCAN (TestDataverse.Dataset1)  |PARTITIONED|
+                  data-scan []<-[$$44, $$D] <- TestDataverse.Dataset1
+                  -- DATASOURCE_SCAN  |PARTITIONED|
+                    exchange
                     -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                      empty-tuple-source
                       -- EMPTY_TUPLE_SOURCE  |PARTITIONED|

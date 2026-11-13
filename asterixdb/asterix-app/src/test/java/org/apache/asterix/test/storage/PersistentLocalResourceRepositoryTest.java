@@ -224,6 +224,31 @@ public class PersistentLocalResourceRepositoryTest {
         }
     }
 
+    @Test
+    public void invalidateReleasedPartitionResources() throws Exception {
+        final INcApplicationContext ncAppCtx = (INcApplicationContext) integrationUtil.ncs[0].getApplicationContext();
+        final String nodeId = ncAppCtx.getServiceContext().getNodeId();
+        final String datasetName = "ds";
+        TestDataUtil.createIdOnlyDataset(datasetName);
+        final Dataset dataset = TestDataUtil.getDataset(integrationUtil, datasetName);
+        final String indexPath = TestDataUtil.getIndexPath(integrationUtil, dataset, nodeId);
+        PersistentLocalResourceRepository localResourceRepository =
+                (PersistentLocalResourceRepository) ncAppCtx.getLocalResourceRepository();
+        final LocalResource resource = localResourceRepository.get(indexPath);
+        Assert.assertNotNull(resource);
+        final int partition = ((DatasetLocalResource) resource.getResource()).getPartition();
+        // simulate the resource being deleted while this node does not own its storage partition: the partition's
+        // new owner performs the delete, so the metadata file is gone but this node is never told about it
+        final FileReference indexDirRef = ncAppCtx.getIoManager().resolve(indexPath);
+        final File indexMetadataFile = new File(indexDirRef.getFile(), StorageConstants.METADATA_FILE_NAME);
+        Assert.assertTrue(indexMetadataFile.exists());
+        Files.delete(indexMetadataFile.toPath());
+        // releasing the partition must drop this node's view of its resources; otherwise creating a resource at the
+        // same path after the partition is re-acquired finds a leftover that no longer exists
+        localResourceRepository.invalidatePartitionResources(partition);
+        Assert.assertNull(localResourceRepository.get(indexPath));
+    }
+
     private void ensureInvalidComponentDeleted(String indexDir, String componentSeq,
             PersistentLocalResourceRepository localResourceRepository, DatasetLocalResource lr) throws IOException {
         Path btreePath = Paths.get(indexDir,

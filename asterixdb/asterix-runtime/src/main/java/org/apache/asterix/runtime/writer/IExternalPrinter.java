@@ -34,11 +34,26 @@ public interface IExternalPrinter {
     void open() throws HyracksDataException;
 
     /**
+     * Indicates the start of a new file
+     */
+    default void newFile() {
+    }
+
+    /**
      * Initialize the printer with a new stream
      *
      * @param outputStream to print to
      */
     void newStream(OutputStream outputStream) throws HyracksDataException;
+
+    /**
+     * Size of the current file as accounted for by the printer, including anything it still buffers
+     *
+     * @return the printer's byte count, or 0 for printers that pass everything straight to the stream
+     */
+    default long getBytesWritten() {
+        return 0;
+    }
 
     /**
      * Print the provided value

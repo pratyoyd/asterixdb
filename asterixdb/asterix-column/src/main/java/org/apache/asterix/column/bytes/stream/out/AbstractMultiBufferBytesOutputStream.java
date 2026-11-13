@@ -47,7 +47,7 @@ abstract class AbstractMultiBufferBytesOutputStream extends AbstractBytesOutputS
     protected abstract void preReset() throws HyracksDataException;
 
     @Override
-    public final void reset() throws HyracksDataException {
+    public void reset() throws HyracksDataException {
         preReset();
         position = 0;
         currentBufferIndex = 0;
@@ -79,6 +79,34 @@ abstract class AbstractMultiBufferBytesOutputStream extends AbstractBytesOutputS
             offset += writeLength;
             remaining -= writeLength;
         }
+    }
+
+    public void writeInSegment(int bufferIndex, int off, int val) throws IOException {
+        if (bufferIndex >= buffers.size()) {
+            int requiredBuffers = bufferIndex - buffers.size() + 1;
+            allocateBuffers(requiredBuffers);
+        }
+        ByteBuffer buffer = buffers.get(bufferIndex);
+        buffer.putInt(off, val);
+    }
+
+    public void writeInSegment(int bufferIndex, int off, int val1, int val2) throws IOException {
+        if (bufferIndex >= buffers.size()) {
+            int requiredBuffers = bufferIndex - buffers.size() + 1;
+            allocateBuffers(requiredBuffers);
+        }
+        ByteBuffer buffer = buffers.get(bufferIndex);
+        buffer.putInt(off, val1);
+        buffer.putInt(off + Integer.BYTES, val2);
+    }
+
+    public void writeInSegment(int bufferIndex, int off, long val) throws IOException {
+        if (bufferIndex >= buffers.size()) {
+            int requiredBuffers = bufferIndex - buffers.size() + 1;
+            allocateBuffers(requiredBuffers);
+        }
+        ByteBuffer buffer = buffers.get(bufferIndex);
+        buffer.putLong(off, val);
     }
 
     @Override
@@ -121,6 +149,7 @@ abstract class AbstractMultiBufferBytesOutputStream extends AbstractBytesOutputS
     @Override
     public final void finish() {
         currentBuf = null;
+        releaseColumnBuffer();
         buffers.clear();
         allocatedBytes = 0;
     }
@@ -130,7 +159,7 @@ abstract class AbstractMultiBufferBytesOutputStream extends AbstractBytesOutputS
      * *************************************************
      */
 
-    private void ensureCapacity(int length) throws HyracksDataException {
+    protected void ensureCapacity(int length) throws HyracksDataException {
         if (position + length > allocatedBytes) {
             allocateMoreBuffers(length);
         } else if (length > 0) {
@@ -160,5 +189,16 @@ abstract class AbstractMultiBufferBytesOutputStream extends AbstractBytesOutputS
         int size = buffer.capacity();
         allocatedBytes += size;
         return size;
+    }
+
+    protected void allocateBuffers(int count) throws HyracksDataException {
+        for (int i = 0; i < count; i++) {
+            allocateBuffer();
+        }
+    }
+
+    protected void releaseColumnBuffer() {
+        // No-op by default
+        // Overridden in MultiTemporaryBufferBytesOutputStream
     }
 }

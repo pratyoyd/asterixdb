@@ -37,6 +37,8 @@ import org.apache.hyracks.storage.am.lsm.invertedindex.api.IInvertedIndexAccesso
 import org.apache.hyracks.storage.am.lsm.invertedindex.api.IInvertedListCursor;
 import org.apache.hyracks.storage.common.IIndexCursor;
 import org.apache.hyracks.storage.common.ISearchPredicate;
+import org.apache.hyracks.util.ExponentialRetryPolicy;
+import org.apache.hyracks.util.IRetryPolicy;
 
 public class LSMInvertedIndexAccessor implements ILSMIndexAccessor, IInvertedIndexAccessor {
 
@@ -99,6 +101,23 @@ public class LSMInvertedIndexAccessor implements ILSMIndexAccessor, IInvertedInd
     @Override
     public void flush(ILSMIOOperation operation) throws HyracksDataException {
         lsmHarness.flush(operation);
+        if (operation.getStatus() == ILSMIOOperation.LSMIOOperationStatus.FAILURE) {
+            IRetryPolicy policy = new ExponentialRetryPolicy();
+            while (operation.getStatus() == ILSMIOOperation.LSMIOOperationStatus.FAILURE) {
+                try {
+                    if (policy.retry(operation.getFailure())) {
+                        operation.setFailure(null);
+                        operation.setStatus(ILSMIOOperation.LSMIOOperationStatus.SUCCESS);
+                        lsmHarness.flush(operation);
+                    } else {
+                        break;
+                    }
+                } catch (InterruptedException e) {
+                    // in reality, this thread won't be interrupted
+                    throw HyracksDataException.create(e);
+                }
+            }
+        }
     }
 
     @Override
@@ -218,6 +237,11 @@ public class LSMInvertedIndexAccessor implements ILSMIndexAccessor, IInvertedInd
 
     @Override
     public void scanDiskComponents(IIndexCursor cursor) throws HyracksDataException {
+        throw HyracksDataException.create(ErrorCode.DISK_COMPONENT_SCAN_NOT_ALLOWED_FOR_SECONDARY_INDEX);
+    }
+
+    @Override
+    public void scanDiskComponentsForSample(IIndexCursor cursor) throws HyracksDataException {
         throw HyracksDataException.create(ErrorCode.DISK_COMPONENT_SCAN_NOT_ALLOWED_FOR_SECONDARY_INDEX);
     }
 

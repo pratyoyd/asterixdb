@@ -31,8 +31,10 @@ import org.apache.asterix.lang.common.clause.LetClause;
 import org.apache.asterix.lang.common.expression.GbyVariableExpressionPair;
 import org.apache.asterix.lang.common.expression.VariableExpr;
 import org.apache.asterix.lang.common.statement.InsertStatement;
+import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.visitor.FormatPrintVisitor;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateClause;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.clause.HavingClause;
@@ -46,11 +48,13 @@ import org.apache.asterix.lang.sqlpp.clause.SelectRegular;
 import org.apache.asterix.lang.sqlpp.clause.SelectSetOperation;
 import org.apache.asterix.lang.sqlpp.clause.UnnestClause;
 import org.apache.asterix.lang.sqlpp.expression.CaseExpression;
+import org.apache.asterix.lang.sqlpp.expression.ChangeExpression;
 import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.expression.WindowExpression;
 import org.apache.asterix.lang.sqlpp.struct.SetOperationRight;
 import org.apache.asterix.lang.sqlpp.util.SqlppVariableUtil;
 import org.apache.asterix.lang.sqlpp.visitor.base.ISqlppVisitor;
+import org.apache.commons.lang3.tuple.Pair;
 
 public class SqlppFormatPrintVisitor extends FormatPrintVisitor implements ISqlppVisitor<Void, Integer> {
 
@@ -83,6 +87,11 @@ public class SqlppFormatPrintVisitor extends FormatPrintVisitor implements ISqlp
         fromTerm.getLeftExpression().accept(this, step + 2);
         out.print(" as ");
         fromTerm.getLeftVariable().accept(this, step + 2);
+        if (fromTerm.hasTimeTravel()) {
+            out.print(" at " + fromTerm.getTimeTravel().getKeyword() + " ");
+            fromTerm.getTimeTravel().getValueExpression().accept(this, step + 2);
+            out.println();
+        }
         if (fromTerm.hasPositionalVariable()) {
             out.print(" at ");
             fromTerm.getPositionalVariable().accept(this, step + 2);
@@ -160,6 +169,14 @@ public class SqlppFormatPrintVisitor extends FormatPrintVisitor implements ISqlp
         }
         if (selectBlock.hasGroupbyClause()) {
             selectBlock.getGroupbyClause().accept(this, step);
+            if (selectBlock.hasLetHavingClausesAfterGroupby()) {
+                for (AbstractClause letHavingClause : selectBlock.getLetHavingListAfterGroupby()) {
+                    letHavingClause.accept(this, step);
+                }
+            }
+        }
+        if (selectBlock.hasClusterbyClause()) {
+            selectBlock.getClusterbyClause().accept(this, step);
             if (selectBlock.hasLetHavingClausesAfterGroupby()) {
                 for (AbstractClause letHavingClause : selectBlock.getLetHavingListAfterGroupby()) {
                     letHavingClause.accept(this, step);
@@ -290,6 +307,37 @@ public class SqlppFormatPrintVisitor extends FormatPrintVisitor implements ISqlp
     }
 
     @Override
+    public Void visit(ClusterbyClause cc, Integer step) throws CompilationException {
+        out.print(skip(step) + "cluster by ");
+        cc.getClusteringExpression().accept(this, step + 2);
+        if (cc.hasClusterDescriptorVar()) {
+            out.print(" as ");
+            cc.getClusterDescriptorVar().accept(this, step + 2);
+        }
+        if (cc.hasClusterMembersVar()) {
+            out.print(" cluster as ");
+            cc.getClusterMembersVar().accept(this, step + 2);
+            if (cc.hasClusterFieldList()) {
+                out.print("(");
+                String sep = "";
+                for (Pair<Expression, Identifier> field : cc.getClusterFieldList()) {
+                    out.print(sep);
+                    field.getLeft().accept(this, step + 2);
+                    out.print(" as " + field.getRight().getValue());
+                    sep = COMMA;
+                }
+                out.print(")");
+            }
+        }
+        if (cc.hasWithOptions()) {
+            out.print(" with ");
+            cc.getWithOptions().accept(this, step + 2);
+        }
+        out.println();
+        return null;
+    }
+
+    @Override
     public Void visit(IVisitorExtension ve, Integer arg) throws CompilationException {
         // Language extensions should create a child of this class.
         return null;
@@ -350,6 +398,89 @@ public class SqlppFormatPrintVisitor extends FormatPrintVisitor implements ISqlp
         caseExpr.getElseExpr().accept(this, step + 2);
         out.println();
         out.println(skip(step) + "end");
+        return null;
+    }
+
+    @Override
+    public Void visit(ChangeExpression changeExpr, Integer step) throws CompilationException {
+        out.print(skip(step) + "(");
+
+        if (changeExpr.hasPathValueExprs()) {
+            out.print(skip(step) + "SET ");
+            List<Expression> pathlist = changeExpr.getPathExprs();
+            List<Expression> valuelist = changeExpr.getValueExprs();
+            // Print first path-value pair
+            pathlist.get(0).accept(this, step + 1);
+            out.print(" = ");
+            valuelist.get(0).accept(this, step + 1);
+            // Print remaining path-value pairs with proper comma separation
+            for (int i = 1; i < valuelist.size(); ++i) {
+                out.print(", ");
+                pathlist.get(i).accept(this, step + 1);
+                out.print(" = ");
+                valuelist.get(i).accept(this, step + 1);
+            }
+        } else {
+            // Handle different update types
+            ChangeExpression.UpdateType type = changeExpr.getType();
+            if (type != null) {
+                switch (type) {
+                    case UPDATE:
+                        out.print("UPDATE ");
+                        changeExpr.getChangeTargetExpr().accept(this, step + 1);
+                        if (changeExpr.getAliasVar() != null) {
+                            out.print(" AS ");
+                            changeExpr.getAliasVar().accept(this, step + 1);
+                        }
+                        if (changeExpr.getPosVar() != null) {
+                            out.print(" AT ");
+                            changeExpr.getPosVar().accept(this, step + 1);
+                        }
+                        out.print(" SET ");
+                        changeExpr.getChangeSeq().accept(this, step + 1);
+                        if (changeExpr.getCondition() != null) {
+                            out.print(" WHERE ");
+                            changeExpr.getCondition().accept(this, step + 1);
+                        }
+                        break;
+
+                    case DELETE:
+                        out.print("DELETE FROM ");
+                        changeExpr.getChangeTargetExpr().accept(this, step + 1);
+                        if (changeExpr.getAliasVar() != null) {
+                            out.print(" AS ");
+                            changeExpr.getAliasVar().accept(this, step + 1);
+                        }
+                        if (changeExpr.getPosVar() != null) {
+                            out.print(" AT ");
+                            changeExpr.getPosVar().accept(this, step + 1);
+                        }
+                        if (changeExpr.getCondition() != null) {
+                            out.print(" WHERE ");
+                            changeExpr.getCondition().accept(this, step + 1);
+                        }
+                        break;
+
+                    case INSERT:
+                        out.print("INSERT INTO ");
+                        changeExpr.getChangeTargetExpr().accept(this, step + 1);
+                        if (changeExpr.getAliasVar() != null) {
+                            out.print(" AS ");
+                            changeExpr.getAliasVar().accept(this, step + 1);
+                        }
+                        if (changeExpr.getPosExpr() != null) {
+                            out.print(" AT INDEX ");
+                            changeExpr.getPosExpr().accept(this, step + 1);
+                        }
+                        out.print(" VALUES (");
+                        changeExpr.getSourceExpr().accept(this, step + 1);
+                        out.print(")");
+                        break;
+                }
+            }
+        }
+
+        out.print(")");
         return null;
     }
 

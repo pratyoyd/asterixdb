@@ -24,10 +24,9 @@ import java.util.Collections;
 import java.util.List;
 
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.ListSet;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.IHyracksJobBuilder;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -42,6 +41,7 @@ import org.apache.hyracks.algebricks.core.algebra.metadata.IWriteDataSink;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.IOperatorSchema;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.WriteOperator;
 import org.apache.hyracks.algebricks.core.algebra.properties.ILocalStructuralProperty;
+import org.apache.hyracks.algebricks.core.algebra.properties.INodeDomain;
 import org.apache.hyracks.algebricks.core.algebra.properties.IPartitioningProperty;
 import org.apache.hyracks.algebricks.core.algebra.properties.IPartitioningRequirementsCoordinator;
 import org.apache.hyracks.algebricks.core.algebra.properties.IPhysicalPropertiesVector;
@@ -49,7 +49,7 @@ import org.apache.hyracks.algebricks.core.algebra.properties.LocalOrderProperty;
 import org.apache.hyracks.algebricks.core.algebra.properties.OrderColumn;
 import org.apache.hyracks.algebricks.core.algebra.properties.PhysicalRequirements;
 import org.apache.hyracks.algebricks.core.algebra.properties.StructuralPropertiesVector;
-import org.apache.hyracks.algebricks.core.algebra.properties.UnorderedPartitionedProperty;
+import org.apache.hyracks.algebricks.core.algebra.util.OperatorPropertiesUtil;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenContext;
 import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenHelper;
 import org.apache.hyracks.algebricks.runtime.base.IPushRuntimeFactory;
@@ -95,8 +95,9 @@ public class SinkWritePOperator extends AbstractPhysicalOperator {
         IPartitioningProperty pp;
         switch (op.getExecutionMode()) {
             case PARTITIONED:
-                pp = UnorderedPartitionedProperty.of(new ListSet<>(partitionVariables),
-                        context.getComputationNodeDomain());
+                INodeDomain nodeDomain = context.getComputationNodeDomain();
+                int[][] partitionsMap = context.getMetadataProvider().getPartitionsMap(nodeDomain);
+                pp = OperatorPropertiesUtil.createUnorderedProperty(nodeDomain, partitionsMap, partitionVariables);
                 break;
             case UNPARTITIONED:
                 pp = IPartitioningProperty.UNPARTITIONED;
@@ -180,13 +181,13 @@ public class SinkWritePOperator extends AbstractPhysicalOperator {
 
         } else {
             runtimeAndConstraints = mp.getWriteDatabaseWithKeyRuntime(sourceColumn, keyEvalFactories, writeDataSink,
-                    inputDesc, typeEnv.getVarType(sourceVariable));
+                    inputDesc, typeEnv.getVarType(sourceVariable), context.getWarningCollector());
         }
 
-        IPushRuntimeFactory runtime = runtimeAndConstraints.first;
+        IPushRuntimeFactory runtime = runtimeAndConstraints.getLeft();
         runtime.setSourceLocation(write.getSourceLocation());
 
-        builder.contributeMicroOperator(write, runtime, recDesc, runtimeAndConstraints.second);
+        builder.contributeMicroOperator(write, runtime, recDesc, runtimeAndConstraints.getRight());
         ILogicalOperator src = write.getInputs().get(0).getValue();
         builder.contributeGraphEdge(src, 0, write, 0);
     }

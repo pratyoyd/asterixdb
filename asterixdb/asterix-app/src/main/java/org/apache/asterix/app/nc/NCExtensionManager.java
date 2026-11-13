@@ -35,7 +35,7 @@ import org.apache.asterix.metadata.api.INCExtensionManager;
 import org.apache.asterix.metadata.bootstrap.MetadataIndexesProvider;
 import org.apache.asterix.metadata.entitytupletranslators.MetadataTupleTranslatorProvider;
 import org.apache.asterix.utils.ExtensionUtil;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.api.application.INCServiceContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 
@@ -49,6 +49,7 @@ public class NCExtensionManager implements INCExtensionManager {
     private final MetadataTupleTranslatorProvider tupleTranslatorProvider;
     private final MetadataIndexesProvider metadataIndexesProvider;
     private final List<IMetadataExtension> mdExtensions;
+    private boolean hasExtensions;
 
     /**
      * Initialize {@code CCExtensionManager} from configuration
@@ -68,6 +69,7 @@ public class NCExtensionManager implements INCExtensionManager {
         mdExtensions = new ArrayList<>();
         MetadataIndexesProvider mdIndexesProvider = new MetadataIndexesProvider(usingDatabase);
         if (list != null) {
+            hasExtensions = !list.isEmpty();
             for (AsterixExtension extensionConf : list) {
                 IExtension extension = (IExtension) Class.forName(extensionConf.getClassName()).newInstance();
                 extension.configure(extensionConf.getArgs(), ncServiceCtx);
@@ -90,7 +92,7 @@ public class NCExtensionManager implements INCExtensionManager {
             }
         }
         this.sqlppCompilationProvider =
-                sqlppcp == null ? new SqlppCompilationProvider(namespaceResolver) : sqlppcp.second;
+                sqlppcp == null ? new SqlppCompilationProvider(namespaceResolver) : sqlppcp.getRight();
         if (tupleTranslatorProviderExtension == null) {
             this.metadataIndexesProvider = mdIndexesProvider;
             this.tupleTranslatorProvider = new MetadataTupleTranslatorProvider(metadataIndexesProvider);
@@ -143,5 +145,10 @@ public class NCExtensionManager implements INCExtensionManager {
                 }
             }
         }
+    }
+
+    @Override
+    public boolean hasExtensions() {
+        return hasExtensions;
     }
 }

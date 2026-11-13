@@ -21,11 +21,12 @@ package org.apache.hyracks.algebricks.compiler.api;
 import java.util.EnumSet;
 import java.util.List;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
+import org.apache.hyracks.algebricks.core.algebra.base.IndexAdvisor;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IConflictingTypeResolver;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IExpressionEvalSizeComputer;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IExpressionTypeComputer;
@@ -66,12 +67,13 @@ public class HeuristicCompilerFactoryBuilder extends AbstractCompilerFactoryBuil
                 IMergeAggregationExpressionFactory mergeAggregationExpressionFactory,
                 IExpressionTypeComputer expressionTypeComputer, IMissableTypeComputer missableTypeComputer,
                 IConflictingTypeResolver conflictingTypeResolver, PhysicalOptimizationConfig physicalOptimizationConfig,
-                AlgebricksPartitionConstraint clusterLocations, IWarningCollector warningCollector) {
+                AlgebricksPartitionConstraint clusterLocations, IWarningCollector warningCollector,
+                IndexAdvisor indexAdvisor) {
             IPlanPrettyPrinter prettyPrinter = PlanPrettyPrinter.createStringPlanPrettyPrinter();
             return new AlgebricksOptimizationContext(this, varCounter, expressionEvalSizeComputer,
                     mergeAggregationExpressionFactory, expressionTypeComputer, missableTypeComputer,
                     conflictingTypeResolver, physicalOptimizationConfig, clusterLocations, prettyPrinter,
-                    warningCollector);
+                    warningCollector, indexAdvisor);
         }
 
         @Override
@@ -81,10 +83,6 @@ public class HeuristicCompilerFactoryBuilder extends AbstractCompilerFactoryBuil
     }
 
     private final IOptimizationContextFactory optCtxFactory;
-
-    public HeuristicCompilerFactoryBuilder() {
-        this.optCtxFactory = DefaultOptimizationContextFactory.INSTANCE;
-    }
 
     public HeuristicCompilerFactoryBuilder(IOptimizationContextFactory optCtxFactory) {
         this.optCtxFactory = optCtxFactory;
@@ -97,25 +95,33 @@ public class HeuristicCompilerFactoryBuilder extends AbstractCompilerFactoryBuil
 
     private class CompilerFactoryImpl implements ICompilerFactory {
         @Override
-        public ICompiler createCompiler(ILogicalPlan plan, IMetadataProvider<?, ?> metadata, int varCounter) {
-            IOptimizationContext optContext =
-                    optCtxFactory.createOptimizationContext(varCounter, expressionEvalSizeComputer,
-                            mergeAggregationExpressionFactory, expressionTypeComputer, missableTypeComputer,
-                            conflictingTypeResolver, physicalOptimizationConfig, clusterLocations, warningCollector);
+        public ICompiler createCompiler(ILogicalPlan plan, IMetadataProvider<?, ?> metadata, int varCounter,
+                IRuleSetKind ruleSetKind, IndexAdvisor indexAdvisor) {
+            IOptimizationContext optContext = optCtxFactory.createOptimizationContext(varCounter,
+                    expressionEvalSizeComputer, mergeAggregationExpressionFactory, expressionTypeComputer,
+                    missableTypeComputer, conflictingTypeResolver, physicalOptimizationConfig, clusterLocations,
+                    warningCollector, indexAdvisor);
             optContext.setMetadataDeclarations(metadata);
             optContext.setCompilerFactory(this);
-            return new CompilerImpl(this, plan, optContext, logicalRewrites.get(), physicalRewrites.get(),
-                    writerFactory);
+            return new CompilerImpl(this, plan, optContext, logicalRewritesByKind.apply(ruleSetKind),
+                    physicalRewritesByKind.apply(ruleSetKind), writerFactory);
         }
 
         @Override
         public ICompiler createCompiler(ILogicalPlan plan, IOptimizationContext newOptContext,
                 IRuleSetKind ruleSetKind) {
+            return createCompiler(plan, newOptContext, ruleSetKind,
+                    SerializedDataWriterFactory.WITHOUT_RECORD_DESCRIPTOR);
+        }
+
+        @Override
+        public ICompiler createCompiler(ILogicalPlan plan, IOptimizationContext newOptContext, IRuleSetKind ruleSetKind,
+                IAWriterFactory writerFactory) {
             if (newOptContext.getCompilerFactory() != this) {
                 throw new IllegalStateException();
             }
             return new CompilerImpl(this, plan, newOptContext, logicalRewritesByKind.apply(ruleSetKind),
-                    physicalRewrites.get(), SerializedDataWriterFactory.WITHOUT_RECORD_DESCRIPTOR);
+                    physicalRewrites.get(), writerFactory);
         }
 
         private PlanCompiler createPlanCompiler(IOptimizationContext oc, Object appContext,
@@ -128,7 +134,7 @@ public class HeuristicCompilerFactoryBuilder extends AbstractCompilerFactoryBuil
                     normalizedKeyComputerFactoryProvider, expressionRuntimeProvider, expressionTypeComputer, oc,
                     expressionEvalSizeComputer, partialAggregationTypeComputer, predEvaluatorFactoryProvider,
                     physicalOptimizationConfig.getFrameSize(), clusterLocations, warningCollector, maxWarnings,
-                    physicalOptimizationConfig);
+                    physicalOptimizationConfig, compilationContext);
             return new PlanCompiler(context);
         }
     }
@@ -187,6 +193,11 @@ public class HeuristicCompilerFactoryBuilder extends AbstractCompilerFactoryBuil
         @Override
         public boolean skipJobCapacityAssignment() {
             return oc.skipJobCapacityAssignment();
+        }
+
+        @Override
+        public IOptimizationContext getOptimizationContext() {
+            return oc;
         }
     }
 }

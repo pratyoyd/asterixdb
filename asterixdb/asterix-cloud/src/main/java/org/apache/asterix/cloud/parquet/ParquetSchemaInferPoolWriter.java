@@ -29,15 +29,19 @@ import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IValueReference;
 import org.apache.hyracks.dataflow.common.data.accessors.IFrameTupleReference;
+import org.apache.hyracks.util.LogRedactionUtil;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
+// Maintains a pool of Parquet writers holding a file, each with its own schema , and writes values to the appropriate writer based on schema.
 public class ParquetSchemaInferPoolWriter {
+    private static final Logger LOGGER = LogManager.getLogger();
     private final ParquetExternalWriterFactory writerFactory;
-
-    private List<ParquetSchemaTree.SchemaNode> schemaNodes;
-    private List<IExternalWriter> writerList;
+    private final List<ParquetSchemaTree.SchemaNode> schemaNodes;
+    private final List<IExternalWriter> writerList;
     private final int maxSchemas;
-    private ISchemaChecker schemaChecker;
-    private ParquetSchemaLazyVisitor schemaLazyVisitor;
+    private final ISchemaChecker schemaChecker;
+    private final ParquetSchemaLazyVisitor schemaLazyVisitor;
 
     public ParquetSchemaInferPoolWriter(ParquetExternalWriterFactory writerFactory, ISchemaChecker schemaChecker,
             ParquetSchemaLazyVisitor parquetSchemaLazyVisitor, int maxSchemas) {
@@ -53,62 +57,59 @@ public class ParquetSchemaInferPoolWriter {
         for (int i = 0; i < schemaNodes.size(); i++) {
             ISchemaChecker.SchemaComparisonType schemaComparisonType =
                     schemaChecker.checkSchema(schemaNodes.get(i), value);
-
             if (schemaComparisonType.equals(ISchemaChecker.SchemaComparisonType.EQUIVALENT)) {
                 return;
             } else if (schemaComparisonType.equals(ISchemaChecker.SchemaComparisonType.GROWING)) {
-                schemaNodes.set(i, schemaLazyVisitor.inferSchema(value));
+                // If the schema is growing, close the existing writer and create a new one with the new schema.
+                schemaLazyVisitor.updateSchema(value, schemaNodes.get(i));
                 closeWriter(i);
                 return;
             }
         }
 
         if (schemaNodes.size() == maxSchemas) {
+            LOGGER.info("Schema limit exceeded, max schemas allowed: {}", maxSchemas);
+            schemaNodes.forEach(schemaNode -> {
+                LOGGER.info("Inferred schema: {}", LogRedactionUtil.userData(schemaNode.toString()));
+            });
             throw new HyracksDataException(ErrorCode.SCHEMA_LIMIT_EXCEEDED, maxSchemas);
         }
         schemaNodes.add(schemaLazyVisitor.inferSchema(value));
         writerList.add(null);
     }
 
-    public void initNewPartition(IFrameTupleReference tuple) throws HyracksDataException {
-        for (int i = 0; i < writerList.size(); i++) {
-            createOrInitPartition(i, tuple);
-        }
-    }
-
-    public void write(IValueReference value) throws HyracksDataException {
+    public void write(IValueReference value, IFrameTupleReference tupleRef) throws HyracksDataException {
         for (int i = 0; i < schemaNodes.size(); i++) {
             if (schemaChecker.checkSchema(schemaNodes.get(i), value)
                     .equals(ISchemaChecker.SchemaComparisonType.EQUIVALENT)) {
-                createOrWrite(i, value);
+                createOrWrite(i, value, tupleRef);
                 return;
             }
         }
     }
 
     public void close() throws HyracksDataException {
-        for (int i = 0; i < writerList.size(); i++) {
-            closeWriter(i);
-        }
+        closeAll();
     }
 
-    private void createOrInitPartition(int index, IFrameTupleReference tupleReference) throws HyracksDataException {
+    private void createOrWrite(int index, IValueReference value, IFrameTupleReference tupleRef)
+            throws HyracksDataException {
         if (writerList.get(index) == null) {
-            createWriter(index);
-        }
-        writerList.get(index).initNewPartition(tupleReference);
-    }
-
-    private void createOrWrite(int index, IValueReference value) throws HyracksDataException {
-        if (writerList.get(index) == null) {
-            createWriter(index);
+            createWriter(index, tupleRef);
         }
         writerList.get(index).write(value);
     }
 
-    private void createWriter(int index) throws HyracksDataException {
+    private void createWriter(int index, IFrameTupleReference tupleRef) throws HyracksDataException {
         writerList.set(index, writerFactory.createWriter(schemaNodes.get(index)));
         writerList.get(index).open();
+        writerList.get(index).initNewPartition(tupleRef);
+    }
+
+    public void closeAll() throws HyracksDataException {
+        for (int i = 0; i < writerList.size(); i++) {
+            closeWriter(i);
+        }
     }
 
     private void closeWriter(int index) throws HyracksDataException {

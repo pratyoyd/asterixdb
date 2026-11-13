@@ -60,6 +60,7 @@ import org.apache.hyracks.storage.common.IIndexCursor;
 import org.apache.hyracks.storage.common.IIndexCursorStats;
 import org.apache.hyracks.storage.common.IModificationOperationCallback;
 import org.apache.hyracks.storage.common.ISearchPredicate;
+import org.apache.hyracks.storage.common.ISketchSampler;
 import org.apache.hyracks.storage.common.MultiComparator;
 import org.apache.hyracks.storage.common.NoOpIndexCursorStats;
 import org.apache.hyracks.storage.common.buffercache.BufferCache;
@@ -906,9 +907,10 @@ public class RTree extends AbstractTreeIndex {
 
     @Override
     public IIndexBulkLoader createBulkLoader(float fillFactor, boolean verifyInput, long numElementsHint,
-            boolean checkIfEmptyIndex, IPageWriteCallback callback) throws HyracksDataException {
+            boolean checkIfEmptyIndex, ISketchSampler sampler, IPageWriteCallback callback)
+            throws HyracksDataException {
         // TODO: verifyInput currently does nothing.
-        return new RTreeBulkLoader(fillFactor, callback);
+        return new RTreeBulkLoader(fillFactor, sampler, callback);
     }
 
     public class RTreeBulkLoader extends AbstractTreeIndexBulkLoader {
@@ -919,14 +921,16 @@ public class RTree extends AbstractTreeIndex {
         ByteBuffer mbr;
         List<Integer> prevNodeFrontierPages = new ArrayList<>();
 
-        public RTreeBulkLoader(float fillFactor, IPageWriteCallback callback) throws HyracksDataException {
-            super(fillFactor, callback, RTree.this);
+        public RTreeBulkLoader(float fillFactor, ISketchSampler sampler, IPageWriteCallback callback)
+                throws HyracksDataException {
+            super(fillFactor, callback, RTree.this, sampler);
             prevInteriorFrame = interiorFrameFactory.createFrame();
         }
 
         @Override
         public void add(ITupleReference tuple) throws HyracksDataException {
             try {
+                sampler.addTuple(tuple);
                 int leafFrameTupleSize = leafFrame.getBytesRequiredToWriteTuple(tuple);
                 int interiorFrameTupleSize = interiorFrame.getBytesRequiredToWriteTuple(tuple);
                 int tupleSize = Math.max(leafFrameTupleSize, interiorFrameTupleSize);
@@ -982,17 +986,22 @@ public class RTree extends AbstractTreeIndex {
 
         @Override
         public void end() throws HyracksDataException {
-            pagesToWrite.clear();
-            //if writing a trivial 1-page tree, don't try and propagate up
-            if (nodeFrontiers.size() > 1) {
-                propagateBulk(1, true, pagesToWrite);
-            }
+            try {
+                pagesToWrite.clear();
+                //if writing a trivial 1-page tree, don't try and propagate up
+                if (nodeFrontiers.size() > 1) {
+                    propagateBulk(1, true, pagesToWrite);
+                }
 
-            for (ICachedPage c : pagesToWrite) {
-                write(c);
+                for (ICachedPage c : pagesToWrite) {
+                    write(c);
+                }
+                finish();
+                super.end();
+            } catch (HyracksDataException e) {
+                handleException();
+                throw e;
             }
-            finish();
-            super.end();
         }
 
         @Override

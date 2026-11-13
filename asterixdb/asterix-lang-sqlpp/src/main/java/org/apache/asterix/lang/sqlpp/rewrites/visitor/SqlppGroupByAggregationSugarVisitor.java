@@ -41,6 +41,7 @@ import org.apache.asterix.lang.common.expression.VariableExpr;
 import org.apache.asterix.lang.common.rewrites.LangRewritingContext;
 import org.apache.asterix.lang.common.struct.Identifier;
 import org.apache.asterix.lang.common.struct.VarIdentifier;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.SelectBlock;
 import org.apache.asterix.lang.sqlpp.clause.SelectClause;
@@ -48,7 +49,8 @@ import org.apache.asterix.lang.sqlpp.expression.SelectExpression;
 import org.apache.asterix.lang.sqlpp.util.SqlppRewriteUtil;
 import org.apache.asterix.lang.sqlpp.util.SqlppVariableUtil;
 import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppExpressionScopingVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.hyracks.api.exceptions.SourceLocation;
 
 /**
  * An AST pre-processor to rewrite group-by sugar queries, which does the following transformations:
@@ -118,70 +120,9 @@ public class SqlppGroupByAggregationSugarVisitor extends AbstractSqlppExpression
                 throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE, groupbyClause.getSourceLocation());
             }
             Map<VariableExpr, Identifier> groupVarFieldMap = createGroupVarFieldMap(groupbyClause.getGroupFieldList());
-            Set<VariableExpr> preGroupMappedVars = groupVarFieldMap.keySet();
-            Set<VariableExpr> preGroupContextVars = Scope.findVariablesAnnotatedBy(preGroupMappedVars,
-                    SqlppVariableAnnotation.CONTEXT_VARIABLE, preGroupAnnotatedVars, groupbyClause.getSourceLocation());
-            Set<VariableExpr> preGroupUnmappedVars = getUnmappedVariables(preGroupVars, preGroupMappedVars, outerVars);
-
-            Collection<VariableExpr> freeVariables = new HashSet<>();
-            Collection<VariableExpr> freeVariablesInGbyLets = new HashSet<>();
-            if (selectBlock.hasLetHavingClausesAfterGroupby()) {
-                for (AbstractClause letHavingClause : selectBlock.getLetHavingListAfterGroupby()) {
-                    letHavingClause.accept(this, arg);
-                    // Rewrites each let/having clause after the group-by.
-                    rewriteExpressionUsingGroupVariable(letHavingClause, groupVar, groupVarFieldMap,
-                            preGroupContextVars, preGroupUnmappedVars, outerVars);
-                    switch (letHavingClause.getClauseType()) {
-                        case LET_CLAUSE:
-                            LetClause letClause = (LetClause) letHavingClause;
-                            Collection<VariableExpr> freeVariablesInClause =
-                                    SqlppVariableUtil.getFreeVariables(letClause.getBindingExpr());
-                            freeVariablesInClause.removeAll(groupByBindingVars);
-                            freeVariablesInGbyLets.addAll(freeVariablesInClause);
-                            groupByBindingVars.add(letClause.getVarExpr());
-                            break;
-                        case HAVING_CLAUSE:
-                            freeVariables.addAll(SqlppVariableUtil.getFreeVariables(letHavingClause));
-                            break;
-                        default:
-                            throw new IllegalStateException(String.valueOf(letHavingClause.getClauseType()));
-                    }
-                }
-            }
-
-            SelectExpression parentSelectExpression = (SelectExpression) arg;
-            // We cannot rewrite ORDER BY and LIMIT if it's a SET operation query.
-            if (!parentSelectExpression.getSelectSetOperation().hasRightInputs()) {
-                if (parentSelectExpression.hasOrderby()) {
-                    // Rewrites the ORDER BY clause.
-                    OrderbyClause orderbyClause = parentSelectExpression.getOrderbyClause();
-                    orderbyClause.accept(this, arg);
-                    rewriteExpressionUsingGroupVariable(orderbyClause, groupVar, groupVarFieldMap, preGroupContextVars,
-                            preGroupUnmappedVars, outerVars);
-                    freeVariables.addAll(SqlppVariableUtil.getFreeVariables(orderbyClause));
-                }
-                if (parentSelectExpression.hasLimit()) {
-                    // Rewrites the LIMIT clause.
-                    LimitClause limitClause = parentSelectExpression.getLimitClause();
-                    limitClause.accept(this, arg);
-                    rewriteExpressionUsingGroupVariable(limitClause, groupVar, groupVarFieldMap, preGroupContextVars,
-                            preGroupUnmappedVars, outerVars);
-                    freeVariables.addAll(SqlppVariableUtil.getFreeVariables(limitClause));
-                }
-            }
-
-            // Visits the select clause.
-            SelectClause selectClause = selectBlock.getSelectClause();
-            selectClause.accept(this, arg);
-            // Rewrites the select clause.
-            rewriteExpressionUsingGroupVariable(selectClause, groupVar, groupVarFieldMap, preGroupContextVars,
-                    preGroupUnmappedVars, outerVars);
-            freeVariables.addAll(SqlppVariableUtil.getFreeVariables(selectClause));
-            freeVariables.removeAll(groupByBindingVars);
-
-            // Gets the final free variables.
-            freeVariables.addAll(freeVariablesInGbyLets);
-            removeExternalVariables(freeVariables);
+            Collection<VariableExpr> freeVariables =
+                    rewriteClausesAfterGrouping(selectBlock, arg, groupVar, groupVarFieldMap, preGroupAnnotatedVars,
+                            preGroupVars, groupByBindingVars, outerVars, groupbyClause.getSourceLocation());
 
             if (!groupbyClause.isGroupAll()) {
                 // Gets outer scope variables.
@@ -211,10 +152,124 @@ public class SqlppGroupByAggregationSugarVisitor extends AbstractSqlppExpression
                     groupbyClause.setDecorPairList(decorList);
                 }
             }
+        } else if (selectBlock.hasClusterbyClause()) {
+            // CLUSTER BY groups its block as GROUP BY does, where CLUSTER AS plays the group variable, so a
+            // SQL-92 aggregate after the clause ranges over the cluster's members. Outside variables the
+            // query reads after the clause are carried through the operator as decorations.
+            Map<VariableExpr, Set<? extends Scope.SymbolAnnotation>> preGroupAnnotatedVars =
+                    scopeChecker.getCurrentScope().getLiveVariables();
+            Set<VariableExpr> preGroupVars = preGroupAnnotatedVars.keySet();
+
+            ClusterbyClause clusterbyClause = selectBlock.getClusterbyClause();
+            clusterbyClause.accept(this, arg);
+            Collection<VariableExpr> bindingVars = new ArrayList<>();
+            for (VariableExpr bound : new VariableExpr[] { clusterbyClause.getClusterIdVar(),
+                    clusterbyClause.getCentroidVar(), clusterbyClause.getClusterMembersVar() }) {
+                if (bound != null) {
+                    bindingVars.add(bound);
+                }
+            }
+            VariableExpr groupVar = clusterbyClause.getClusterMembersVar();
+            if (groupVar == null || !clusterbyClause.hasClusterFieldList()) {
+                throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE,
+                        clusterbyClause.getSourceLocation());
+            }
+            Map<VariableExpr, Identifier> groupVarFieldMap =
+                    createGroupVarFieldMap(clusterbyClause.getClusterFieldList());
+            Collection<VariableExpr> freeVariables =
+                    rewriteClausesAfterGrouping(selectBlock, arg, groupVar, groupVarFieldMap, preGroupAnnotatedVars,
+                            preGroupVars, bindingVars, outerVars, clusterbyClause.getSourceLocation());
+            Collection<VariableExpr> decorVars = scopeChecker.getCurrentScope().getLiveVariables().keySet();
+            decorVars.removeAll(bindingVars);
+            decorVars.retainAll(freeVariables);
+            if (!decorVars.isEmpty()) {
+                List<GbyVariableExpressionPair> decorList = new ArrayList<>();
+                for (VariableExpr var : decorVars) {
+                    decorList.add(new GbyVariableExpressionPair((VariableExpr) SqlppRewriteUtil.deepCopy(var),
+                            (Expression) SqlppRewriteUtil.deepCopy(var)));
+                }
+                clusterbyClause.setDecorPairList(decorList);
+            }
         } else {
             selectBlock.getSelectClause().accept(this, arg);
         }
         return null;
+    }
+
+    /**
+     * Rewrites the SQL-92 aggregates in the clauses after the grouping (LET/HAVING, ORDER BY, LIMIT, SELECT)
+     * into aggregates over the group variable, and returns the free variables those clauses still read.
+     */
+    private Collection<VariableExpr> rewriteClausesAfterGrouping(SelectBlock selectBlock, ILangExpression arg,
+            VariableExpr groupVar, Map<VariableExpr, Identifier> groupVarFieldMap,
+            Map<VariableExpr, Set<? extends Scope.SymbolAnnotation>> preGroupAnnotatedVars,
+            Set<VariableExpr> preGroupVars, Collection<VariableExpr> groupByBindingVars, Set<VariableExpr> outerVars,
+            SourceLocation sourceLoc) throws CompilationException {
+        Set<VariableExpr> preGroupMappedVars = groupVarFieldMap.keySet();
+        Set<VariableExpr> preGroupContextVars = Scope.findVariablesAnnotatedBy(preGroupMappedVars,
+                SqlppVariableAnnotation.CONTEXT_VARIABLE, preGroupAnnotatedVars, sourceLoc);
+        Set<VariableExpr> preGroupUnmappedVars = getUnmappedVariables(preGroupVars, preGroupMappedVars, outerVars);
+
+        Collection<VariableExpr> freeVariables = new HashSet<>();
+        Collection<VariableExpr> freeVariablesInGbyLets = new HashSet<>();
+        if (selectBlock.hasLetHavingClausesAfterGroupby()) {
+            for (AbstractClause letHavingClause : selectBlock.getLetHavingListAfterGroupby()) {
+                letHavingClause.accept(this, arg);
+                // Rewrites each let/having clause after the group-by.
+                rewriteExpressionUsingGroupVariable(letHavingClause, groupVar, groupVarFieldMap, preGroupContextVars,
+                        preGroupUnmappedVars, outerVars);
+                switch (letHavingClause.getClauseType()) {
+                    case LET_CLAUSE:
+                        LetClause letClause = (LetClause) letHavingClause;
+                        Collection<VariableExpr> freeVariablesInClause =
+                                SqlppVariableUtil.getFreeVariables(letClause.getBindingExpr());
+                        freeVariablesInClause.removeAll(groupByBindingVars);
+                        freeVariablesInGbyLets.addAll(freeVariablesInClause);
+                        groupByBindingVars.add(letClause.getVarExpr());
+                        break;
+                    case HAVING_CLAUSE:
+                        freeVariables.addAll(SqlppVariableUtil.getFreeVariables(letHavingClause));
+                        break;
+                    default:
+                        throw new IllegalStateException(String.valueOf(letHavingClause.getClauseType()));
+                }
+            }
+        }
+
+        SelectExpression parentSelectExpression = (SelectExpression) arg;
+        // We cannot rewrite ORDER BY and LIMIT if it's a SET operation query.
+        if (!parentSelectExpression.getSelectSetOperation().hasRightInputs()) {
+            if (parentSelectExpression.hasOrderby()) {
+                // Rewrites the ORDER BY clause.
+                OrderbyClause orderbyClause = parentSelectExpression.getOrderbyClause();
+                orderbyClause.accept(this, arg);
+                rewriteExpressionUsingGroupVariable(orderbyClause, groupVar, groupVarFieldMap, preGroupContextVars,
+                        preGroupUnmappedVars, outerVars);
+                freeVariables.addAll(SqlppVariableUtil.getFreeVariables(orderbyClause));
+            }
+            if (parentSelectExpression.hasLimit()) {
+                // Rewrites the LIMIT clause.
+                LimitClause limitClause = parentSelectExpression.getLimitClause();
+                limitClause.accept(this, arg);
+                rewriteExpressionUsingGroupVariable(limitClause, groupVar, groupVarFieldMap, preGroupContextVars,
+                        preGroupUnmappedVars, outerVars);
+                freeVariables.addAll(SqlppVariableUtil.getFreeVariables(limitClause));
+            }
+        }
+
+        // Visits the select clause.
+        SelectClause selectClause = selectBlock.getSelectClause();
+        selectClause.accept(this, arg);
+        // Rewrites the select clause.
+        rewriteExpressionUsingGroupVariable(selectClause, groupVar, groupVarFieldMap, preGroupContextVars,
+                preGroupUnmappedVars, outerVars);
+        freeVariables.addAll(SqlppVariableUtil.getFreeVariables(selectClause));
+        freeVariables.removeAll(groupByBindingVars);
+
+        // Gets the final free variables.
+        freeVariables.addAll(freeVariablesInGbyLets);
+        removeExternalVariables(freeVariables);
+        return freeVariables;
     }
 
     private void removeExternalVariables(Collection<VariableExpr> freeVariables) {
@@ -226,8 +281,8 @@ public class SqlppGroupByAggregationSugarVisitor extends AbstractSqlppExpression
     static Map<VariableExpr, Identifier> createGroupVarFieldMap(List<Pair<Expression, Identifier>> fieldList) {
         Map<VariableExpr, Identifier> fieldVars = new HashMap<>();
         for (Pair<Expression, Identifier> p : fieldList) {
-            if (p.first.getKind() == Expression.Kind.VARIABLE_EXPRESSION) {
-                fieldVars.put((VariableExpr) p.first, p.second);
+            if (p.getLeft().getKind() == Expression.Kind.VARIABLE_EXPRESSION) {
+                fieldVars.put((VariableExpr) p.getLeft(), p.getRight());
             }
         }
         return fieldVars;

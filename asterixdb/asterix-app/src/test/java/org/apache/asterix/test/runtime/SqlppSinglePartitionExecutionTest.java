@@ -24,11 +24,16 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.asterix.common.api.IDatasetLifecycleManager;
 import org.apache.asterix.common.api.INcApplicationContext;
+import org.apache.asterix.common.storage.StorageIOStats;
 import org.apache.asterix.test.common.TestExecutor;
 import org.apache.asterix.testframework.context.TestCaseContext;
 import org.apache.hyracks.control.nc.NodeControllerService;
+import org.apache.hyracks.storage.common.buffercache.BufferCache;
+import org.apache.hyracks.storage.common.buffercache.IBufferCache;
 import org.junit.AfterClass;
+import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -68,6 +73,19 @@ public class SqlppSinglePartitionExecutionTest {
     @Test
     public void test() throws Exception {
         LangExecutionUtil.test(tcCtx);
+        for (NodeControllerService nc : ExecutionTestUtil.integrationUtil.ncs) {
+            IDatasetLifecycleManager lifecycleManager =
+                    ((INcApplicationContext) nc.getApplicationContext()).getDatasetLifecycleManager();
+            StorageIOStats stats = lifecycleManager.getDatasetsIOStats();
+            while (stats.getPendingFlushes() != 0 || stats.getPendingMerges() != 0) {
+                stats = lifecycleManager.getDatasetsIOStats();
+            }
+        }
+        IBufferCache bufferCache;
+        for (NodeControllerService nc : ExecutionTestUtil.integrationUtil.ncs) {
+            bufferCache = ((INcApplicationContext) nc.getApplicationContext()).getBufferCache();
+            Assert.assertTrue(((BufferCache) bufferCache).isClean());
+        }
     }
 
     private static void setNcEndpoints(TestExecutor testExecutor) {

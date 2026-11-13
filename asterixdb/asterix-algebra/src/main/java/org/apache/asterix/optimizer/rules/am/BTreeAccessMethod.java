@@ -19,17 +19,23 @@
 
 package org.apache.asterix.optimizer.rules.am;
 
+import static org.apache.asterix.om.functions.BuiltinFunctions.EQ;
+import static org.apache.asterix.om.types.AOrderedListType.FULL_OPEN_ORDEREDLIST_TYPE;
 import static org.apache.asterix.optimizer.rules.am.AccessMethodUtils.CAST_NULL_TYPE_CONSTRUCTORS;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.asterix.common.annotations.AbstractExpressionAnnotationWithIndexNames;
 import org.apache.asterix.common.annotations.IndexedNLJoinExpressionAnnotation;
@@ -39,25 +45,31 @@ import org.apache.asterix.common.config.DatasetConfig.IndexType;
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.dataflow.data.common.ILogicalBinaryComparator;
+import org.apache.asterix.dataflow.data.common.TaggedValueReference;
 import org.apache.asterix.dataflow.data.nontagged.comparators.ComparatorUtil;
+import org.apache.asterix.dataflow.data.nontagged.serde.AObjectSerializerDeserializer;
 import org.apache.asterix.lang.common.util.FunctionUtil;
 import org.apache.asterix.metadata.entities.Dataset;
 import org.apache.asterix.metadata.entities.Index;
 import org.apache.asterix.metadata.utils.IndexUtil;
 import org.apache.asterix.metadata.utils.TypeUtil;
 import org.apache.asterix.om.base.ADouble;
+import org.apache.asterix.om.base.AOrderedList;
 import org.apache.asterix.om.base.IAObject;
+import org.apache.asterix.om.constants.AsterixConstantValue;
 import org.apache.asterix.om.functions.BuiltinFunctions;
+import org.apache.asterix.om.typecomputer.base.TypeCastUtils;
 import org.apache.asterix.om.typecomputer.impl.TypeComputeUtils;
 import org.apache.asterix.om.types.ARecordType;
+import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.types.hierachy.ATypeHierarchy;
 import org.apache.asterix.optimizer.rules.util.EquivalenceClassUtils;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Quadruple;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
@@ -67,6 +79,7 @@ import org.apache.hyracks.algebricks.core.algebra.base.LogicalExpressionTag;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalOperatorTag;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.expressions.AbstractFunctionCallExpression;
+import org.apache.hyracks.algebricks.core.algebra.expressions.ConstantExpression;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IAlgebricksConstantValue;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
 import org.apache.hyracks.algebricks.core.algebra.expressions.ScalarFunctionCallExpression;
@@ -85,7 +98,10 @@ import org.apache.hyracks.algebricks.core.algebra.operators.logical.AssignOperat
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.LeftOuterUnnestMapOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.SelectOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.UnnestMapOperator;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.UnnestOperator;
 import org.apache.hyracks.algebricks.core.algebra.util.OperatorManipulationUtil;
+import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.exceptions.SourceLocation;
 import org.apache.hyracks.util.LogRedactionUtil;
 
 /**
@@ -108,12 +124,10 @@ public class BTreeAccessMethod implements IAccessMethod {
     // that SELECT condition needs to be applied after the index-search to get the correct results.
     // For B+Tree indexes, there are no false positive results unless the given index is a composite index or an array
     // index.
-    private static final List<Pair<FunctionIdentifier, Boolean>> FUNC_IDENTIFIERS = Collections
-            .unmodifiableList(Arrays.asList(new Pair<FunctionIdentifier, Boolean>(AlgebricksBuiltinFunctions.EQ, false),
-                    new Pair<FunctionIdentifier, Boolean>(AlgebricksBuiltinFunctions.LE, false),
-                    new Pair<FunctionIdentifier, Boolean>(AlgebricksBuiltinFunctions.GE, false),
-                    new Pair<FunctionIdentifier, Boolean>(AlgebricksBuiltinFunctions.LT, false),
-                    new Pair<FunctionIdentifier, Boolean>(AlgebricksBuiltinFunctions.GT, false)));
+    private static final List<Pair<FunctionIdentifier, Boolean>> FUNC_IDENTIFIERS =
+            Collections.unmodifiableList(Arrays.asList(Pair.of(AlgebricksBuiltinFunctions.EQ, false),
+                    Pair.of(AlgebricksBuiltinFunctions.LE, false), Pair.of(AlgebricksBuiltinFunctions.GE, false),
+                    Pair.of(AlgebricksBuiltinFunctions.LT, false), Pair.of(AlgebricksBuiltinFunctions.GT, false)));
 
     public static final BTreeAccessMethod INSTANCE = new BTreeAccessMethod();
 
@@ -177,9 +191,9 @@ public class BTreeAccessMethod implements IAccessMethod {
 
         Pair<Boolean, Boolean> functionFalsePositiveCheck =
                 AccessMethodUtils.canFunctionGenerateFalsePositiveResultsUsingIndex(funcExpr, FUNC_IDENTIFIERS);
-        if (functionFalsePositiveCheck.first) {
+        if (functionFalsePositiveCheck.getLeft()) {
             // An index-utilizable function found? then, get the info about false positive results generation.
-            requireVerificationAfterSIdxSearch = functionFalsePositiveCheck.second;
+            requireVerificationAfterSIdxSearch = functionFalsePositiveCheck.getRight();
         } else {
             return false;
         }
@@ -189,21 +203,24 @@ public class BTreeAccessMethod implements IAccessMethod {
 
         if (dataset.getDatasetType() == DatasetType.INTERNAL && !chosenIndex.isPrimaryIndex()) {
             AccessMethodUtils.indexOnlyPlanCheck(afterSelectRefs, selectRef, subTree, null, chosenIndex, analysisCtx,
-                    context, indexOnlyPlanInfo);
+                    context, indexOnlyPlanInfo, false);
             isIndexOnlyPlan = indexOnlyPlanInfo.getFirst();
         }
 
         // Sets the result of index-only plan check into AccessMethodAnalysisContext.
         analysisCtx.setIndexOnlyPlanInfo(indexOnlyPlanInfo);
 
+        List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions = new ArrayList<>();
+
         // Transform the current path to the path that is utilizing the corresponding indexes
         ILogicalOperator primaryIndexUnnestOp = createIndexSearchPlan(afterSelectRefs, selectRef, conditionRef,
                 subTree.getAssignsAndUnnestsRefs(), subTree, null, chosenIndex, analysisCtx,
                 AccessMethodUtils.retainInputs(subTree.getDataSourceVariables(), subTree.getDataSourceRef().getValue(),
                         afterSelectRefs),
-                false, subTree.getDataSourceRef().getValue().getInputs().get(0).getValue()
+                false,
+                subTree.getDataSourceRef().getValue().getInputs().get(0).getValue()
                         .getExecutionMode() == ExecutionMode.UNPARTITIONED,
-                context, null, null);
+                context, null, null, optimizableDisjunctionConditions);
 
         if (primaryIndexUnnestOp == null) {
             return false;
@@ -232,6 +249,7 @@ public class BTreeAccessMethod implements IAccessMethod {
                     selectOp.getInputs().clear();
                     subTree.getDataSourceRef().setValue(primaryIndexUnnestOp);
                     selectOp.getInputs().add(new MutableObject<ILogicalOperator>(assignBeforeSelectOp));
+                    optimizeSelectCondition(selectOp.getCondition(), optimizableDisjunctionConditions);
                 }
             } else {
                 // A secondary-index-only plan without any assign cannot exist. This is a non-index only plan.
@@ -250,6 +268,42 @@ public class BTreeAccessMethod implements IAccessMethod {
         }
 
         return true;
+    }
+
+    /**
+     * Replaces each disjunction of equalities that the index search turned into a list of search keys with a test
+     * that the record equals the key that found it, which the search keeps alongside the record.
+     */
+    public static void optimizeSelectCondition(Mutable<ILogicalExpression> cond,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions) {
+        if (cond.getValue().getExpressionTag() != LogicalExpressionTag.FUNCTION_CALL) {
+            return;
+        }
+        AbstractFunctionCallExpression funcExpr = (AbstractFunctionCallExpression) cond.getValue();
+        if (funcExpr.getFunctionIdentifier().equals(AlgebricksBuiltinFunctions.OR)) {
+            for (Pair<LogicalVariable, List<ILogicalExpression>> keyVarAndConditions : optimizableDisjunctionConditions) {
+                // The keys must be this disjunction's constants and nothing else's. Compared structurally, since the
+                // condition may be a copy of the one the keys came from.
+                List<ILogicalExpression> conditions = keyVarAndConditions.getRight();
+                if (conditions.size() == 1 && (conditions.get(0) == funcExpr || conditions.get(0).equals(funcExpr))) {
+                    AbstractFunctionCallExpression firstDisjunct =
+                            (AbstractFunctionCallExpression) funcExpr.getArguments().get(0).getValue();
+                    ILogicalExpression variable = firstDisjunct.getArguments().get(0).getValue()
+                            .getExpressionTag() == LogicalExpressionTag.VARIABLE
+                                    ? firstDisjunct.getArguments().get(0).getValue()
+                                    : firstDisjunct.getArguments().get(1).getValue();
+                    List<Mutable<ILogicalExpression>> args = new ArrayList<>();
+                    args.add(new MutableObject<>(variable.cloneExpression()));
+                    args.add(new MutableObject<>(new VariableReferenceExpression(keyVarAndConditions.getLeft())));
+                    cond.setValue(new ScalarFunctionCallExpression(BuiltinFunctions.getBuiltinFunctionInfo(EQ), args));
+                    return;
+                }
+            }
+        } else if (funcExpr.getFunctionIdentifier().equals(AlgebricksBuiltinFunctions.AND)) {
+            for (Mutable<ILogicalExpression> arg : funcExpr.getArguments()) {
+                optimizeSelectCondition(arg, optimizableDisjunctionConditions);
+            }
+        }
     }
 
     @Override
@@ -291,14 +345,14 @@ public class BTreeAccessMethod implements IAccessMethod {
         }
 
         boolean canContinue = AccessMethodUtils.setIndexOnlyPlanInfo(afterJoinRefs, joinRef, probeSubTree, indexSubTree,
-                chosenIndex, analysisCtx, context, funcExpr, FUNC_IDENTIFIERS);
+                chosenIndex, analysisCtx, context, funcExpr, FUNC_IDENTIFIERS, true);
         if (!canContinue) {
             return false;
         }
 
         ILogicalOperator indexSearchOp = createIndexSearchPlan(afterJoinRefs, joinRef, conditionRef,
                 indexSubTree.getAssignsAndUnnestsRefs(), indexSubTree, probeSubTree, chosenIndex, analysisCtx, true,
-                isLeftOuterJoin, true, context, newMissingNullPlaceHolderVar, leftOuterMissingValue);
+                isLeftOuterJoin, true, context, newMissingNullPlaceHolderVar, leftOuterMissingValue, new ArrayList<>());
 
         if (indexSearchOp == null) {
             return false;
@@ -311,8 +365,7 @@ public class BTreeAccessMethod implements IAccessMethod {
 
     /**
      * Creates an index utilization plan optimization - in case of an index-only select plan:
-     * union < project < select < assign? < unnest-map(pidx) < split < unnest-map(sidx) < assign? < datasource-scan
-     * ..... < project < ................................... <
+     *  < project < select < distint < sort < unnest-map(sidx) < assign? < datasource-scan
      */
     @Override
     public ILogicalOperator createIndexSearchPlan(List<Mutable<ILogicalOperator>> afterTopOpRefs,
@@ -320,7 +373,8 @@ public class BTreeAccessMethod implements IAccessMethod {
             List<Mutable<ILogicalOperator>> assignBeforeTheOpRefs, OptimizableOperatorSubTree indexSubTree,
             OptimizableOperatorSubTree probeSubTree, Index chosenIndex, AccessMethodAnalysisContext analysisCtx,
             boolean retainInput, boolean retainMissing, boolean requiresBroadcast, IOptimizationContext context,
-            LogicalVariable newMissingNullPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue)
+            LogicalVariable newMissingNullPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions)
             throws AlgebricksException {
 
         Index.ValueIndexDetails chosenIndexDetails = (Index.ValueIndexDetails) chosenIndex.getIndexDetails();
@@ -331,7 +385,659 @@ public class BTreeAccessMethod implements IAccessMethod {
         return createBTreeIndexSearchPlan(afterTopOpRefs, topOpRef, conditionRef, assignBeforeTheOpRefs, indexSubTree,
                 probeSubTree, chosenIndex, analysisCtx, retainInput, retainMissing, requiresBroadcast, context,
                 newMissingNullPlaceHolderForLOJ, leftOuterMissingValue, chosenIndexKeyFieldNames,
-                chosenIndexKeyFieldTypes, chosenIndexKeyFieldSourceIndicators);
+                chosenIndexKeyFieldTypes, chosenIndexKeyFieldSourceIndicators, optimizableDisjunctionConditions);
+    }
+
+    /**
+     * Whether each key position holds exactly one equality or one disjunction of equalities, and nothing else. A
+     * primary-index search for such keys returns exactly the records that satisfy them. Another condition on a key
+     * does not make the search narrower: a second equality adds its value to the key's list, and a range is ignored.
+     */
+    private static boolean isEqualitySearch(int numConditions, LimitType[] lowKeyLimits, LimitType[] highKeyLimits,
+            boolean[] isDisjunctiveEqualityCondition, List<ILogicalExpression>[] disjunctiveEqualityConditionExprs) {
+        if (numConditions != lowKeyLimits.length) {
+            return false;
+        }
+        for (int i = 0; i < lowKeyLimits.length; i++) {
+            boolean disjunction = isDisjunctiveEqualityCondition[i] && lowKeyLimits[i] == null
+                    && highKeyLimits[i] == null && disjunctiveEqualityConditionExprs[i].size() == 1;
+            boolean equality = !isDisjunctiveEqualityCondition[i] && lowKeyLimits[i] == LimitType.EQUAL
+                    && highKeyLimits[i] == LimitType.EQUAL;
+            if (!disjunction && !equality) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasDisjunctiveEquality(AccessMethodAnalysisContext analysisCtx, Index chosenIndex) {
+        for (Pair<Integer, Integer> exprAndVar : analysisCtx.getIndexExprsFromIndexExprsAndVars(chosenIndex)) {
+            if (analysisCtx.getMatchedFuncExpr(exprAndVar.getLeft()) instanceof DisjunctiveEqualityFuncExpr) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void createKeyVarsAndExprsWithOr(int numKeys, LimitType[] keyLimits, ILogicalExpression[] searchKeyExprs,
+            ArrayList<LogicalVariable> assignKeyVarList, ArrayList<List<Mutable<ILogicalExpression>>> assignKeyExprList,
+            ArrayList<LogicalVariable> keyVarList, IOptimizationContext context, ILogicalExpression[] constExpressions,
+            LogicalVariable[] constExprVars, Set<ILogicalExpression>[] disjunctiveEqualityKeyExprs,
+            List<ILogicalExpression>[] disjunctiveEqualityConditionExprs, boolean[] isDisjunctiveEqualityCondition,
+            boolean isHighKey, int numlowKeys, List<List<ILogicalExpression>> disjunctiveEqualityConditionExprSet) {
+        for (int i = 0; i < numKeys; i++) {
+            ILogicalExpression searchKeyExpr = searchKeyExprs[i];
+            ILogicalExpression constExpression = constExpressions[i];
+            LogicalVariable keyVar = null;
+            if (isDisjunctiveEqualityCondition[i] && (i >= numlowKeys || !isHighKey)) {
+                keyVar = context.newVar();
+                assignKeyExprList.add(
+                        disjunctiveEqualityKeyExprs[i].stream().map(MutableObject::new).collect(Collectors.toList()));
+                assignKeyVarList.add(keyVar);
+                disjunctiveEqualityConditionExprSet.add(disjunctiveEqualityConditionExprs[i]);
+            } else if (isDisjunctiveEqualityCondition[i] && isHighKey && i < numlowKeys) {
+                keyVar = assignKeyVarList.get(i);
+            } else if (searchKeyExpr.getExpressionTag() == LogicalExpressionTag.CONSTANT) {
+                keyVar = context.newVar();
+                assignKeyExprList.add(Collections.singletonList(new MutableObject<>(searchKeyExpr)));
+                assignKeyVarList.add(keyVar);
+                disjunctiveEqualityConditionExprSet.add(disjunctiveEqualityConditionExprs[i]);
+            } else {
+                keyVar = ((VariableReferenceExpression) searchKeyExpr).getVariableReference();
+                if (constExpression != null) {
+                    if (constExpression.getExpressionTag() != LogicalExpressionTag.CONSTANT) {
+                        constExpression = constExpression.cloneExpression();
+                    }
+                    assignKeyExprList.add(Collections.singletonList(new MutableObject<>(constExpression)));
+                    assignKeyVarList.add(constExprVars[i]);
+                    disjunctiveEqualityConditionExprSet.add(disjunctiveEqualityConditionExprs[i]);
+                }
+            }
+            keyVarList.add(keyVar);
+        }
+    }
+
+    // TODO (preetham): Refactor this method.
+    private ILogicalOperator createBTreeIndexSearchPlanWithOr(List<Mutable<ILogicalOperator>> afterTopOpRefs,
+            Mutable<ILogicalOperator> topOpRef, Mutable<ILogicalExpression> conditionRef,
+            List<Mutable<ILogicalOperator>> assignBeforeTheOpRefs, OptimizableOperatorSubTree indexSubTree,
+            OptimizableOperatorSubTree probeSubTree, Index chosenIndex, AccessMethodAnalysisContext analysisCtx,
+            boolean retainInput, boolean retainMissing, boolean requiresBroadcast, IOptimizationContext context,
+            LogicalVariable newMissingNullPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue,
+            List<List<String>> chosenIndexKeyFieldNames, List<IAType> chosenIndexKeyFieldTypes,
+            List<Integer> chosenIndexKeyFieldSourceIndicators,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions)
+            throws AlgebricksException {
+
+        Dataset dataset = indexSubTree.getDataset();
+        ARecordType recordType = indexSubTree.getRecordType();
+        ARecordType metaRecordType = indexSubTree.getMetaRecordType();
+        // we made sure indexSubTree has datasource scan
+        AbstractDataSourceOperator dataSourceOp =
+                (AbstractDataSourceOperator) indexSubTree.getDataSourceRef().getValue();
+        SourceLocation dataSrcLoc = dataSourceOp.getSourceLocation();
+        List<Pair<Integer, Integer>> exprAndVarList = analysisCtx.getIndexExprsFromIndexExprsAndVars(chosenIndex);
+        int numSecondaryKeys = analysisCtx.getNumberOfMatchedKeys(chosenIndex);
+
+        // Whether the given plan is an index-only plan or not.
+        Quadruple<Boolean, Boolean, Boolean, Boolean> indexOnlyPlanInfo = analysisCtx.getIndexOnlyPlanInfo();
+        boolean isIndexOnlyPlan = indexOnlyPlanInfo.getFirst();
+        // List of function expressions that will be replaced by the secondary-index search.
+        // These func exprs will be removed from the select condition at the very end of this method.
+        Set<ILogicalExpression> replacedFuncExprs = new HashSet<>();
+        // Info on high and low keys for the BTree search predicate.
+        ILogicalExpression[] lowKeyExprs = new ILogicalExpression[numSecondaryKeys];
+        ILogicalExpression[] highKeyExprs = new ILogicalExpression[numSecondaryKeys];
+        LimitType[] lowKeyLimits = new LimitType[numSecondaryKeys];
+        LimitType[] highKeyLimits = new LimitType[numSecondaryKeys];
+        boolean[] lowKeyInclusive = new boolean[numSecondaryKeys];
+        boolean[] highKeyInclusive = new boolean[numSecondaryKeys];
+        ILogicalExpression[] lowKeyConstAtRuntimeExpressions = new ILogicalExpression[numSecondaryKeys];
+        ILogicalExpression[] highKeyConstantAtRuntimeExpressions = new ILogicalExpression[numSecondaryKeys];
+        LogicalVariable[] lowKeyConstAtRuntimeExprVars = new LogicalVariable[numSecondaryKeys];
+        LogicalVariable[] highKeyConstAtRuntimeExprVars = new LogicalVariable[numSecondaryKeys];
+        boolean[] isDisjunctiveEqualityCondition = new boolean[numSecondaryKeys];
+        Set<ILogicalExpression>[] disjunctiveEqualityKeyExprs = new Set[numSecondaryKeys];
+        List<ILogicalExpression>[] disjunctiveEqualityConditionExprs = new List[numSecondaryKeys];
+        LogicalVariable[] disjunctiveRuntimeExprVars = new LogicalVariable[numSecondaryKeys];
+
+        /* TODO: For now we don't do any sophisticated analysis of the func exprs to come up with "the best" range
+         * predicate. If we can't figure out how to integrate a certain funcExpr into the current predicate,
+         * we just bail by setting this flag.*/
+        boolean couldntFigureOut = false;
+        boolean doneWithExprs = false;
+        boolean isEqCondition = false;
+        boolean anyRealTypeConvertedToIntegerType = false;
+
+        for (Pair<Integer, Integer> exprIndex : exprAndVarList) {
+            IOptimizableFuncExpr optFuncExpr = analysisCtx.getMatchedFuncExpr(exprIndex.getLeft());
+            int keyPos = indexOf(optFuncExpr.getFieldName(0), optFuncExpr.getFieldSource(0), chosenIndexKeyFieldNames,
+                    chosenIndexKeyFieldSourceIndicators);
+            if (keyPos < 0 && optFuncExpr.getNumLogicalVars() > 1) {
+                // If we are optimizing a join, the matching field may be the second field name.
+                keyPos = indexOf(optFuncExpr.getFieldName(1), optFuncExpr.getFieldSource(1), chosenIndexKeyFieldNames,
+                        chosenIndexKeyFieldSourceIndicators);
+            }
+
+            if (keyPos < 0) {
+                throw CompilationException.create(ErrorCode.NO_INDEX_FIELD_NAME_FOR_GIVEN_FUNC_EXPR,
+                        optFuncExpr.getFuncExpr().getSourceLocation());
+            }
+            // returnedSearchKeyExpr contains a pair of search expression.
+            // The second expression will not be null only if we are creating an EQ search predicate
+            // with a FLOAT or a DOUBLE constant that will be fed into an INTEGER index.
+            // This is required because of type-casting. Refer to AccessMethodUtils.createSearchKeyExpr for details.
+            IAType indexedFieldType = chosenIndexKeyFieldTypes.get(keyPos);
+            if (optFuncExpr instanceof DisjunctiveEqualityFuncExpr && probeSubTree == null) {
+                if (!isDisjunctiveEqualityCondition[keyPos]) {
+                    isDisjunctiveEqualityCondition[keyPos] = true;
+                    disjunctiveEqualityKeyExprs[keyPos] = new LinkedHashSet<>();
+                    disjunctiveEqualityConditionExprs[keyPos] = new ArrayList<>();
+                }
+                for (int i = 0; i < optFuncExpr.getNumConstantExpr(); i++) {
+                    Triple<ILogicalExpression, ILogicalExpression, Boolean> searchKey =
+                            AccessMethodUtils.createSearchKeyExpr(chosenIndex, optFuncExpr, i, indexedFieldType,
+                                    probeSubTree, SEARCH_KEY_ROUNDING_FUNCTION_COMPUTER);
+                    // A second key is a real constant on an integer index, which a single equality gives up on too.
+                    if (searchKey == null || searchKey.second != null
+                            || searchKey.first.getExpressionTag() != LogicalExpressionTag.CONSTANT) {
+                        return null;
+                    }
+                    disjunctiveEqualityKeyExprs[keyPos].add(searchKey.first);
+                }
+                AbstractFunctionCallExpression disjunction =
+                        ((DisjunctiveEqualityFuncExpr) optFuncExpr).getDisjunction();
+                disjunctiveEqualityConditionExprs[keyPos].add(disjunction);
+                replacedFuncExprs.add(disjunction);
+                isEqCondition = true;
+                continue;
+            }
+            Triple<ILogicalExpression, ILogicalExpression, Boolean> returnedSearchKeyExpr =
+                    AccessMethodUtils.createSearchKeyExpr(chosenIndex, optFuncExpr, indexedFieldType, probeSubTree,
+                            SEARCH_KEY_ROUNDING_FUNCTION_COMPUTER);
+            if (returnedSearchKeyExpr == null) {
+                return null;
+            }
+            ILogicalExpression searchKeyExpr = returnedSearchKeyExpr.first;
+            ILogicalExpression searchKeyEQExpr = null;
+            boolean realTypeConvertedToIntegerType = returnedSearchKeyExpr.third;
+            anyRealTypeConvertedToIntegerType |= realTypeConvertedToIntegerType;
+
+            LimitType limit = getLimitType(optFuncExpr, probeSubTree);
+            if (limit == null) {
+                return null;
+            }
+
+            if (limit == LimitType.EQUAL && returnedSearchKeyExpr.second != null) {
+                // The given search predicate is EQ and
+                // we have two type-casted values from FLOAT or DOUBLE to an INT constant.
+                searchKeyEQExpr = returnedSearchKeyExpr.second;
+            }
+
+            // Deals with the non-enforced index case here.
+            if (relaxLimitTypeToInclusive(chosenIndex, indexedFieldType, realTypeConvertedToIntegerType)) {
+                if (limit == LimitType.HIGH_EXCLUSIVE) {
+                    limit = LimitType.HIGH_INCLUSIVE;
+                } else if (limit == LimitType.LOW_EXCLUSIVE) {
+                    limit = LimitType.LOW_INCLUSIVE;
+                }
+            }
+
+            if (searchKeyExpr.getExpressionTag() == LogicalExpressionTag.FUNCTION_CALL) {
+                LogicalVariable constAtRuntimeExprVar = context.newVar();
+                VariableReferenceExpression constAtRuntimeExprVarRef =
+                        new VariableReferenceExpression(constAtRuntimeExprVar);
+                constAtRuntimeExprVarRef.setSourceLocation(searchKeyExpr.getSourceLocation());
+
+                if (limit == LimitType.LOW_INCLUSIVE || limit == LimitType.LOW_EXCLUSIVE || limit == LimitType.EQUAL) {
+                    lowKeyConstAtRuntimeExpressions[keyPos] = searchKeyExpr;
+                    lowKeyConstAtRuntimeExprVars[keyPos] = constAtRuntimeExprVar;
+                }
+                if (limit == LimitType.HIGH_INCLUSIVE || limit == LimitType.HIGH_EXCLUSIVE
+                        || limit == LimitType.EQUAL) {
+                    highKeyConstantAtRuntimeExpressions[keyPos] = searchKeyExpr;
+                    highKeyConstAtRuntimeExprVars[keyPos] = constAtRuntimeExprVar;
+                }
+                searchKeyExpr = constAtRuntimeExprVarRef;
+            }
+
+            switch (limit) {
+                case EQUAL: {
+
+                    if (searchKeyEQExpr != null) {
+                        // We have two type-casted FLOAT or DOUBLE values to be fed into an INT index.
+                        // They contain the same value if their fraction value is 0.
+                        // Refer to AccessMethodUtils.createSearchKeyExpr() for more details.
+                        // TODO: Still use this index if the indexed field value is a FLOAT or a DOUBLE.
+                        couldntFigureOut = true;
+                    }
+
+                    if (searchKeyExpr.getExpressionTag() != LogicalExpressionTag.CONSTANT) {
+
+                        if (lowKeyLimits[keyPos] == null && highKeyLimits[keyPos] == null) {
+                            lowKeyLimits[keyPos] = highKeyLimits[keyPos] = limit;
+                            lowKeyInclusive[keyPos] = highKeyInclusive[keyPos] = true;
+                            lowKeyExprs[keyPos] = highKeyExprs[keyPos] = searchKeyExpr;
+                        } else {
+                            // Has already been set to the identical values.
+                            // When optimizing join we may encounter the same optimizable expression twice
+                            // (once from analyzing each side of the join)
+                            if (lowKeyLimits[keyPos] == limit && lowKeyInclusive[keyPos] == true
+                                    && lowKeyExprs[keyPos].equals(searchKeyExpr) && highKeyLimits[keyPos] == limit
+                                    && highKeyInclusive[keyPos] == true && highKeyExprs[keyPos].equals(searchKeyExpr)) {
+                                isEqCondition = true;
+                                break;
+                            }
+                            couldntFigureOut = true;
+                        }
+                    } else if (isDisjunctiveEqualityCondition[keyPos]) {
+                        // when is serachKeyExpr NULL?
+                        isEqCondition = true;
+                        disjunctiveEqualityKeyExprs[keyPos].add(searchKeyExpr);
+                        disjunctiveEqualityConditionExprs[keyPos].add(optFuncExpr.getFuncExpr());
+                    } else {
+                        isDisjunctiveEqualityCondition[keyPos] = true;
+                        isEqCondition = true;
+                        disjunctiveEqualityKeyExprs[keyPos] = new LinkedHashSet<>();
+                        disjunctiveEqualityKeyExprs[keyPos].add(searchKeyExpr);
+                        disjunctiveEqualityConditionExprs[keyPos] = new ArrayList<>();
+                        disjunctiveEqualityConditionExprs[keyPos].add(optFuncExpr.getFuncExpr());
+                    }
+
+                    break;
+                }
+                case HIGH_EXCLUSIVE: {
+
+                    if (isDisjunctiveEqualityCondition[keyPos]) {
+                        // Prefer EQ over HIGH_EXCLUSIVE
+                        break;
+                    }
+
+                    if (highKeyLimits[keyPos] == null || (highKeyLimits[keyPos] != null && highKeyInclusive[keyPos])) {
+                        highKeyLimits[keyPos] = limit;
+                        highKeyExprs[keyPos] = searchKeyExpr;
+                        highKeyInclusive[keyPos] = false;
+                    } else {
+                        // Has already been set to the identical values. When optimizing join we may encounter the
+                        // same optimizable expression twice
+                        // (once from analyzing each side of the join)
+                        if (highKeyLimits[keyPos] == limit && highKeyInclusive[keyPos] == false
+                                && highKeyExprs[keyPos].equals(searchKeyExpr)) {
+                            break;
+                        }
+                        // Case where we find b<2 && b<3 ?
+                        couldntFigureOut = true;
+                    }
+                    break;
+                }
+                case HIGH_INCLUSIVE: {
+
+                    if (isDisjunctiveEqualityCondition[keyPos]) {
+                        // Prefer EQ over HIGH_INCLUSIVE
+                        break;
+                    }
+
+                    if (highKeyLimits[keyPos] == null) {
+                        highKeyLimits[keyPos] = limit;
+                        highKeyExprs[keyPos] = searchKeyExpr;
+                        highKeyInclusive[keyPos] = true;
+                    } else {
+                        // Has already been set to the identical values. When optimizing join we may encounter the
+                        // same optimizable expression twice
+                        // (once from analyzing each side of the join)
+                        if (highKeyLimits[keyPos] == limit && highKeyInclusive[keyPos] == true
+                                && highKeyExprs[keyPos].equals(searchKeyExpr)) {
+                            break;
+                        }
+                        // Case where we find b<=2 && b<=3 ?
+                        couldntFigureOut = true;
+                    }
+                    break;
+                }
+                case LOW_EXCLUSIVE: {
+
+                    if (isDisjunctiveEqualityCondition[keyPos]) {
+                        // Prefer EQ over LOW_EXCLUSIVE
+                        break;
+                    }
+
+                    if (lowKeyLimits[keyPos] == null || (lowKeyLimits[keyPos] != null && lowKeyInclusive[keyPos])) {
+                        lowKeyLimits[keyPos] = limit;
+                        lowKeyExprs[keyPos] = searchKeyExpr;
+                        lowKeyInclusive[keyPos] = false;
+                    } else {
+                        // Has already been set to the identical values. When optimizing join we may encounter the
+                        // same optimizable expression twice
+                        // (once from analyzing each side of the join)
+                        if (lowKeyLimits[keyPos] == limit && lowKeyInclusive[keyPos] == false
+                                && lowKeyExprs[keyPos].equals(searchKeyExpr)) {
+                            break;
+                        }
+                        couldntFigureOut = true;
+                    }
+                    break;
+                }
+                case LOW_INCLUSIVE: {
+
+                    if (isDisjunctiveEqualityCondition[keyPos]) {
+                        // Prefer EQ over LOW_INCLUSIVE
+                        break;
+                    }
+
+                    if (lowKeyLimits[keyPos] == null) {
+                        lowKeyLimits[keyPos] = limit;
+                        lowKeyExprs[keyPos] = searchKeyExpr;
+                        lowKeyInclusive[keyPos] = true;
+                    } else {
+                        // Has already been set to the identical values. When optimizing join we may encounter the
+                        // same optimizable expression twice
+                        // (once from analyzing each side of the join)
+                        if (lowKeyLimits[keyPos] == limit && lowKeyInclusive[keyPos] == true
+                                && lowKeyExprs[keyPos].equals(searchKeyExpr)) {
+                            break;
+                        }
+                        couldntFigureOut = true;
+                    }
+                    break;
+                }
+                default: {
+                    throw new IllegalStateException();
+                }
+            }
+
+            if (!couldntFigureOut) {
+                // Remember to remove this funcExpr later.
+                replacedFuncExprs.add(analysisCtx.getMatchedFuncExpr(exprIndex.getLeft()).getFuncExpr());
+            } else {
+                break;
+            }
+
+        }
+
+        if (couldntFigureOut) {
+            return null;
+        }
+
+        // Each value of an IN list is searched for on its own, and those searches find disjoint records only if every
+        // key before the list is an equality. After a range they overlap, so the list is left to the SELECT instead.
+        boolean equalityPrefix = true;
+        for (int i = 0; i < numSecondaryKeys; i++) {
+            if (!equalityPrefix && isDisjunctiveEqualityCondition[i] && disjunctiveEqualityKeyExprs[i].size() > 1) {
+                isDisjunctiveEqualityCondition[i] = false;
+                replacedFuncExprs.removeAll(disjunctiveEqualityConditionExprs[i]);
+            }
+            equalityPrefix &= isDisjunctiveEqualityCondition[i]
+                    || lowKeyLimits[i] == LimitType.EQUAL && highKeyLimits[i] == LimitType.EQUAL;
+        }
+
+        boolean primaryIndexPostProccessingIsNeeded = !chosenIndex.isPrimaryIndex() || probeSubTree != null
+                || anyRealTypeConvertedToIntegerType || !isEqualitySearch(exprAndVarList.size(), lowKeyLimits,
+                        highKeyLimits, isDisjunctiveEqualityCondition, disjunctiveEqualityConditionExprs);
+
+        if (!chosenIndex.isPrimaryIndex() && primaryIndexPostProccessingIsNeeded) {
+            for (boolean isDisjEq : isDisjunctiveEqualityCondition) {
+                if (isDisjEq) {
+                    retainInput = true;
+                    break;
+                }
+            }
+        }
+
+        if (primaryIndexPostProccessingIsNeeded) {
+            Arrays.fill(lowKeyInclusive, true);
+            Arrays.fill(highKeyInclusive, true);
+        }
+
+        int numLowKeys = 0;
+        for (LimitType limitType : lowKeyLimits) {
+            if (limitType != null || isDisjunctiveEqualityCondition[numLowKeys]) {
+                numLowKeys++;
+            } else {
+                break;
+            }
+        }
+
+        //    a = 1 OR a = 2 OR a = 3
+        //    b = 4 OR b = 5
+        //    c < 6
+        //    d = 7 OR d = 8
+
+        int numHighKeys = 0;
+        for (LimitType limitType : highKeyLimits) {
+            if (limitType != null || isDisjunctiveEqualityCondition[numHighKeys]) {
+                numHighKeys++;
+            } else {
+                break;
+            }
+        }
+
+        ArrayList<LogicalVariable> keyVarList = new ArrayList<>();
+        ArrayList<LogicalVariable> assignKeyVarList = new ArrayList<>();
+        ArrayList<List<Mutable<ILogicalExpression>>> assignKeyExprList = new ArrayList<>();
+        List<List<ILogicalExpression>> disjunctiveEqualityConditionExprSet = new ArrayList<>();
+
+        createKeyVarsAndExprsWithOr(numLowKeys, lowKeyLimits, lowKeyExprs, assignKeyVarList, assignKeyExprList,
+                keyVarList, context, lowKeyConstAtRuntimeExpressions, lowKeyConstAtRuntimeExprVars,
+                disjunctiveEqualityKeyExprs, disjunctiveEqualityConditionExprs, isDisjunctiveEqualityCondition, false,
+                0, disjunctiveEqualityConditionExprSet);
+
+        createKeyVarsAndExprsWithOr(numHighKeys, highKeyLimits, highKeyExprs, assignKeyVarList, assignKeyExprList,
+                keyVarList, context, highKeyConstantAtRuntimeExpressions, highKeyConstAtRuntimeExprVars,
+                disjunctiveEqualityKeyExprs, disjunctiveEqualityConditionExprs, isDisjunctiveEqualityCondition, true,
+                numLowKeys, disjunctiveEqualityConditionExprSet);
+
+        BTreeJobGenParams jobGenParams =
+                new BTreeJobGenParams(chosenIndex.getIndexName(), IndexType.BTREE, dataset.getDatabaseName(),
+                        dataset.getDataverseName(), dataset.getDatasetName(), retainInput, requiresBroadcast);
+        jobGenParams.setLowKeyInclusive(true);
+        jobGenParams.setHighKeyInclusive(true);
+        // Check how this is used
+        jobGenParams.setIsEqCondition(isEqCondition);
+        jobGenParams.setLowKeyVarList(keyVarList, 0, numLowKeys);
+        jobGenParams.setHighKeyVarList(keyVarList, numLowKeys, numHighKeys);
+
+        ExecutionMode executionMode;
+        Mutable<ILogicalOperator> rootOp;
+
+        if (probeSubTree == null) {
+            rootOp = new MutableObject<>(OperatorManipulationUtil.deepCopy(dataSourceOp.getInputs().get(0).getValue()));
+            executionMode = dataSourceOp.getExecutionMode();
+        } else {
+            rootOp = probeSubTree.getRootRef();
+            executionMode = probeSubTree.getRootRef().getValue().getExecutionMode();
+        }
+
+        ILogicalOperator inputOp = null;
+
+        if (!assignKeyVarList.isEmpty()) {
+            int numKeys = assignKeyVarList.size();
+            for (int i = 0; i < numKeys; i++) {
+
+                AbstractLogicalOperator currOp = null;
+                if (assignKeyExprList.get(i).size() == 1) {
+                    currOp = new AssignOperator(assignKeyVarList.get(i), assignKeyExprList.get(i).get(0));
+                } else {
+                    ConstantExpression constantExpression =
+                            new ConstantExpression(
+                                    new AsterixConstantValue(
+                                            new AOrderedList(FULL_OPEN_ORDEREDLIST_TYPE,
+                                                    assignKeyExprList.get(i).stream()
+                                                            .map(e -> (((AsterixConstantValue) ((ConstantExpression) e
+                                                                    .get()).getValue())).getObject())
+                                                            .collect(Collectors.toList()))));
+
+                    UnnestingFunctionCallExpression scanCollectionExpr = new UnnestingFunctionCallExpression(
+                            FunctionUtil.getFunctionInfo(BuiltinFunctions.SCAN_COLLECTION),
+                            Collections.singletonList(new MutableObject<>(constantExpression)));
+
+                    currOp = new UnnestOperator(assignKeyVarList.get(i), new MutableObject<>(scanCollectionExpr));
+                    jobGenParams.requiresBroadcast = true;
+                    // Only a secondary-index search keeps the value that found each record.
+                    if (!chosenIndex.isPrimaryIndex()) {
+                        optimizableDisjunctionConditions
+                                .add(Pair.of(assignKeyVarList.get(i), disjunctiveEqualityConditionExprSet.get(i)));
+                    }
+
+                }
+
+                if (inputOp == null) {
+                    currOp.getInputs().add(rootOp);
+                } else {
+                    currOp.getInputs().add(new MutableObject<>(inputOp));
+                }
+
+                currOp.setSourceLocation(dataSrcLoc);
+                currOp.setExecutionMode(executionMode);
+                context.computeAndSetTypeEnvironmentForOperator(currOp);
+                inputOp = currOp;
+            }
+        }
+
+        else if (probeSubTree == null) {
+            //nonpure case
+            //Make sure that the nonpure function is unpartitioned
+            ILogicalOperator checkOp = dataSourceOp.getInputs().get(0).getValue();
+            while (checkOp.getExecutionMode() != ExecutionMode.UNPARTITIONED) {
+                if (checkOp.getInputs().size() == 1) {
+                    checkOp = checkOp.getInputs().get(0).getValue();
+                } else {
+                    return null;
+                }
+            }
+            inputOp = dataSourceOp.getInputs().get(0).getValue();
+        } else {
+            // All index search keys are variables.
+            inputOp = probeSubTree.getRoot();
+        }
+
+        if (chosenIndexKeyFieldTypes.stream().anyMatch(t -> t.getTypeTag() == ATypeTag.ANY)) {
+            inputOp = addCastAssignOp(context, chosenIndexKeyFieldTypes, jobGenParams, inputOp, dataSrcLoc);
+        }
+
+        // Creates an unnest-map for the secondary index search.
+        // The result: SK, PK, [Optional - the result of an instantTrylock on PK]
+        ILogicalOperator secondaryIndexUnnestOp =
+                AccessMethodUtils.createSecondaryIndexUnnestMap(dataset, recordType, metaRecordType, chosenIndex,
+                        inputOp, jobGenParams, context, retainInput, retainMissing, leftOuterMissingValue);
+
+        // Generate the rest of the upstream plan which feeds the search results into the primary index.
+        ILogicalOperator indexSearchOp = null;
+
+        boolean isPrimaryIndex = chosenIndex.isPrimaryIndex();
+        if (dataset.getDatasetType() == DatasetType.EXTERNAL) {
+            // External dataset
+            UnnestMapOperator externalDataAccessOp =
+                    AccessMethodUtils.createExternalDataLookupUnnestMap(dataSourceOp, dataset, recordType,
+                            metaRecordType, secondaryIndexUnnestOp, context, chosenIndex, retainInput, retainMissing);
+            indexSubTree.getDataSourceRef().setValue(externalDataAccessOp);
+            return externalDataAccessOp;
+        } else if (!isPrimaryIndex) {
+            indexSearchOp = AccessMethodUtils.createRestOfIndexSearchPlan(afterTopOpRefs, topOpRef, conditionRef,
+                    assignBeforeTheOpRefs, dataSourceOp, dataset, recordType, metaRecordType, secondaryIndexUnnestOp,
+                    context, true, retainInput, retainMissing, false, chosenIndex, analysisCtx, indexSubTree,
+                    probeSubTree, newMissingNullPlaceHolderForLOJ, leftOuterMissingValue,
+                    anyRealTypeConvertedToIntegerType, optimizableDisjunctionConditions);
+
+            // Replaces the datasource scan with the new plan rooted at
+            // Get dataSourceRef operator -
+            // 1) unnest-map (PK, record) for a non-index only plan
+            // 2) unnest-map (SK, PK) for an index-only plan
+            if (isIndexOnlyPlan) {
+                // Index-only plan
+                ILogicalOperator dataSourceRefOp =
+                        AccessMethodUtils.findDataSourceFromIndexUtilizationPlan(indexSearchOp);
+
+                if (dataSourceRefOp.getOperatorTag() == LogicalOperatorTag.UNNEST_MAP
+                        || dataSourceRefOp.getOperatorTag() == LogicalOperatorTag.LEFT_OUTER_UNNEST_MAP) {
+                    // Adds equivalence classes --- one equivalent class between a primary key
+                    // variable and a record field-access expression.
+                    EquivalenceClassUtils.addEquivalenceClassesForPrimaryIndexAccess(indexSearchOp,
+                            dataSourceOp.getVariables(), recordType, metaRecordType, dataset, context);
+                }
+            } else {
+                // Non-indexonly plan cases
+                // Adds equivalence classes --- one equivalent class between a primary key
+                // variable and a record field-access expression.
+                EquivalenceClassUtils.addEquivalenceClassesForPrimaryIndexAccess(indexSearchOp,
+                        dataSourceOp.getVariables(), recordType, metaRecordType, dataset, context);
+            }
+        } else {
+            // Primary index search case
+            List<Object> primaryIndexOutputTypes = new ArrayList<>();
+            AccessMethodUtils.appendPrimaryIndexTypes(dataset, recordType, metaRecordType, primaryIndexOutputTypes);
+            List<LogicalVariable> scanVariables = dataSourceOp.getVariables();
+
+            // Checks whether the primary index search can replace the given SELECT condition.
+            // If so, the condition will be set to null and eventually the SELECT operator will be removed.
+            // If not, we create a new condition based on remaining ones.
+            if (!primaryIndexPostProccessingIsNeeded) {
+                List<Mutable<ILogicalExpression>> remainingFuncExprs = new ArrayList<>();
+                try {
+                    getNewConditionExprs(conditionRef, replacedFuncExprs, remainingFuncExprs);
+                } catch (CompilationException e) {
+                    return null;
+                }
+                // Generates the new condition.
+                if (!remainingFuncExprs.isEmpty()) {
+                    ILogicalExpression pulledCond = createSelectCondition(remainingFuncExprs);
+                    conditionRef.setValue(pulledCond);
+                } else {
+                    conditionRef.setValue(null);
+                }
+            }
+
+            // Checks whether LEFT_OUTER_UNNESTMAP operator is required.
+            boolean leftOuterUnnestMapRequired = false;
+            if (retainMissing && retainInput) {
+                leftOuterUnnestMapRequired = true;
+            } else {
+                leftOuterUnnestMapRequired = false;
+            }
+            AbstractUnnestMapOperator unnestMapOp;
+            if (conditionRef.getValue() != null) {
+                // The job gen parameters are transferred to the actual job gen
+                // via the UnnestMapOperator's function arguments.
+                List<Mutable<ILogicalExpression>> primaryIndexFuncArgs = new ArrayList<>();
+                jobGenParams.writeToFuncArgs(primaryIndexFuncArgs);
+                // An index search is expressed as an unnest-map over an index-search function.
+                IFunctionInfo primaryIndexSearch = FunctionUtil.getFunctionInfo(BuiltinFunctions.INDEX_SEARCH);
+                UnnestingFunctionCallExpression primaryIndexSearchFunc =
+                        new UnnestingFunctionCallExpression(primaryIndexSearch, primaryIndexFuncArgs);
+                primaryIndexSearchFunc.setSourceLocation(dataSrcLoc);
+                primaryIndexSearchFunc.setReturnsUniqueValues(true);
+                if (!leftOuterUnnestMapRequired) {
+                    unnestMapOp = new UnnestMapOperator(scanVariables, new MutableObject<>(primaryIndexSearchFunc),
+                            primaryIndexOutputTypes, retainInput);
+                } else {
+                    unnestMapOp =
+                            new LeftOuterUnnestMapOperator(scanVariables, new MutableObject<>(primaryIndexSearchFunc),
+                                    primaryIndexOutputTypes, leftOuterMissingValue);
+                }
+            } else {
+                if (!leftOuterUnnestMapRequired) {
+                    unnestMapOp = new UnnestMapOperator(scanVariables,
+                            ((UnnestMapOperator) secondaryIndexUnnestOp).getExpressionRef(), primaryIndexOutputTypes,
+                            retainInput);
+                } else {
+                    unnestMapOp = new LeftOuterUnnestMapOperator(scanVariables,
+                            ((LeftOuterUnnestMapOperator) secondaryIndexUnnestOp).getExpressionRef(),
+                            primaryIndexOutputTypes, leftOuterMissingValue);
+                }
+            }
+            unnestMapOp.setExecutionMode(ExecutionMode.PARTITIONED);
+            unnestMapOp.setSourceLocation(dataSrcLoc);
+            unnestMapOp.getInputs().add(new MutableObject<>(inputOp));
+            context.computeAndSetTypeEnvironmentForOperator(unnestMapOp);
+            indexSearchOp = unnestMapOp;
+
+            // Adds equivalence classes --- one equivalent class between a primary key
+            // variable and a record field-access expression.
+            EquivalenceClassUtils.addEquivalenceClassesForPrimaryIndexAccess(indexSearchOp, scanVariables, recordType,
+                    metaRecordType, dataset, context);
+        }
+
+        OperatorManipulationUtil.copyCardCostAnnotations(dataSourceOp, indexSearchOp);
+        return indexSearchOp;
     }
 
     protected ILogicalOperator createBTreeIndexSearchPlan(List<Mutable<ILogicalOperator>> afterTopOpRefs,
@@ -341,26 +1047,31 @@ public class BTreeAccessMethod implements IAccessMethod {
             boolean retainInput, boolean retainMissing, boolean requiresBroadcast, IOptimizationContext context,
             LogicalVariable newMissingNullPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue,
             List<List<String>> chosenIndexKeyFieldNames, List<IAType> chosenIndexKeyFieldTypes,
-            List<Integer> chosenIndexKeyFieldSourceIndicators) throws AlgebricksException {
+            List<Integer> chosenIndexKeyFieldSourceIndicators,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions)
+            throws AlgebricksException {
+
+        // A disjunction of equalities stands for all its keys, which only the OR plan searches for.
+        if (hasDisjunctiveEquality(analysisCtx, chosenIndex)) {
+            return createBTreeIndexSearchPlanWithOr(afterTopOpRefs, topOpRef, conditionRef, assignBeforeTheOpRefs,
+                    indexSubTree, probeSubTree, chosenIndex, analysisCtx, retainInput, retainMissing, requiresBroadcast,
+                    context, newMissingNullPlaceHolderForLOJ, leftOuterMissingValue, chosenIndexKeyFieldNames,
+                    chosenIndexKeyFieldTypes, chosenIndexKeyFieldSourceIndicators, optimizableDisjunctionConditions);
+        }
+
         Dataset dataset = indexSubTree.getDataset();
         ARecordType recordType = indexSubTree.getRecordType();
         ARecordType metaRecordType = indexSubTree.getMetaRecordType();
         // we made sure indexSubTree has datasource scan
         AbstractDataSourceOperator dataSourceOp =
                 (AbstractDataSourceOperator) indexSubTree.getDataSourceRef().getValue();
+        SourceLocation dataSrcLoc = dataSourceOp.getSourceLocation();
         List<Pair<Integer, Integer>> exprAndVarList = analysisCtx.getIndexExprsFromIndexExprsAndVars(chosenIndex);
         int numSecondaryKeys = analysisCtx.getNumberOfMatchedKeys(chosenIndex);
 
         // Whether the given plan is an index-only plan or not.
         Quadruple<Boolean, Boolean, Boolean, Boolean> indexOnlyPlanInfo = analysisCtx.getIndexOnlyPlanInfo();
         boolean isIndexOnlyPlan = indexOnlyPlanInfo.getFirst();
-
-        // We only apply index-only plan for an internal dataset.
-        boolean generateInstantTrylockResultFromIndexSearch = false;
-        if (dataset.getDatasetType() == DatasetType.INTERNAL && isIndexOnlyPlan) {
-            generateInstantTrylockResultFromIndexSearch = true;
-        }
-
         // List of function expressions that will be replaced by the secondary-index search.
         // These func exprs will be removed from the select condition at the very end of this method.
         Set<ILogicalExpression> replacedFuncExprs = new HashSet<>();
@@ -392,7 +1103,7 @@ public class BTreeAccessMethod implements IAccessMethod {
         // since we have a round issue when dealing with LT(<) OR GT(>) operator.
         for (Pair<Integer, Integer> exprIndex : exprAndVarList) {
             // Position of the field of matchedFuncExprs.get(exprIndex) in the chosen index's indexed exprs.
-            IOptimizableFuncExpr optFuncExpr = analysisCtx.getMatchedFuncExpr(exprIndex.first);
+            IOptimizableFuncExpr optFuncExpr = analysisCtx.getMatchedFuncExpr(exprIndex.getLeft());
             int keyPos = indexOf(optFuncExpr.getFieldName(0), optFuncExpr.getFieldSource(0), chosenIndexKeyFieldNames,
                     chosenIndexKeyFieldSourceIndicators);
             if (keyPos < 0 && optFuncExpr.getNumLogicalVars() > 1) {
@@ -412,6 +1123,9 @@ public class BTreeAccessMethod implements IAccessMethod {
             Triple<ILogicalExpression, ILogicalExpression, Boolean> returnedSearchKeyExpr =
                     AccessMethodUtils.createSearchKeyExpr(chosenIndex, optFuncExpr, indexedFieldType, probeSubTree,
                             SEARCH_KEY_ROUNDING_FUNCTION_COMPUTER);
+            if (returnedSearchKeyExpr == null) {
+                return null;
+            }
             ILogicalExpression searchKeyExpr = returnedSearchKeyExpr.first;
             ILogicalExpression searchKeyEQExpr = null;
             boolean realTypeConvertedToIntegerType = returnedSearchKeyExpr.third;
@@ -492,73 +1206,29 @@ public class BTreeAccessMethod implements IAccessMethod {
                     }
                     break;
                 }
-                case HIGH_EXCLUSIVE: {
-                    if (highKeyLimits[keyPos] == null || (highKeyLimits[keyPos] != null && highKeyInclusive[keyPos])) {
-                        highKeyLimits[keyPos] = limit;
-                        highKeyExprs[keyPos] = searchKeyExpr;
-                        highKeyInclusive[keyPos] = false;
-                    } else {
-                        // Has already been set to the identical values. When optimizing join we may encounter the
-                        // same optimizable expression twice
-                        // (once from analyzing each side of the join)
-                        if (highKeyLimits[keyPos] == limit && highKeyInclusive[keyPos] == false
-                                && highKeyExprs[keyPos].equals(searchKeyExpr)) {
-                            break;
-                        }
-                        couldntFigureOut = true;
-                        doneWithExprs = true;
-                    }
-                    break;
-                }
+                case HIGH_EXCLUSIVE:
                 case HIGH_INCLUSIVE: {
+                    boolean inclusive = limit == LimitType.HIGH_INCLUSIVE;
                     if (highKeyLimits[keyPos] == null) {
                         highKeyLimits[keyPos] = limit;
                         highKeyExprs[keyPos] = searchKeyExpr;
-                        highKeyInclusive[keyPos] = true;
-                    } else {
-                        // Has already been set to the identical values. When optimizing join we may encounter the
-                        // same optimizable expression twice
-                        // (once from analyzing each side of the join)
-                        if (highKeyLimits[keyPos] == limit && highKeyInclusive[keyPos] == true
-                                && highKeyExprs[keyPos].equals(searchKeyExpr)) {
-                            break;
-                        }
+                        highKeyInclusive[keyPos] = inclusive;
+                    } else if (!mergeBound(searchKeyExpr, limit, inclusive, highKeyExprs, highKeyLimits,
+                            highKeyInclusive, keyPos, true)) {
                         couldntFigureOut = true;
                         doneWithExprs = true;
                     }
                     break;
                 }
-                case LOW_EXCLUSIVE: {
-                    if (lowKeyLimits[keyPos] == null || (lowKeyLimits[keyPos] != null && lowKeyInclusive[keyPos])) {
-                        lowKeyLimits[keyPos] = limit;
-                        lowKeyExprs[keyPos] = searchKeyExpr;
-                        lowKeyInclusive[keyPos] = false;
-                    } else {
-                        // Has already been set to the identical values. When optimizing join we may encounter the
-                        // same optimizable expression twice
-                        // (once from analyzing each side of the join)
-                        if (lowKeyLimits[keyPos] == limit && lowKeyInclusive[keyPos] == false
-                                && lowKeyExprs[keyPos].equals(searchKeyExpr)) {
-                            break;
-                        }
-                        couldntFigureOut = true;
-                        doneWithExprs = true;
-                    }
-                    break;
-                }
+                case LOW_EXCLUSIVE:
                 case LOW_INCLUSIVE: {
+                    boolean inclusive = limit == LimitType.LOW_INCLUSIVE;
                     if (lowKeyLimits[keyPos] == null) {
                         lowKeyLimits[keyPos] = limit;
                         lowKeyExprs[keyPos] = searchKeyExpr;
-                        lowKeyInclusive[keyPos] = true;
-                    } else {
-                        // Has already been set to the identical values. When optimizing join we may encounter the
-                        // same optimizable expression twice
-                        // (once from analyzing each side of the join)
-                        if (lowKeyLimits[keyPos] == limit && lowKeyInclusive[keyPos] == true
-                                && lowKeyExprs[keyPos].equals(searchKeyExpr)) {
-                            break;
-                        }
+                        lowKeyInclusive[keyPos] = inclusive;
+                    } else if (!mergeBound(searchKeyExpr, limit, inclusive, lowKeyExprs, lowKeyLimits, lowKeyInclusive,
+                            keyPos, false)) {
                         couldntFigureOut = true;
                         doneWithExprs = true;
                     }
@@ -570,7 +1240,7 @@ public class BTreeAccessMethod implements IAccessMethod {
             }
             if (!couldntFigureOut) {
                 // Remember to remove this funcExpr later.
-                replacedFuncExprs.add(analysisCtx.getMatchedFuncExpr(exprIndex.first).getFuncExpr());
+                replacedFuncExprs.add(analysisCtx.getMatchedFuncExpr(exprIndex.getLeft()).getFuncExpr());
             }
             if (doneWithExprs) {
                 break;
@@ -592,12 +1262,26 @@ public class BTreeAccessMethod implements IAccessMethod {
             }
         }
 
-        // determine cases when prefix search could be applied
-        for (int i = 1; i < lowKeyExprs.length; i++) {
-            if (lowKeyLimits[0] == null && lowKeyLimits[i] != null || lowKeyLimits[0] != null && lowKeyLimits[i] == null
-                    || highKeyLimits[0] == null && highKeyLimits[i] != null
-                    || highKeyLimits[0] != null && highKeyLimits[i] == null) {
-                numSecondaryKeys = i;
+        int numLowKeys = 0;
+        for (LimitType limitType : lowKeyLimits) {
+            if (limitType != null) {
+                numLowKeys++;
+            } else {
+                break;
+            }
+        }
+
+        int numHighKeys = 0;
+        for (LimitType limitType : highKeyLimits) {
+            if (limitType != null) {
+                numHighKeys++;
+            } else {
+                break;
+            }
+        }
+
+        for (int i = 0; i < lowKeyExprs.length; i++) {
+            if (lowKeyLimits[i] != null && i >= numLowKeys || highKeyLimits[i] != null && i >= numHighKeys) {
                 primaryIndexPostProccessingIsNeeded = true;
                 break;
             }
@@ -622,19 +1306,20 @@ public class BTreeAccessMethod implements IAccessMethod {
         // List of variables and expressions for the assign.
         ArrayList<LogicalVariable> assignKeyVarList = new ArrayList<>();
         ArrayList<Mutable<ILogicalExpression>> assignKeyExprList = new ArrayList<>();
-        int numLowKeys = createKeyVarsAndExprs(numSecondaryKeys, lowKeyLimits, lowKeyExprs, assignKeyVarList,
-                assignKeyExprList, keyVarList, context, lowKeyConstAtRuntimeExpressions, lowKeyConstAtRuntimeExprVars);
-        int numHighKeys = createKeyVarsAndExprs(numSecondaryKeys, highKeyLimits, highKeyExprs, assignKeyVarList,
-                assignKeyExprList, keyVarList, context, highKeyConstantAtRuntimeExpressions,
-                highKeyConstAtRuntimeExprVars);
+
+        numLowKeys = createKeyVarsAndExprs(numLowKeys, lowKeyLimits, lowKeyExprs, assignKeyVarList, assignKeyExprList,
+                keyVarList, context, lowKeyConstAtRuntimeExpressions, lowKeyConstAtRuntimeExprVars);
+        numHighKeys =
+                createKeyVarsAndExprs(numHighKeys, highKeyLimits, highKeyExprs, assignKeyVarList, assignKeyExprList,
+                        keyVarList, context, highKeyConstantAtRuntimeExpressions, highKeyConstAtRuntimeExprVars);
 
         BTreeJobGenParams jobGenParams =
                 new BTreeJobGenParams(chosenIndex.getIndexName(), IndexType.BTREE, dataset.getDatabaseName(),
                         dataset.getDataverseName(), dataset.getDatasetName(), retainInput, requiresBroadcast);
-        jobGenParams
-                .setLowKeyInclusive(lowKeyInclusive[primaryIndexPostProccessingIsNeeded ? 0 : numSecondaryKeys - 1]);
-        jobGenParams
-                .setHighKeyInclusive(highKeyInclusive[primaryIndexPostProccessingIsNeeded ? 0 : numSecondaryKeys - 1]);
+        // Each flag belongs to the last field of its own key, since the keys can differ in length: c = 1 AND d > 5
+        // searches from (1, 5) to (1).
+        jobGenParams.setLowKeyInclusive(lowKeyInclusive[Math.max(numLowKeys - 1, 0)]);
+        jobGenParams.setHighKeyInclusive(highKeyInclusive[Math.max(numHighKeys - 1, 0)]);
         jobGenParams.setIsEqCondition(isEqCondition);
         jobGenParams.setLowKeyVarList(keyVarList, 0, numLowKeys);
         jobGenParams.setHighKeyVarList(keyVarList, numLowKeys, numHighKeys);
@@ -643,7 +1328,7 @@ public class BTreeAccessMethod implements IAccessMethod {
         if (!assignKeyVarList.isEmpty()) {
             // Assign operator that sets the constant secondary-index search-key fields if necessary.
             AssignOperator assignSearchKeys = new AssignOperator(assignKeyVarList, assignKeyExprList);
-            assignSearchKeys.setSourceLocation(dataSourceOp.getSourceLocation());
+            assignSearchKeys.setSourceLocation(dataSrcLoc);
             if (probeSubTree == null) {
                 // We are optimizing a selection query.
                 // Input to this assign is the EmptyTupleSource (which the dataSourceScan also must have had as input).
@@ -674,11 +1359,15 @@ public class BTreeAccessMethod implements IAccessMethod {
             inputOp = probeSubTree.getRoot();
         }
 
+        // if a key is of type ANY, we need to cast the search value to ANY if it is record/list for proper comparison
+        if (chosenIndexKeyFieldTypes.stream().anyMatch(t -> t.getTypeTag() == ATypeTag.ANY)) {
+            inputOp = addCastAssignOp(context, chosenIndexKeyFieldTypes, jobGenParams, inputOp, dataSrcLoc);
+        }
+
         // Creates an unnest-map for the secondary index search.
-        // The result: SK, PK, [Optional - the result of an instantTrylock on PK]
-        ILogicalOperator secondaryIndexUnnestOp = AccessMethodUtils.createSecondaryIndexUnnestMap(dataset, recordType,
-                metaRecordType, chosenIndex, inputOp, jobGenParams, context, retainInput, retainMissing,
-                generateInstantTrylockResultFromIndexSearch, leftOuterMissingValue);
+        ILogicalOperator secondaryIndexUnnestOp =
+                AccessMethodUtils.createSecondaryIndexUnnestMap(dataset, recordType, metaRecordType, chosenIndex,
+                        inputOp, jobGenParams, context, retainInput, retainMissing, leftOuterMissingValue);
 
         // Generate the rest of the upstream plan which feeds the search results into the primary index.
         ILogicalOperator indexSearchOp = null;
@@ -696,7 +1385,7 @@ public class BTreeAccessMethod implements IAccessMethod {
                     assignBeforeTheOpRefs, dataSourceOp, dataset, recordType, metaRecordType, secondaryIndexUnnestOp,
                     context, true, retainInput, retainMissing, false, chosenIndex, analysisCtx, indexSubTree,
                     probeSubTree, newMissingNullPlaceHolderForLOJ, leftOuterMissingValue,
-                    anyRealTypeConvertedToIntegerType);
+                    anyRealTypeConvertedToIntegerType, optimizableDisjunctionConditions);
 
             // Replaces the datasource scan with the new plan rooted at
             // Get dataSourceRef operator -
@@ -763,7 +1452,7 @@ public class BTreeAccessMethod implements IAccessMethod {
                 IFunctionInfo primaryIndexSearch = FunctionUtil.getFunctionInfo(BuiltinFunctions.INDEX_SEARCH);
                 UnnestingFunctionCallExpression primaryIndexSearchFunc =
                         new UnnestingFunctionCallExpression(primaryIndexSearch, primaryIndexFuncArgs);
-                primaryIndexSearchFunc.setSourceLocation(dataSourceOp.getSourceLocation());
+                primaryIndexSearchFunc.setSourceLocation(dataSrcLoc);
                 primaryIndexSearchFunc.setReturnsUniqueValues(true);
                 if (!leftOuterUnnestMapRequired) {
                     unnestMapOp = new UnnestMapOperator(scanVariables, new MutableObject<>(primaryIndexSearchFunc),
@@ -785,7 +1474,7 @@ public class BTreeAccessMethod implements IAccessMethod {
                 }
             }
             unnestMapOp.setExecutionMode(ExecutionMode.PARTITIONED);
-            unnestMapOp.setSourceLocation(dataSourceOp.getSourceLocation());
+            unnestMapOp.setSourceLocation(dataSrcLoc);
             unnestMapOp.getInputs().add(new MutableObject<>(inputOp));
             context.computeAndSetTypeEnvironmentForOperator(unnestMapOp);
             indexSearchOp = unnestMapOp;
@@ -798,6 +1487,51 @@ public class BTreeAccessMethod implements IAccessMethod {
 
         OperatorManipulationUtil.copyCardCostAnnotations(dataSourceOp, indexSearchOp);
         return indexSearchOp;
+    }
+
+    private static ILogicalOperator addCastAssignOp(IOptimizationContext ctx, List<IAType> indexKeysTypes,
+            BTreeJobGenParams jobGenParams, ILogicalOperator inputOp, SourceLocation srcLoc)
+            throws AlgebricksException {
+        // cast the input values (low/high vars) if needed and update the jobGenParams
+        List<LogicalVariable> lowKeyVars = jobGenParams.getLowKeyVarList();
+        List<LogicalVariable> highKeyVars = jobGenParams.getHighKeyVarList();
+        List<LogicalVariable> castAssignVars = new ArrayList<>();
+        List<Mutable<ILogicalExpression>> castAssignExprs = new ArrayList<>();
+        castInputValues(ctx, indexKeysTypes, lowKeyVars, inputOp, castAssignVars, castAssignExprs, srcLoc);
+        castInputValues(ctx, indexKeysTypes, highKeyVars, inputOp, castAssignVars, castAssignExprs, srcLoc);
+        if (castAssignVars.isEmpty()) {
+            return inputOp;
+        }
+        AssignOperator castAssignOp = new AssignOperator(castAssignVars, castAssignExprs);
+        castAssignOp.setSourceLocation(srcLoc);
+        castAssignOp.getInputs().add(new MutableObject<>(inputOp));
+        castAssignOp.setExecutionMode(inputOp.getExecutionMode());
+        return castAssignOp;
+    }
+
+    private static void castInputValues(IOptimizationContext ctx, List<IAType> indexKeyTypes,
+            List<LogicalVariable> inputVars, ILogicalOperator inputOp, List<LogicalVariable> castAssignVars,
+            List<Mutable<ILogicalExpression>> castAssignExprs, SourceLocation srcLoc) throws AlgebricksException {
+        for (int i = 0; i < inputVars.size(); i++) {
+            LogicalVariable inputVar = inputVars.get(i);
+            IVariableTypeEnvironment typeEnv = ctx.getOutputTypeEnvironment(inputOp);
+            IAType varType = (IAType) typeEnv.getVarType(inputVar);
+            IAType varActualType = TypeComputeUtils.getActualType(varType);
+            IAType indexKeyType = indexKeyTypes.get(i);
+            if (varActualType.getTypeTag().isDerivedType() && indexKeyType.getTypeTag() == ATypeTag.ANY) {
+                LogicalVariable newInputVar = ctx.newVar();
+                castAssignVars.add(newInputVar);
+                VariableReferenceExpression newInputVarRef = new VariableReferenceExpression(inputVar);
+                newInputVarRef.setSourceLocation(srcLoc);
+                ScalarFunctionCallExpression castFunc = new ScalarFunctionCallExpression(
+                        BuiltinFunctions.getBuiltinFunctionInfo(BuiltinFunctions.CAST_TYPE),
+                        new ArrayList<>(Collections.singletonList(new MutableObject<>(newInputVarRef))));
+                castFunc.setSourceLocation(srcLoc);
+                TypeCastUtils.setRequiredAndInputTypes(castFunc, BuiltinType.ANY, varType);
+                castAssignExprs.add(new MutableObject<>(castFunc));
+                inputVars.set(i, newInputVar);
+            }
+        }
     }
 
     private int createKeyVarsAndExprs(int numKeys, LimitType[] keyLimits, ILogicalExpression[] searchKeyExprs,
@@ -1088,11 +1822,11 @@ public class BTreeAccessMethod implements IAccessMethod {
             if (!CAST_NULL_TYPE_CONSTRUCTORS.contains(funId)) {
                 return false;
             }
-            IAType nonNullableType = Index.getNonNullableType(indexedFieldType).first;
+            IAType nonNullableType = Index.getNonNullableType(indexedFieldType).getLeft();
             Pair<FunctionIdentifier, IAObject> constructorWithFmt =
                     IndexUtil.getTypeConstructorDefaultNull(index, nonNullableType, functionExpr.getSourceLocation());
-            FunctionIdentifier indexedFieldConstructorFun = constructorWithFmt.first;
-            IAObject formatInIndex = constructorWithFmt.second;
+            FunctionIdentifier indexedFieldConstructorFun = constructorWithFmt.getLeft();
+            IAObject formatInIndex = constructorWithFmt.getRight();
             IAObject formatInFunction = TypeUtil.getTemporalFormatArg(functionExpr);
             // index has CAST (DEFAULT NULL); the applied function should be the same as the indexed field function
             return funId.equals(indexedFieldConstructorFun) && Objects.equals(formatInIndex, formatInFunction);
@@ -1104,6 +1838,76 @@ public class BTreeAccessMethod implements IAccessMethod {
     @Override
     public int compareTo(IAccessMethod o) {
         return this.getName().compareTo(o.getName());
+    }
+
+    /**
+     * Merges a range predicate into the bound already set at {@code keyPos}, which then keeps the tighter of the two
+     * together with its own inclusiveness.
+     *
+     * @return false if the two bounds cannot be compared, in which case the bound is left as it was
+     */
+    private static boolean mergeBound(ILogicalExpression searchKeyExpr, LimitType limit, boolean inclusive,
+            ILogicalExpression[] keyExprs, LimitType[] keyLimits, boolean[] keyInclusive, int keyPos, boolean highKey) {
+        Integer cmp = searchKeyExpr.equals(keyExprs[keyPos]) ? Integer.valueOf(0)
+                : compareConstants(searchKeyExpr, keyExprs[keyPos]);
+        if (cmp == null) {
+            return false;
+        }
+        // On the same value, an exclusive bound is the tighter one.
+        // Otherwise, the new search key is tighter if it is below the existing high bound or above the existing low bound.
+        boolean newSearchKeyTighter = cmp == 0 ? !inclusive : highKey ? cmp < 0 : cmp > 0;
+        if (newSearchKeyTighter) {
+            keyLimits[keyPos] = limit;
+            keyExprs[keyPos] = searchKeyExpr;
+            keyInclusive[keyPos] = inclusive;
+        }
+        return true;
+    }
+
+    /**
+     * @return the sign of {@code expr1} compared with {@code expr2}, or null if they are not constants that compare
+     */
+    private static Integer compareConstants(ILogicalExpression expr1, ILogicalExpression expr2) {
+        if (expr1.getExpressionTag() != LogicalExpressionTag.CONSTANT
+                || expr2.getExpressionTag() != LogicalExpressionTag.CONSTANT) {
+            return null;
+        }
+        IAObject val1 = ((AsterixConstantValue) ((ConstantExpression) expr1).getValue()).getObject();
+        IAObject val2 = ((AsterixConstantValue) ((ConstantExpression) expr2).getValue()).getObject();
+        ATypeTag tag1 = val1.getType().getTypeTag();
+        ATypeTag tag2 = val2.getType().getTypeTag();
+        if (!ATypeHierarchy.isCompatible(tag1, tag2)) {
+            return null;
+        }
+        try {
+            byte[] bytes1 = serializeObject(val1);
+            byte[] bytes2 = serializeObject(val2);
+            TaggedValueReference ref1 = new TaggedValueReference();
+            TaggedValueReference ref2 = new TaggedValueReference();
+            ref1.set(bytes1, 1, bytes1.length - 1, tag1);
+            ref2.set(bytes2, 1, bytes2.length - 1, tag2);
+            ILogicalBinaryComparator comparator =
+                    ComparatorUtil.createLogicalComparator(val1.getType(), val2.getType(), false);
+            ILogicalBinaryComparator.Result result = comparator.compare(ref1, ref2);
+            switch (result) {
+                case LT:
+                    return -1;
+                case EQ:
+                    return 0;
+                case GT:
+                    return 1;
+                default:
+                    return null;
+            }
+        } catch (HyracksDataException e) {
+            return null;
+        }
+    }
+
+    private static byte[] serializeObject(IAObject obj) throws HyracksDataException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        AObjectSerializerDeserializer.INSTANCE.serialize(obj, new DataOutputStream(baos));
+        return baos.toByteArray();
     }
 
 }

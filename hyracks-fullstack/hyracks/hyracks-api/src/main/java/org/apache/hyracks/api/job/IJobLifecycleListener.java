@@ -39,6 +39,18 @@ public interface IJobLifecycleListener {
             throws HyracksException;
 
     /**
+     * Notify the listener that a job it was told of in {@link #notifyJobCreation} will not run after all, its
+     * submission having failed. Neither {@link #notifyJobStart} nor {@link #notifyJobFinish} follows, and the
+     * job id never reaches the client, so whatever the creation notification registered is released here or
+     * not at all.
+     *
+     * @param jobId the job id
+     * @param spec the job specification
+     */
+    default void notifyJobSubmissionFailed(JobId jobId, JobSpecification spec) {
+    }
+
+    /**
      * Notify the listener that the job has started on the cluster controller
      *
      * @param jobId the job id

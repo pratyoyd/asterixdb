@@ -19,6 +19,7 @@
 package org.apache.hyracks.algebricks.core.algebra.prettyprint;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
@@ -27,11 +28,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Stream;
 
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.common.exceptions.NotImplementedException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -42,6 +45,7 @@ import org.apache.hyracks.algebricks.core.algebra.base.PhysicalOperatorTag;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IAlgebricksConstantValue;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.*;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.InsertDeleteUpsertOperator.Kind;
+import org.apache.hyracks.algebricks.core.algebra.operators.logical.KMeansStageOperator;
 import org.apache.hyracks.api.dataflow.OperatorDescriptorId;
 import org.apache.hyracks.api.exceptions.ErrorCode;
 
@@ -76,6 +80,18 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
     private static final String MAX_CARDINALITY = "max-cardinality";
 
     private static final String TOTAL_CARDINALITY = "total-cardinality";
+
+    private static final String MIN_TUPLE_SIZE = "min-tuple-size";
+
+    private static final String MAX_TUPLE_SIZE = "max-tuple-size";
+
+    private static final String AVG_TUPLE_SIZE = "avg-tuple-size";
+
+    private static final String FRAME_COUNT = "frame-count";
+
+    private static final String TUPLE_BYTES = "tuple-bytes";
+
+    private static final String AVG_TUPLES_PER_FRAME = "avg-tuples-per-frame";
     private static final String NAME = "name";
     private static final String ID = "id";
     private static final String RUNTIME_ID = "runtime-id";
@@ -138,8 +154,7 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
         private final OperatorDescriptorId odId;
         private final int id;
         private final int microId;
-        private final int subPipe;
-        private final int subId;
+        private final int[] subIds;
 
         ExtendedActivityId(String str) {
             if (str.startsWith(ANID_START)) {
@@ -153,12 +168,13 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
                 } else {
                     this.microId = -1;
                 }
-                if (parts.length >= 4) {
-                    this.subPipe = Integer.parseInt(parts[2]);
-                    this.subId = Integer.parseInt(parts[3]);
+                if (parts.length >= 3) {
+                    subIds = new int[parts.length - 2];
+                    for (int i = 2, j = 0; j < subIds.length; i++, j++) {
+                        subIds[j] = Integer.parseInt(parts[i]);
+                    }
                 } else {
-                    this.subPipe = -1;
-                    this.subId = -1;
+                    subIds = new int[] {};
                 }
             } else {
                 throw new IllegalArgumentException("Unable to parse: " + str);
@@ -176,7 +192,9 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
         }
 
         private List<?> values() {
-            return List.of(odId, id, microId, subPipe, subId);
+            List<?> ids = List.of(odId, id, microId);
+            List<?> subIdList = Arrays.asList(subIds);
+            return Stream.concat(ids.stream(), subIdList.stream()).toList();
         }
 
         @Override
@@ -202,8 +220,7 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
             if (microId > 0) {
                 catenateId(sb, microId);
             }
-            if (subId > 0) {
-                catenateId(sb, subPipe);
+            for (int subId : subIds) {
                 catenateId(sb, subId);
             }
             return sb.toString();
@@ -226,18 +243,53 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
 
     }
 
+    private static class WeightedAvg {
+        private long totalCard = 0;
+        private double weightedSum = 0.0;
+        private double avg = 0.0;
+
+        public void update(double val, long card) {
+            weightedSum += val * card;
+            totalCard += card;
+            avg = totalCard > 0 ? weightedSum / totalCard : 0.0;
+        }
+
+    }
+
     private class OperatorProfile {
 
         Map<String, String> activityNames;
         Map<String, MinMax<Double>> activityTimes;
         Map<String, MinMax<Long>> activityCards;
         Map<String, Long> activityCardTotal;
+        Map<String, MinMax<Long>> activityTupleSizes;
+        Map<String, WeightedAvg> activityAvgTupleSizes;
+        Map<String, Long> activityFrameCountTotal;
+        Map<String, WeightedAvg> activityAvgTuplesPerFrame;
+        Map<String, Long> activityTupleBytes;
 
         OperatorProfile() {
             activityNames = new HashMap<>();
             activityTimes = new HashMap<>();
             activityCards = new HashMap<>();
             activityCardTotal = new HashMap<>();
+            activityTupleSizes = new HashMap<>();
+            activityAvgTupleSizes = new HashMap<>();
+            activityFrameCountTotal = new HashMap<>();
+            activityAvgTuplesPerFrame = new HashMap<>();
+            activityTupleBytes = new HashMap<>();
+        }
+
+        void updateOperator(String extendedOpId, String name, double time, long cardinality, long minSize, long maxSize,
+                double avgSize, long frameCount, double avgTuples, long tupleBytes) {
+            updateOperator(extendedOpId, name, time, cardinality);
+            updateMinMax(minSize, extendedOpId, activityTupleSizes);
+            updateMinMax(maxSize, extendedOpId, activityTupleSizes);
+            updateAverage(avgSize, cardinality, extendedOpId, activityAvgTupleSizes);
+            activityFrameCountTotal.compute(extendedOpId,
+                    (id, calls) -> calls == null ? frameCount : calls + frameCount);
+            updateAverage(avgTuples, cardinality, extendedOpId, activityAvgTuplesPerFrame);
+            activityTupleBytes.compute(extendedOpId, (id, bytes) -> bytes == null ? tupleBytes : bytes + tupleBytes);
         }
 
         void updateOperator(String extendedOpId, String name, double time, long cardinality) {
@@ -255,11 +307,16 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
             MinMax<T> stat = opMap.computeIfAbsent(id, i -> new MinMax<>(comp));
             stat.update(comp);
         }
+
+        private void updateAverage(double avg, long card, String id, Map<String, WeightedAvg> opMap) {
+            WeightedAvg stat = opMap.computeIfAbsent(id, i -> new WeightedAvg());
+            stat.update(avg, card);
+        }
     }
 
     private Pair<ExtendedActivityId, String> splitAcId(String name) {
         String[] parts = name.split(" - ");
-        return new Pair<>(new ExtendedActivityId(parts[0]), parts[1]);
+        return Pair.of(new ExtendedActivityId(parts[0]), parts[1]);
     }
 
     Map<String, OperatorProfile> processProfile(ObjectNode profile) {
@@ -274,11 +331,20 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
                             profiledOps.computeIfAbsent(counters.get(RUNTIME_ID).asText(), i -> new OperatorProfile());
                     Pair<ExtendedActivityId, String> identities = splitAcId(counters.get(NAME).asText());
                     JsonNode card = counters.get("cardinality-out");
-                    if (card != null) {
-                        info.updateOperator(identities.first.getActivityAndLocalId(), identities.second,
-                                counters.get("run-time").asDouble(), card.asLong(0));
+                    JsonNode minTupleSz = counters.get("min-tuple-size");
+                    JsonNode maxTupleSz = counters.get("max-tuple-size");
+                    JsonNode avgTupleSz = counters.get("avg-tuple-size");
+                    JsonNode tupleBytes = counters.get("tuple-bytes");
+                    JsonNode framesProcessedNode = counters.get("frames-processed");
+                    JsonNode avgTuplesPerFrameNode = counters.get("avg-tuples-per-frame");
+                    if (card != null && minTupleSz != null && maxTupleSz != null && avgTupleSz != null
+                            && framesProcessedNode != null && avgTuplesPerFrameNode != null && tupleBytes != null) {
+                        info.updateOperator(identities.getLeft().getActivityAndLocalId(), identities.getRight(),
+                                counters.get("run-time").asDouble(), card.asLong(), minTupleSz.asLong(),
+                                maxTupleSz.asLong(), avgTupleSz.asDouble(), framesProcessedNode.asLong(),
+                                avgTuplesPerFrameNode.asDouble(), tupleBytes.asLong());
                     } else {
-                        info.updateOperator(identities.first.getActivityAndLocalId(), identities.second,
+                        info.updateOperator(identities.getLeft().getActivityAndLocalId(), identities.getRight(),
                                 counters.get("run-time").asDouble());
                     }
                 }
@@ -354,7 +420,9 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
     }
 
     private void printActivityStats(Optional<MinMax<Double>> time, Optional<MinMax<Long>> card,
-            Optional<Long> totalCard) throws IOException {
+            Optional<Long> totalCard, Optional<MinMax<Long>> tupleSize, Optional<WeightedAvg> avgTupleSize,
+            Optional<Long> frameCount, Optional<WeightedAvg> avgTuplesPerFrame, Optional<Long> tupleBytes)
+            throws IOException {
         if (time.isPresent()) {
             jsonGenerator.writeNumberField(MIN_TIME, time.get().min);
             jsonGenerator.writeNumberField(MAX_TIME, time.get().max);
@@ -366,6 +434,22 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
         if (totalCard.isPresent()) {
             jsonGenerator.writeNumberField(TOTAL_CARDINALITY, totalCard.get());
         }
+        if (tupleSize.isPresent()) {
+            jsonGenerator.writeNumberField(MIN_TUPLE_SIZE, tupleSize.get().min);
+            jsonGenerator.writeNumberField(MAX_TUPLE_SIZE, tupleSize.get().max);
+        }
+        if (avgTupleSize.isPresent()) {
+            jsonGenerator.writeNumberField(AVG_TUPLE_SIZE, avgTupleSize.get().avg);
+        }
+        if (frameCount.isPresent()) {
+            jsonGenerator.writeNumberField(FRAME_COUNT, frameCount.get());
+        }
+        if (avgTuplesPerFrame.isPresent()) {
+            jsonGenerator.writeNumberField(AVG_TUPLES_PER_FRAME, avgTuplesPerFrame.get().avg);
+        }
+        if (tupleBytes.isPresent()) {
+            jsonGenerator.writeStringField(TUPLE_BYTES, FileUtils.byteCountToDisplaySize(tupleBytes.get()));
+        }
     }
 
     private void printOperatorStats(OperatorProfile info) throws IOException {
@@ -373,7 +457,13 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
             Optional<MinMax<Double>> times = info.activityTimes.values().stream().findFirst();
             Optional<MinMax<Long>> cards = info.activityCards.values().stream().findFirst();
             Optional<Long> total = info.activityCardTotal.values().stream().findFirst();
-            printActivityStats(times, cards, total);
+            Optional<MinMax<Long>> tupleSizes = info.activityTupleSizes.values().stream().findFirst();
+            Optional<WeightedAvg> avgTupleSize = info.activityAvgTupleSizes.values().stream().findFirst();
+            Optional<Long> frameCount = info.activityFrameCountTotal.values().stream().findFirst();
+            Optional<WeightedAvg> avgTuplesPerFrame = info.activityAvgTuplesPerFrame.values().stream().findFirst();
+            Optional<Long> tupleBytes = info.activityTupleBytes.values().stream().findFirst();
+            printActivityStats(times, cards, total, tupleSizes, avgTupleSize, frameCount, avgTuplesPerFrame,
+                    tupleBytes);
         } else if (info.activityTimes.size() > 1) {
             jsonGenerator.writeArrayFieldStart("activity-stats");
             for (String acId : info.activityTimes.keySet()) {
@@ -385,7 +475,12 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
                 jsonGenerator.writeStringField("id", acId);
                 printActivityStats(Optional.ofNullable(info.activityTimes.get(acId)),
                         Optional.ofNullable(info.activityCards.get(acId)),
-                        Optional.ofNullable(info.activityCardTotal.get(acId)));
+                        Optional.ofNullable(info.activityCardTotal.get(acId)),
+                        Optional.ofNullable(info.activityTupleSizes.get(acId)),
+                        Optional.ofNullable(info.activityAvgTupleSizes.get(acId)),
+                        Optional.ofNullable(info.activityFrameCountTotal.get(acId)),
+                        Optional.ofNullable(info.activityAvgTuplesPerFrame.get(acId)),
+                        Optional.ofNullable(info.activityTupleBytes.get(acId)));
                 jsonGenerator.writeEndObject();
             }
             jsonGenerator.writeEndArray();
@@ -442,14 +537,16 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
 
     private void generateCardCostFields(AbstractLogicalOperator op, boolean printOptimizerEstimates)
             throws AlgebricksException {
-        double opCard, opLocalCost, opTotalCost;
+        double opCard, opDocSize, opLocalCost, opTotalCost;
         if (printOptimizerEstimates) {
             opCard = getOpCardinality(op);
+            opDocSize = getOpDocSize(op);
             opLocalCost = getOpLocalCost(op);
             opTotalCost = getOpTotalCost(op);
             try {
                 jsonGenerator.writeObjectFieldStart(OPTIMIZER_ESTIMATES);
                 jsonGenerator.writeNumberField(CARDINALITY, opCard);
+                jsonGenerator.writeNumberField(DOCSIZE, opDocSize);
                 jsonGenerator.writeNumberField(OP_COST_LOCAL, opLocalCost);
                 jsonGenerator.writeNumberField(OP_COST_TOTAL, opTotalCost);
                 jsonGenerator.writeEndObject();
@@ -465,7 +562,7 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
             jsonGenerator.writeString(expression.accept(exprVisitor, null));
             return this;
         } catch (IOException e) {
-            throw new AlgebricksException(e, ErrorCode.ERROR_PRINTING_PLAN);
+            throw new AlgebricksException(ErrorCode.ERROR_PRINTING_PLAN, e);
         }
     }
 
@@ -650,6 +747,14 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
         try {
             jsonGenerator.writeStringField(OPERATOR_FIELD, "select");
             writeStringFieldExpression(CONDITION_FIELD, op.getCondition(), indent);
+            if (op.getRetainMissingAsValue() != null) {
+                LogicalVariable placeholderVar = op.getMissingPlaceholderVariable();
+                IAlgebricksConstantValue retainValue = op.getRetainMissingAsValue();
+                if (placeholderVar != null) {
+                    jsonGenerator.writeStringField("retain-untrue-variable", String.valueOf(placeholderVar));
+                }
+                jsonGenerator.writeStringField("retain-untrue-value", String.valueOf(retainValue));
+            }
             if (op.isProjectPushed()) {
                 writeArrayFieldOfVariables(PROJECT_VARIABLES_FIELD, op.getProjectVariables());
             }
@@ -716,6 +821,41 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
             writeArrayFieldOfNestedVariablesList("input-compare-variables", op.getAllInputsCompareVariables());
             if (op.hasExtraVariables()) {
                 writeArrayFieldOfNestedVariablesList("input-extra-variables", op.getAllInputsExtraVariables());
+            }
+            return null;
+        } catch (IOException e) {
+            throw AlgebricksException.create(ErrorCode.ERROR_PRINTING_PLAN, e, String.valueOf(e));
+        }
+    }
+
+    @Override
+    public Void visitKMeansStageOperator(KMeansStageOperator op, Void indent) throws AlgebricksException {
+        try {
+            jsonGenerator.writeStringField(OPERATOR_FIELD, "kmeans-stage");
+            jsonGenerator.writeStringField("candidate-variable", String.valueOf(op.getCandidateVariable()));
+            jsonGenerator.writeStringField("vector-variable", String.valueOf(op.getVectorVariable()));
+            jsonGenerator.writeStringField("pool-variable", String.valueOf(op.getPoolVariable()));
+            jsonGenerator.writeNumberField("top-count", op.getTopCount());
+            jsonGenerator.writeStringField("mode", op.getMode().getLabel());
+            jsonGenerator.writeNumberField("seed", op.getSeed());
+            jsonGenerator.writeStringField("metric", op.getMetric());
+            return null;
+        } catch (IOException e) {
+            throw AlgebricksException.create(ErrorCode.ERROR_PRINTING_PLAN, e, String.valueOf(e));
+        }
+    }
+
+    @Override
+    public Void visitClusterByOperator(ClusterByOperator op, Void indent) throws AlgebricksException {
+        try {
+            jsonGenerator.writeStringField(OPERATOR_FIELD, "cluster-by");
+            jsonGenerator.writeStringField("cluster-id-variable", String.valueOf(op.getClusterIdVariable()));
+            jsonGenerator.writeStringField("centroid-variable", String.valueOf(op.getCentroidVariable()));
+            jsonGenerator.writeStringField("members-variable", String.valueOf(op.getMembersVariable()));
+            jsonGenerator.writeStringField("vector-variable", String.valueOf(op.getVectorVariable()));
+            jsonGenerator.writeStringField("options", String.valueOf(op.getOptions()));
+            if (!op.getDecorList().isEmpty()) {
+                writeArrayFieldOfVariableExpressionPairs("decor-by", op.getDecorList(), indent);
             }
             return null;
         } catch (IOException e) {
@@ -1084,6 +1224,9 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
             if (!variables.isEmpty()) {
                 writeArrayFieldOfVariables(VARIABLES_FIELD, variables);
             }
+            if (op.hasTimeTravel()) {
+                jsonGenerator.writeStringField("time-travel", op.getTimeTravel().toString());
+            }
             LogicalVariable positionalVariable = op.getPositionalVariable();
             if (positionalVariable != null) {
                 jsonGenerator.writeStringField("position", String.valueOf(positionalVariable));
@@ -1271,10 +1414,10 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
         jsonGenerator.writeArrayFieldStart(fieldName);
         for (Pair<LogicalVariable, Mutable<ILogicalExpression>> ve : varExprPairs) {
             jsonGenerator.writeStartObject();
-            if (ve.first != null) {
-                jsonGenerator.writeStringField("variable", ve.first.toString());
+            if (ve.getLeft() != null) {
+                jsonGenerator.writeStringField("variable", ve.getLeft().toString());
             }
-            writeStringFieldExpression(EXPRESSION_FIELD, ve.second, indent);
+            writeStringFieldExpression(EXPRESSION_FIELD, ve.getRight(), indent);
             jsonGenerator.writeEndObject();
         }
         jsonGenerator.writeEndArray();
@@ -1289,8 +1432,8 @@ public class LogicalOperatorPrettyPrintVisitorJson extends AbstractLogicalOperat
         jsonGenerator.writeArrayFieldStart(fieldName);
         for (Pair<OrderOperator.IOrder, Mutable<ILogicalExpression>> p : orderList) {
             jsonGenerator.writeStartObject();
-            jsonGenerator.writeStringField("order", getOrderString(p.first, indent));
-            writeStringFieldExpression(EXPRESSION_FIELD, p.second, indent);
+            jsonGenerator.writeStringField("order", getOrderString(p.getLeft(), indent));
+            writeStringFieldExpression(EXPRESSION_FIELD, p.getRight(), indent);
             jsonGenerator.writeEndObject();
         }
         jsonGenerator.writeEndArray();

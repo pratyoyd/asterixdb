@@ -31,6 +31,7 @@ import org.apache.asterix.column.values.reader.value.AbstractValueReader;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.data.std.api.IValueReference;
+import org.apache.hyracks.storage.am.lsm.btree.column.error.ColumnarValueException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.parquet.bytes.BytesUtils;
@@ -59,6 +60,10 @@ abstract class AbstractColumnValuesReader implements IColumnValuesReader {
     private boolean nullLevel;
     private boolean allMissing;
 
+    private int previousTupleIndex;
+    private int currentTupleIndex;
+    private boolean firstValueForCurrentTuple;
+
     // For logging purposes only
     private int numberOfEncounteredMissing;
     private int numberOfEncounteredNull;
@@ -73,6 +78,7 @@ abstract class AbstractColumnValuesReader implements IColumnValuesReader {
         currentDefinitionLevels = definitionLevels.get(maxLevel);
         valuesStream = primaryKey ? new ByteBufferInputStream() : new MultiByteBufferInputStream();
         this.primaryKey = primaryKey;
+        this.previousTupleIndex = -1;
     }
 
     final void nextLevel() throws HyracksDataException {
@@ -88,16 +94,46 @@ abstract class AbstractColumnValuesReader implements IColumnValuesReader {
             nullLevel = ColumnValuesUtil.isNull(nullBitMask, actualLevel);
             //Clear the null bit to allow repeated value readers determine the correct delimiter for null values
             level = ColumnValuesUtil.clearNullBit(nullBitMask, actualLevel);
+            if (currentTupleIndex != previousTupleIndex) {
+                // We are at the first value for the current tuple
+                firstValueForCurrentTuple = true;
+                previousTupleIndex = currentTupleIndex;
+            } else {
+                firstValueForCurrentTuple = false;
+            }
 
             // For logging purposes only
             numberOfEncounteredMissing += isMissing() ? 1 : 0;
             numberOfEncounteredNull += isNull() ? 1 : 0;
         } catch (Exception e) {
-            ObjectNode infoNode = OBJECT_MAPPER.createObjectNode();
-            appendReaderInformation(infoNode);
-            LOGGER.error("error reading nextLevel, collected info: {}", infoNode);
-            throw HyracksDataException.create(e);
+            ColumnarValueException ex = new ColumnarValueException();
+            ObjectNode readerNode = ex.createNode(getClass().getSimpleName());
+            appendReaderInformation(readerNode);
+            LOGGER.error("error reading nextLevel, collected info: {}", ex.getNode());
+            ex.addSuppressed(e);
+            throw ex;
         }
+    }
+
+    @Override
+    public boolean isColumnMissingForCurrentTuple(int tupleIndex) {
+        return allMissing || missingColumnForCurrentTuple(tupleIndex);
+    }
+
+    private boolean missingColumnForCurrentTuple(int tupleIndex) {
+        // A column is considered missing for the current tuple if:
+        // 1- The level is 0 (indicating that there are no values present for this column)
+        // 2- This is the first value for the current tuple (to avoid false positives in repeated structures)
+        // 3- The previous tuple index matches the current tuple
+
+        // The last condition ensures that we are correctly checking for the same tuple index.
+        // and not using the "firstValueForCurrentTuple" from previous tuple.
+        return (level == 0 && firstValueForCurrentTuple && previousTupleIndex == tupleIndex);
+    }
+
+    @Override
+    public void registerCurrentTuple(int tupleIndex) {
+        currentTupleIndex = tupleIndex;
     }
 
     abstract void resetValues();
@@ -115,9 +151,11 @@ abstract class AbstractColumnValuesReader implements IColumnValuesReader {
         }
         allMissing = false;
         try {
-            int actualLevel = BytesUtils.readZigZagVarInt(in);
-            maxLevel = ColumnValuesUtil.clearNullBit(nullBitMask, actualLevel);
-            nullBitMask = ColumnValuesUtil.getNullMask(actualLevel);
+            previousTupleIndex = -1;
+            firstValueForCurrentTuple = false;
+
+            maxLevel = BytesUtils.readZigZagVarInt(in);
+            nullBitMask = ColumnValuesUtil.getNullMask(maxLevel);
 
             currentDefinitionLevels = definitionLevels.get(maxLevel);
             if (currentDefinitionLevels == null) {
@@ -159,7 +197,9 @@ abstract class AbstractColumnValuesReader implements IColumnValuesReader {
 
     @Override
     public final boolean isMissing() {
-        return !isDelimiter() && level < maxLevel;
+        // After clearing the nullBitMask, a level less than maxLevel may incorrectly be considered missing.
+        // This is because the nullBitMask can affect the interpretation of the level value.
+        return !isDelimiter() && !nullLevel && level < maxLevel;
     }
 
     @Override
@@ -175,6 +215,11 @@ abstract class AbstractColumnValuesReader implements IColumnValuesReader {
     @Override
     public final long getLong() {
         return valueReader.getLong();
+    }
+
+    @Override
+    public final int getInt() {
+        return valueReader.getInt();
     }
 
     @Override
@@ -209,28 +254,44 @@ abstract class AbstractColumnValuesReader implements IColumnValuesReader {
         }
     }
 
-    @Override
-    public void skip(int count) throws HyracksDataException {
-        if (primaryKey) {
-            /*
-             * Do not modify the position of primary key (PK) reader as it is maintained by the cursor.
-             * Previously, we used two separate primary key readers
-             * 1- One for the cursor
-             *   - Its position maintained by the cursor
-             * 2- And one for assembler (if the primary key is requested -- like in SELECT *)
-             *   - Its position maintained by calling this skip method
-             * In the previous approach, maintaining the positions of two primary key(s) readers were messy,
-             * as we needed to re-sync the assembler reader with the cursor PK reader. The reason is that
-             * anti-matters are handled at the cursor level. When anti-matters are processed, they are skipped --
-             * making the assembler PK reader out of sync.
-             *
-             * Additionally, maintaining two readers that are decoding the same values (twice) is unnecessary.
-             */
-            return;
+    protected final boolean isPrimaryKey() {
+        return primaryKey;
+    }
+
+    /**
+     * Consumes up to {@code limit} consecutive plain values (entries at the max level that are not null) without
+     * decoding them, and returns how many were consumed. Zero means the next entry is a delimiter, a null, a missing,
+     * or the end of the column, and the caller has to step over it with {@link #nextLevel()}.
+     * <p>
+     * Afterwards this reader looks exactly as if {@code next()} had been called that many times, except that the
+     * value reader has not moved: the caller owes it a bulk {@link AbstractValueReader#skip(int)} of the returned
+     * count. Counting values here and skipping them in one move is what makes positioning inside a mega leaf cheap
+     * for arrays of fixed-width values, where {@code next()} would decode every element on the way.
+     */
+    protected final int skipPlainValues(int limit) throws HyracksDataException {
+        if (allMissing || limit <= 0) {
+            return 0;
         }
-        for (int i = 0; i < count; i++) {
-            next();
+        int skipped;
+        try {
+            skipped = currentDefinitionLevels.skipWhile(maxLevel, limit);
+        } catch (Exception e) {
+            ColumnarValueException ex = new ColumnarValueException();
+            ObjectNode readerNode = ex.createNode(getClass().getSimpleName());
+            appendReaderInformation(readerNode);
+            LOGGER.error("error skipping plain values, collected info: {}", ex.getNode());
+            ex.addSuppressed(e);
+            throw ex;
         }
+        if (skipped > 0) {
+            valueIndex += skipped;
+            level = maxLevel;
+            nullLevel = false;
+            // the state that the same number of nextLevel() calls would have left behind
+            firstValueForCurrentTuple = skipped == 1 && currentTupleIndex != previousTupleIndex;
+            previousTupleIndex = currentTupleIndex;
+        }
+        return skipped;
     }
 
     protected final void writeLevel(IColumnValuesWriter writer) throws HyracksDataException {

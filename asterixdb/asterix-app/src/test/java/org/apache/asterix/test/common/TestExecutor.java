@@ -19,28 +19,35 @@
 package org.apache.asterix.test.common;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.apache.asterix.test.common.TestConstants.REMOVE_PLACEHOLDERS_PATTERN;
+import static org.apache.asterix.test.common.TestConstants.S3_ACCESS_KEY_ID_DEFAULT;
+import static org.apache.asterix.test.common.TestConstants.S3_REGION_DEFAULT;
+import static org.apache.asterix.test.common.TestConstants.S3_SECRET_ACCESS_KEY_DEFAULT;
 import static org.apache.asterix.test.common.TestConstants.Azure.ACCOUNT_KEY_PLACEHOLDER;
 import static org.apache.asterix.test.common.TestConstants.Azure.ACCOUNT_NAME_PLACEHOLDER;
 import static org.apache.asterix.test.common.TestConstants.Azure.AZURITE_ACCOUNT_KEY_DEFAULT;
 import static org.apache.asterix.test.common.TestConstants.Azure.AZURITE_ACCOUNT_NAME_DEFAULT;
 import static org.apache.asterix.test.common.TestConstants.Azure.BLOB_ENDPOINT_DEFAULT;
 import static org.apache.asterix.test.common.TestConstants.Azure.BLOB_ENDPOINT_PLACEHOLDER;
-import static org.apache.asterix.test.common.TestConstants.Azure.CLIENT_CERTIFICATE_DEFAULT;
-import static org.apache.asterix.test.common.TestConstants.Azure.CLIENT_CERTIFICATE_PASSWORD_DEFAULT;
-import static org.apache.asterix.test.common.TestConstants.Azure.CLIENT_CERTIFICATE_PASSWORD_PLACEHOLDER;
-import static org.apache.asterix.test.common.TestConstants.Azure.CLIENT_CERTIFICATE_PLACEHOLDER;
 import static org.apache.asterix.test.common.TestConstants.Azure.CLIENT_ID_DEFAULT;
 import static org.apache.asterix.test.common.TestConstants.Azure.CLIENT_ID_PLACEHOLDER;
 import static org.apache.asterix.test.common.TestConstants.Azure.CLIENT_SECRET_DEFAULT;
 import static org.apache.asterix.test.common.TestConstants.Azure.CLIENT_SECRET_PLACEHOLDER;
-import static org.apache.asterix.test.common.TestConstants.Azure.MANAGED_IDENTITY_ID_DEFAULT;
-import static org.apache.asterix.test.common.TestConstants.Azure.MANAGED_IDENTITY_ID_PLACEHOLDER;
 import static org.apache.asterix.test.common.TestConstants.Azure.SAS_TOKEN_PLACEHOLDER;
 import static org.apache.asterix.test.common.TestConstants.Azure.TEMPLATE;
 import static org.apache.asterix.test.common.TestConstants.Azure.TEMPLATE_DEFAULT;
 import static org.apache.asterix.test.common.TestConstants.Azure.TENANT_ID_DEFAULT;
 import static org.apache.asterix.test.common.TestConstants.Azure.TENANT_ID_PLACEHOLDER;
 import static org.apache.asterix.test.common.TestConstants.Azure.sasToken;
+import static org.apache.asterix.test.common.TestConstants.Iceberg.NESSIE_SERVER_URI_PLACEHOLDER;
+import static org.apache.asterix.test.common.TestConstants.Iceberg.SNAPSHOT_1_SNAPSHOT_ID_PLACEHOLDER;
+import static org.apache.asterix.test.common.TestConstants.Iceberg.SNAPSHOT_1_TIMESTAMP_LONG_PLACEHOLDER;
+import static org.apache.asterix.test.common.TestConstants.Iceberg.SNAPSHOT_2_TIMESTAMP_DATETIME_PLACEHOLDER;
+import static org.apache.asterix.test.common.TestConstants.Iceberg.SNAPSHOT_3_TIMESTAMP_DATE_PLACEHOLDER;
+import static org.apache.asterix.test.common.TestConstants.Iceberg.snapshot1SnapshotIdValue;
+import static org.apache.asterix.test.common.TestConstants.Iceberg.snapshot1TimestampLongValue;
+import static org.apache.asterix.test.common.TestConstants.Iceberg.snapshot2TimestampDatetimeValue;
+import static org.apache.asterix.test.common.TestConstants.Iceberg.snapshot3TimestampDateValue;
 import static org.apache.hyracks.util.NetworkUtil.toHostPort;
 import static org.apache.hyracks.util.file.FileUtil.canonicalize;
 
@@ -74,6 +81,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -84,6 +92,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Queue;
+import java.util.SequencedSet;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -100,6 +109,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import org.apache.asterix.api.common.LocalCloudUtilAdobeMock;
 import org.apache.asterix.api.http.server.QueryServiceRequestParameters;
 import org.apache.asterix.app.external.IExternalUDFLibrarian;
 import org.apache.asterix.common.api.Duration;
@@ -128,6 +138,7 @@ import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.output.ByteArrayOutputStream;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.mutable.MutableInt;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.http.Consts;
 import org.apache.http.HttpException;
 import org.apache.http.HttpHost;
@@ -164,7 +175,6 @@ import org.apache.http.message.BasicNameValuePair;
 import org.apache.http.protocol.HttpContext;
 import org.apache.http.protocol.HttpCoreContext;
 import org.apache.http.util.EntityUtils;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.http.server.utils.HttpUtil;
 import org.apache.hyracks.util.StorageUtil;
 import org.apache.logging.log4j.Level;
@@ -173,12 +183,14 @@ import org.apache.logging.log4j.Logger;
 import org.junit.Assert;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectWriter;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.util.RawValue;
 
@@ -190,6 +202,12 @@ public class TestExecutor {
      * Static variables
      */
     protected static final Logger LOGGER = LogManager.getLogger();
+
+    static {
+        StreamReadConstraints.overrideDefaultStreamReadConstraints(
+                StreamReadConstraints.builder().maxStringLength(Integer.MAX_VALUE).build());
+    }
+
     private static final ObjectMapper OM = new ObjectMapper();
     private static final ObjectWriter OBJECT_WRITER = OM.writer();
     private static final ObjectReader JSON_NODE_READER = OM.readerFor(JsonNode.class);
@@ -198,6 +216,7 @@ public class TestExecutor {
     protected static final ObjectReader RESULT_NODE_READER =
             JSON_NODE_READER.with(DeserializationFeature.ACCEPT_EMPTY_STRING_AS_NULL_OBJECT);
     protected static final String SQLPP = "sqlpp";
+    private static final String LIBRARY_API_PATH = "/admin/udf";
     private static final String DEFAULT_PLAN_FORMAT = "string";
     // see
     // https://stackoverflow.com/questions/417142/what-is-the-maximum-length-of-a-url-in-different-browsers/417184
@@ -248,6 +267,7 @@ public class TestExecutor {
     public static final String DELIVERY_IMMEDIATE = "immediate";
     public static final String DIAGNOSE = "diagnose";
     private static final String METRICS_QUERY_TYPE = "metrics";
+    private static final String CACHED_PLAN_QUERY_TYPE = "cachedplan";
     private static final String PROFILE_QUERY_TYPE = "profile";
     private static final String PLANS_QUERY_TYPE = "plans";
     private static final String SIGNATURE_QUERY_TYPE = "signature";
@@ -279,6 +299,10 @@ public class TestExecutor {
     protected String deltaPath = null;
     public String stripSubstring = null;
     public String executorId = null;
+    private String s3mockTemplate = null;
+
+    // iceberg parameters
+    private String nessieUri = null;
 
     public TestExecutor() {
         this(Collections.singletonList(
@@ -302,6 +326,18 @@ public class TestExecutor {
     public void setNcEndPoints(Map<String, InetSocketAddress> ncEndPoints) {
         this.ncEndPoints = ncEndPoints;
         ncEndPointsList.addAll(ncEndPoints.values());
+    }
+
+    /**
+     * Replaces the NC query-endpoint pool used to round-robin {@code QUERY_SERVICE}/UDF requests (see
+     * {@link #createEndpointURI}) with the supplied set. {@link #setNcEndPoints} eagerly seeds this list with the full
+     * configured topology; callers that know which nodes are actually live (e.g. the cluster test framework after a
+     * topology change) must narrow it down to those, otherwise a request can be dispatched to a defined-but-never-started
+     * node.
+     */
+    public static void setActiveNcQueryEndPoints(Collection<InetSocketAddress> activeEndPoints) {
+        ncEndPointsList.clear();
+        ncEndPointsList.addAll(activeEndPoints);
     }
 
     public void setNcReplicationAddress(Map<String, InetSocketAddress> replicationAddress) {
@@ -588,8 +624,8 @@ public class TestExecutor {
         StringWriter expected = new StringWriter();
         IOUtils.copy(actualFile, actual);
         IOUtils.copy(expectedFile, expected);
-        Pattern pattern = Pattern.compile(expected.toString(), Pattern.DOTALL | Pattern.MULTILINE);
-        if (!pattern.matcher(actual.toString()).matches()) {
+        Pattern pattern = Pattern.compile(expected.toString().trim(), Pattern.DOTALL | Pattern.MULTILINE);
+        if (!pattern.matcher(actual.toString().trim()).matches()) {
             // figure out where the problem first occurs...
             StringBuilder builder = new StringBuilder();
             String[] lines = expected.toString().split("\\n");
@@ -711,6 +747,20 @@ public class TestExecutor {
 
     // For tests where you simply want the byte-for-byte output.
     private static void writeOutputToFile(File actualFile, InputStream resultStream) throws Exception {
+        ensureParentDir(actualFile);
+        try (FileOutputStream out = new FileOutputStream(actualFile)) {
+            IOUtils.copy(resultStream, out);
+        }
+    }
+
+    private static void writeOutputToFile(File actualFile, String content) throws Exception {
+        ensureParentDir(actualFile);
+        try (FileOutputStream out = new FileOutputStream(actualFile)) {
+            IOUtils.write(content, out, UTF_8);
+        }
+    }
+
+    private static void ensureParentDir(File actualFile) {
         final File parentDir = actualFile.getParentFile();
         if (!parentDir.isDirectory()) {
             if (parentDir.exists()) {
@@ -718,9 +768,6 @@ public class TestExecutor {
             } else if (!parentDir.mkdirs()) {
                 LOGGER.warn("Unable to create actual file parent dir: " + parentDir);
             }
-        }
-        try (FileOutputStream out = new FileOutputStream(actualFile)) {
-            IOUtils.copy(resultStream, out);
         }
     }
 
@@ -766,7 +813,8 @@ public class TestExecutor {
         // https://issues.apache.org/jira/browse/ASTERIXDB-2315
         ExecutorService executor = Executors.newSingleThreadExecutor();
         CredentialsProvider cp = new BasicCredentialsProvider();
-        cp.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(credentials.first, credentials.second));
+        cp.setCredentials(AuthScope.ANY,
+                new UsernamePasswordCredentials(credentials.getLeft(), credentials.getRight()));
         HttpClientContext hcCtx = HttpClientContext.create();
         AuthCache ac = new BasicAuthCache();
         ac.put(URIUtils.extractHost(method.getURI()), new BasicScheme());
@@ -915,6 +963,7 @@ public class TestExecutor {
             str = strip(str, stripSubstring);
         }
 
+        str = removeLeftoverExternalPlaceholders(str);
         HttpUriRequest method = jsonEncoded ? constructPostMethodJson(str, uri, "statement", params)
                 : constructPostMethodUrl(str, uri, "statement", params);
         // Set accepted output response type
@@ -932,10 +981,14 @@ public class TestExecutor {
         return response.getEntity().getContent();
     }
 
+    private String removeLeftoverExternalPlaceholders(String str) {
+        return REMOVE_PLACEHOLDERS_PATTERN.matcher(str).replaceAll("");
+    }
+
     public InputStream executeQueryService(String str, TestFileContext ctx, OutputFormat fmt, URI uri,
-            List<Parameter> params, boolean jsonEncoded, Charset responseCharset,
+            List<Parameter> params, List<Placeholder> placeholders, boolean jsonEncoded, Charset responseCharset,
             Predicate<Integer> responseCodeValidator, boolean cancellable) throws Exception {
-        return executeQueryService(str, fmt, uri, constructQueryParameters(str, fmt, params), jsonEncoded,
+        return executeQueryService(str, fmt, uri, constructQueryParameters(str, fmt, params), placeholders, jsonEncoded,
                 responseCharset, responseCodeValidator, cancellable);
     }
 
@@ -1296,6 +1349,7 @@ public class TestExecutor {
             case "parse":
             case "deferred":
             case "metrics":
+            case "cachedplan":
             case "profile":
             case "plans":
             case "signature":
@@ -1311,9 +1365,10 @@ public class TestExecutor {
                                 : expectedResultFileCtxs.get(queryCount.intValue()).getFile();
                 File actualResultFile = expectedResultFile == null ? null
                         : testCaseCtx.getActualResultFile(cUnit, expectedResultFile, new File(actualPath));
-                ExtractedResult extractedResult = executeQuery(OutputFormat.forCompilationUnit(cUnit), statement,
-                        variableCtx, ctx, expectedResultFile, actualResultFile, queryCount,
-                        expectedResultFileCtxs.size(), cUnit.getParameter(), ComparisonEnum.TEXT);
+                ExtractedResult extractedResult =
+                        executeQuery(OutputFormat.forCompilationUnit(cUnit), statement, variableCtx, ctx,
+                                expectedResultFile, actualResultFile, queryCount, expectedResultFileCtxs.size(),
+                                cUnit.getParameter(), cUnit.getPlaceholder(), ComparisonEnum.TEXT);
 
                 validateWarning(extractedResult, testCaseCtx, cUnit, testFile);
                 break;
@@ -1327,7 +1382,7 @@ public class TestExecutor {
                         + cUnit.getName() + '.' + ctx.getSeqNum() + ".adm");
                 executeQuery(OutputFormat.forCompilationUnit(cUnit), statement, variableCtx, ctx, null,
                         actualResultFile, queryCount, expectedResultFileCtxs.size(), cUnit.getParameter(),
-                        ComparisonEnum.TEXT);
+                        cUnit.getPlaceholder(), ComparisonEnum.TEXT);
                 variableCtx.put(key, actualResultFile);
                 break;
             case "validate":
@@ -1407,7 +1462,7 @@ public class TestExecutor {
                                     + " (start <test server name> <port> [<arg1>][<arg2>][<arg3>]...");
                         }
                         String name = command[1];
-                        Integer port = new Integer(command[2]);
+                        Integer port = Integer.valueOf(command[2]);
                         if (runningTestServers.containsKey(port)) {
                             throw new Exception("server with port " + port + " is already running");
                         }
@@ -1423,7 +1478,7 @@ public class TestExecutor {
                             }
                             runningTestServers.clear();
                         } else {
-                            Integer port = new Integer(command[1]);
+                            Integer port = Integer.valueOf(command[1]);
                             ITestServer server = runningTestServers.get(port);
                             if (server == null) {
                                 throw new Exception("no server is listening to port " + port);
@@ -1445,13 +1500,21 @@ public class TestExecutor {
                 lines = stripAllComments(statement).trim().split("\n");
                 for (String line : lines) {
                     String[] command = line.trim().split(" ");
-                    //TODO: this is not right. URLEncoder does not properly encode paths.
-                    String dataverse = URLEncoder.encode(command[1], StandardCharsets.US_ASCII.name());
-                    String library = URLEncoder.encode(command[2], StandardCharsets.US_ASCII.name());
-                    URI path = createEndpointURI("/admin/udf/" + dataverse + "/" + library);
                     if (command.length < 2) {
                         throw new Exception("invalid library command: " + line);
                     }
+                    if (command[0].equals("list")) {
+                        if (command.length != 4) {
+                            throw new Exception("invalid library format");
+                        }
+                        listLibraries(command[1], Pair.of(command[2], command[3]), testCaseCtx, cUnit, testFile,
+                                statement, queryCount, expectedResultFileCtxs, actualPath);
+                        continue;
+                    }
+                    //TODO: this is not right. URLEncoder does not properly encode paths.
+                    String dataverse = URLEncoder.encode(command[1], StandardCharsets.US_ASCII.name());
+                    String library = URLEncoder.encode(command[2], StandardCharsets.US_ASCII.name());
+                    String path = libraryEndpoint(LIBRARY_API_PATH + "/" + dataverse + "/" + library);
                     switch (command[0]) {
                         case "install":
                             if (command.length != 7) {
@@ -1461,7 +1524,7 @@ public class TestExecutor {
                             String username = command[4];
                             String pw = command[5];
                             String libPath = command[6];
-                            librarian.install(path, type, libPath, new Pair<>(username, pw));
+                            librarian.install(path, type, libPath, Pair.of(username, pw));
                             break;
                         case "uninstall":
                             if (command.length != 5) {
@@ -1469,7 +1532,7 @@ public class TestExecutor {
                             }
                             username = command[3];
                             pw = command[4];
-                            librarian.uninstall(path, new Pair<>(username, pw));
+                            librarian.uninstall(path, Pair.of(username, pw));
                             break;
                         default:
                             throw new Exception("invalid library format");
@@ -1569,7 +1632,7 @@ public class TestExecutor {
                 + cUnit.getName() + '.' + ctx.getSeqNum() + ".adm");
         executeQuery(OutputFormat.forCompilationUnit(cUnit), statement, variableCtx,
                 new TestFileContext(testFile, "validate"), expectedResultFile, actualResultFile, queryCount,
-                expectedResultFileCtxs.size(), cUnit.getParameter(), ComparisonEnum.TEXT);
+                expectedResultFileCtxs.size(), cUnit.getParameter(), cUnit.getPlaceholder(), ComparisonEnum.TEXT);
     }
 
     protected void executeHttpRequest(OutputFormat fmt, String statement, Map<String, Object> variableCtx,
@@ -1610,30 +1673,72 @@ public class TestExecutor {
             resultStream = ResultExtractor.extractStatus(resultStream, UTF_8);
         }
         if (handleVar != null) {
-            String handle = ResultExtractor.extractHandle(resultStream, UTF_8);
+            String result = IOUtils.toString(resultStream, UTF_8);
+            String handle = ResultExtractor.extractHandle(result);
             if (handle != null) {
                 variableCtx.put(handleVar, handle);
+                writeOutputToFile(actualResultFile, result);
+                matchExpectedResult(testFile, expectedResultFile, actualResultFile, resultStream, queryCount,
+                        numResultFiles, compare, statement);
             } else {
                 throw new Exception("no handle for test " + testFile.toString());
             }
         } else if (saveResponseVar != null) {
             variableCtx.put(saveResponseVar, IOUtils.toString(resultStream, UTF_8));
         } else {
-            if (expectedResultFile == null) {
-                if (testFile.getName().startsWith(DIAGNOSE)) {
-                    LOGGER.info("Diagnostic output: {}", IOUtils.toString(resultStream, UTF_8));
-                } else {
-                    LOGGER.info("Unexpected output: {}", IOUtils.toString(resultStream, UTF_8));
-                    Assert.fail("no result file for " + testFile + "; queryCount: " + queryCount + ", filectxs.size: "
-                            + numResultFiles);
-                }
-            } else {
-                writeOutputToFile(actualResultFile, resultStream);
-                runScriptAndCompareWithResult(testFile, expectedResultFile, actualResultFile, compare, UTF_8,
-                        statement);
-            }
+            writeOutputToFile(actualResultFile, resultStream);
+            matchExpectedResult(testFile, expectedResultFile, actualResultFile, resultStream, queryCount,
+                    numResultFiles, compare, statement);
         }
         queryCount.increment();
+    }
+
+    private String libraryEndpoint(String path) throws URISyntaxException {
+        return librarian.getSocketType() == IExternalUDFLibrarian.SocketType.DOMAIN ? path
+                : createEndpointURI(path).toString();
+    }
+
+    /**
+     * Writes the libraries the library API lists for {@code dataverse} as the next result of the test. The listing
+     * is narrowed to one dataverse so that libraries left installed by other tests do not leak into the result.
+     */
+    private void listLibraries(String dataverse, Pair<String, String> credentials, TestCaseContext testCaseCtx,
+            CompilationUnit cUnit, File testFile, String statement, MutableInt queryCount,
+            List<TestFileContext> expectedResultFileCtxs, String actualPath) throws Exception {
+        String listing = librarian.list(libraryEndpoint(LIBRARY_API_PATH), credentials);
+        ArrayNode libraries = OM.createArrayNode();
+        for (JsonNode library : OM.readTree(listing)) {
+            if (dataverse.equals(library.get("dataverse").asText())) {
+                libraries.add(library);
+            }
+        }
+        String result = OM.writeValueAsString(libraries);
+        File expectedResultFile = queryCount.intValue() < expectedResultFileCtxs.size()
+                ? expectedResultFileCtxs.get(queryCount.intValue()).getFile() : null;
+        File actualResultFile = expectedResultFile == null ? null
+                : testCaseCtx.getActualResultFile(cUnit, expectedResultFile, new File(actualPath));
+        if (actualResultFile != null) {
+            writeOutputToFile(actualResultFile, result);
+        }
+        matchExpectedResult(testFile, expectedResultFile, actualResultFile, IOUtils.toInputStream(result, UTF_8),
+                queryCount, expectedResultFileCtxs.size(), cUnit.getOutputDir().getCompare(), statement);
+        queryCount.increment();
+    }
+
+    private void matchExpectedResult(File testFile, File expectedResultFile, File actualResultFile,
+            InputStream resultStream, MutableInt queryCount, int numResultFiles, ComparisonEnum compare,
+            String statement) throws Exception {
+        if (expectedResultFile == null) {
+            if (testFile.getName().startsWith(DIAGNOSE)) {
+                LOGGER.info("Diagnostic output: {}", IOUtils.toString(resultStream, UTF_8));
+            } else {
+                LOGGER.info("Unexpected output: {}", IOUtils.toString(resultStream, UTF_8));
+                Assert.fail("no result file for " + testFile + "; queryCount: " + queryCount + ", filectxs.size: "
+                        + numResultFiles);
+            }
+        } else {
+            runScriptAndCompareWithResult(testFile, expectedResultFile, actualResultFile, compare, UTF_8, statement);
+        }
     }
 
     protected Charset getResponseCharset(File expectedResultFile) {
@@ -1642,7 +1747,8 @@ public class TestExecutor {
 
     public ExtractedResult executeQuery(OutputFormat fmt, String statement, Map<String, Object> variableCtx,
             TestFileContext ctx, File expectedResultFile, File actualResultFile, MutableInt queryCount,
-            int numResultFiles, List<Parameter> params, ComparisonEnum compare, URI uri) throws Exception {
+            int numResultFiles, List<Parameter> params, List<Placeholder> placeholders, ComparisonEnum compare, URI uri)
+            throws Exception {
 
         String delivery = DELIVERY_IMMEDIATE;
         String reqType = ctx.getType();
@@ -1660,11 +1766,14 @@ public class TestExecutor {
         final String variablesReplaced = replaceVarRefRelaxed(statement, variableCtx);
         String resultVar = getResultVariable(statement); //Is the result of the statement/query to be used in later tests
         if (DELIVERY_IMMEDIATE.equals(delivery)) {
-            resultStream = executeQueryService(variablesReplaced, ctx, fmt, uri, params, isJsonEncoded, responseCharset,
-                    null, isCancellable(reqType));
+            resultStream = executeQueryService(variablesReplaced, ctx, fmt, uri, params, placeholders, isJsonEncoded,
+                    responseCharset, null, isCancellable(reqType));
             switch (reqType) {
                 case METRICS_QUERY_TYPE:
                     resultStream = ResultExtractor.extractMetrics(resultStream, responseCharset);
+                    break;
+                case CACHED_PLAN_QUERY_TYPE:
+                    resultStream = ResultExtractor.extractCachedPlan(resultStream, responseCharset);
                     break;
                 case PROFILE_QUERY_TYPE:
                     resultStream = ResultExtractor.extractProfile(resultStream, responseCharset);
@@ -1724,10 +1833,11 @@ public class TestExecutor {
 
     public ExtractedResult executeQuery(OutputFormat fmt, String statement, Map<String, Object> variableCtx,
             TestFileContext ctx, File expectedResultFile, File actualResultFile, MutableInt queryCount,
-            int numResultFiles, List<Parameter> params, ComparisonEnum compare) throws Exception {
+            int numResultFiles, List<Parameter> params, List<Placeholder> placeholders, ComparisonEnum compare)
+            throws Exception {
         URI uri = getEndpoint(Servlets.QUERY_SERVICE, FilenameUtils.getExtension(ctx.getFile().getName()));
         return executeQuery(fmt, statement, variableCtx, ctx, expectedResultFile, actualResultFile, queryCount,
-                numResultFiles, params, compare, uri);
+                numResultFiles, params, placeholders, compare, uri);
     }
 
     private void polldynamic(TestCaseContext testCaseCtx, TestFileContext ctx, Map<String, Object> variableCtx,
@@ -2081,7 +2191,7 @@ public class TestExecutor {
         if (m.find()) {
             String username = m.group("username");
             String password = m.group("password");
-            return new Pair<>(username, password);
+            return Pair.of(username, password);
         }
         return null;
     }
@@ -2123,7 +2233,7 @@ public class TestExecutor {
             codes.add(Integer.parseInt(m.group(1)));
         }
         if (codes.isEmpty()) {
-            return code -> code == HttpStatus.SC_OK;
+            return code -> code == HttpStatus.SC_OK || code == HttpStatus.SC_ACCEPTED;
         } else {
             return codes::contains;
         }
@@ -2251,7 +2361,7 @@ public class TestExecutor {
                         }
                         fail(true, testCaseCtx, cUnit, testFileCtxs, pb, testFile, e);
                     } else {
-                        LOGGER.info("testFile {} raised an (expected) exception", testFile, e.toString());
+                        LOGGER.info("testFile {} raised an (expected) exception: {}", testFile, e.toString());
                     }
                 }
                 if (numOfFiles == testFileCtxs.size()) {
@@ -2416,21 +2526,7 @@ public class TestExecutor {
             // For adapter placeholder, it means we have a template to replace
             if (placeholder.getName().equals("adapter")) {
                 str = str.replace("%adapter%", placeholder.getValue());
-
-                // Early terminate if there are no template place holders to replace
-                if (noTemplateRequired(str)) {
-                    continue;
-                }
-
-                if (placeholder.getValue().equalsIgnoreCase("S3")) {
-                    str = applyS3Substitution(str, placeholders);
-                } else if (placeholder.getValue().equalsIgnoreCase("AzureBlob")) {
-                    str = applyAzureSubstitution(str, placeholders);
-                } else if (placeholder.getValue().equalsIgnoreCase("GCS")) {
-                    str = applyGCSSubstitution(str, placeholders);
-                } else if (placeholder.getValue().equalsIgnoreCase("HDFS")) {
-                    str = applyHDFSSubstitution(str, placeholders);
-                }
+                str = applyAdapterSubstitution(str, placeholder.getValue(), placeholders);
             } else {
                 // Any other place holders, just replace with the value
                 str = str.replace("%" + placeholder.getName() + "%", placeholder.getValue());
@@ -2441,19 +2537,46 @@ public class TestExecutor {
         str = str.replace(ACCOUNT_NAME_PLACEHOLDER, AZURITE_ACCOUNT_NAME_DEFAULT);
         str = str.replace(ACCOUNT_KEY_PLACEHOLDER, AZURITE_ACCOUNT_KEY_DEFAULT);
         str = str.replace(SAS_TOKEN_PLACEHOLDER, sasToken);
-        str = str.replace(MANAGED_IDENTITY_ID_PLACEHOLDER, MANAGED_IDENTITY_ID_DEFAULT);
         str = str.replace(CLIENT_ID_PLACEHOLDER, CLIENT_ID_DEFAULT);
         str = str.replace(CLIENT_SECRET_PLACEHOLDER, CLIENT_SECRET_DEFAULT);
-        str = str.replace(CLIENT_CERTIFICATE_PLACEHOLDER, CLIENT_CERTIFICATE_DEFAULT);
-        str = str.replace(CLIENT_CERTIFICATE_PASSWORD_PLACEHOLDER, CLIENT_CERTIFICATE_PASSWORD_DEFAULT);
+
         str = str.replace(TENANT_ID_PLACEHOLDER, TENANT_ID_DEFAULT);
         str = replaceExternalEndpoint(str);
 
+        str = replaceIcebergPlaceholders(str);
+        if (LocalCloudUtilAdobeMock.DOCKER_ADOBE_S3_MOCK_URI != null) {
+            str = str.replace("%DOCKER_S3_CONTAINER%", LocalCloudUtilAdobeMock.DOCKER_ADOBE_S3_MOCK_URI);
+        }
+        return str;
+    }
+
+    protected String applyAdapterSubstitution(String str, String adapter, List<Placeholder> placeholders) {
+        if (adapter.equalsIgnoreCase("S3")) {
+            str = applyS3Substitution(str, placeholders);
+        } else if (adapter.equalsIgnoreCase("AzureBlob") || adapter.equalsIgnoreCase("AzureDatalake")) {
+            str = applyAzureSubstitution(str, placeholders);
+        } else if (adapter.equalsIgnoreCase("GCS")) {
+            str = applyGCSSubstitution(str, placeholders);
+        } else if (adapter.equalsIgnoreCase("HDFS")) {
+            str = applyHDFSSubstitution(str, placeholders);
+        }
         return str;
     }
 
     protected String replaceExternalEndpoint(String str) {
         return str.replace(BLOB_ENDPOINT_PLACEHOLDER, BLOB_ENDPOINT_DEFAULT);
+    }
+
+    protected String replaceIcebergPlaceholders(String str) {
+        str = getNessieEndpointDefault() != null
+                ? str.replace(NESSIE_SERVER_URI_PLACEHOLDER, getNessieEndpointDefault()) : str;
+        str = str.replace(SNAPSHOT_1_SNAPSHOT_ID_PLACEHOLDER, String.valueOf(snapshot1SnapshotIdValue));
+        str = str.replace(SNAPSHOT_1_TIMESTAMP_LONG_PLACEHOLDER, String.valueOf(snapshot1TimestampLongValue));
+        str = snapshot2TimestampDatetimeValue != null
+                ? str.replace(SNAPSHOT_2_TIMESTAMP_DATETIME_PLACEHOLDER, snapshot2TimestampDatetimeValue) : str;
+        str = snapshot3TimestampDateValue != null
+                ? str.replace(SNAPSHOT_3_TIMESTAMP_DATE_PLACEHOLDER, snapshot3TimestampDateValue) : str;
+        return str;
     }
 
     protected boolean noTemplateRequired(String str) {
@@ -2491,16 +2614,72 @@ public class TestExecutor {
             str = setS3TemplateDefault(str);
         }
 
-        // Set to default if not replaced
-        if (isReplaced && !hasRegion) {
-            str = str.replace(TestConstants.S3_REGION_PLACEHOLDER, TestConstants.S3_REGION_DEFAULT);
-        }
-
-        if (isReplaced && !hasServiceEndpoint) {
-            str = str.replace(TestConstants.S3_SERVICE_ENDPOINT_PLACEHOLDER, TestConstants.S3_SERVICE_ENDPOINT_DEFAULT);
-        }
-
+        str = str.replace(TestConstants.S3_REGION_PLACEHOLDER, getS3RegionDefault());
+        str = str.replace(TestConstants.S3_SERVICE_ENDPOINT_PLACEHOLDER, getS3ServiceEndpointDefault());
+        str = str.replace(TestConstants.S3_ACCESS_KEY_ID_PLACEHOLDER, getS3AccessKeyIdDefault());
+        str = str.replace(TestConstants.S3_SECRET_ACCESS_KEY_PLACEHOLDER, getS3SecretAccessKeyDefault());
+        str = str.replace(TestConstants.S3_API_CERTIFICATES_PLACEHOLDER, getS3ApiCertificatesDefault());
+        str = str.replace(TestConstants.S3_DDL_CERTIFICATES_PLACEHOLDER, getS3DdlCertificatesDefault());
+        str = str.replace(TestConstants.S3_HTTP_CERTIFICATES_PLACEHOLDER, getS3HttpCertificatesDefault());
         return str;
+    }
+
+    protected String getS3AccessKeyIdDefault() {
+        return TestConstants.S3_ACCESS_KEY_ID_DEFAULT;
+    }
+
+    protected String getS3SecretAccessKeyDefault() {
+        return TestConstants.S3_SECRET_ACCESS_KEY_DEFAULT;
+    }
+
+    protected String getS3CertificatesDefault() {
+        return null;
+    }
+
+    public String getS3ServiceEndpointDefault() {
+        return TestConstants.S3_SERVICE_ENDPOINT_DEFAULT;
+    }
+
+    protected String getS3RegionDefault() {
+        return TestConstants.S3_REGION_DEFAULT;
+    }
+
+    protected String getS3ApiCertificatesDefault() {
+        String certificates = getS3CertificatesDefault();
+        return certificates == null || certificates.isBlank() ? ""
+                : "&certificates=" + URLEncoder.encode(writeAsJsonString(List.of(certificates)), UTF_8);
+    }
+
+    protected String getS3DdlCertificatesDefault() {
+        String certificates = getS3CertificatesDefault();
+        return certificates == null || certificates.isBlank() ? ""
+                : ",\n\"certificates\":" + writeAsJsonString(List.of(certificates));
+    }
+
+    protected String getS3HttpCertificatesDefault() {
+        String certificates = getS3CertificatesDefault();
+        return certificates == null || certificates.isBlank() ? ""
+                : ", \\\"certificates\\\":" + escapeForHttpBodyString(writeAsJsonString(List.of(certificates)));
+    }
+
+    public String getNessieEndpointDefault() {
+        return nessieUri;
+    }
+
+    public void setNessieEndpointDefault(String nessieUri) {
+        this.nessieUri = nessieUri;
+    }
+
+    private static String escapeForHttpBodyString(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static String writeAsJsonString(Object value) {
+        try {
+            return OBJECT_WRITER.writeValueAsString(value);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to serialize S3 test value", e);
+        }
     }
 
     protected String setS3Template(String str) {
@@ -2509,7 +2688,14 @@ public class TestExecutor {
 
     protected String setS3TemplateDefault(String str) {
         if (str.contains("%template%")) {
-            return str.replace("%template%", TestConstants.S3_TEMPLATE_DEFAULT);
+            String s3mockEndpoint = System.getProperty(TestConstants.S3_SERVICE_ENDPOINT_KEY);
+            if (s3mockEndpoint != null && s3mockTemplate == null) {
+                s3mockTemplate = "(\"accessKeyId\"=\"" + S3_ACCESS_KEY_ID_DEFAULT + "\"),\n" + "(\"secretAccessKey\"=\""
+                        + S3_SECRET_ACCESS_KEY_DEFAULT + "\"),\n" + "(\"region\"=\"" + S3_REGION_DEFAULT + "\"),\n"
+                        + "(\"serviceEndpoint\"=\"" + s3mockEndpoint + "\")";
+            }
+            return str.replace("%template%",
+                    s3mockTemplate == null ? TestConstants.S3_TEMPLATE_DEFAULT : s3mockTemplate);
         } else {
             return str.replace("%template_colons%", TestConstants.S3_TEMPLATE_DEFAULT_NO_PARENTHESES_WITH_COLONS);
         }
@@ -2554,7 +2740,11 @@ public class TestExecutor {
     }
 
     protected String setAzureTemplateDefault(String str) {
-        return str.replace("%template%", TEMPLATE_DEFAULT);
+        if (str.contains("%template%")) {
+            return str.replace("%template%", TEMPLATE_DEFAULT);
+        } else {
+            return str.replace("%template_colons%", TestConstants.Azure.TEMPLATE_DEFAULT_NO_PARENTHESES_WITH_COLONS);
+        }
     }
 
     protected String setGCSTemplateDefault(String str) {
@@ -2683,6 +2873,11 @@ public class TestExecutor {
         return uri;
     }
 
+    protected URI createUDFDomainSockURI(String pathAndQuery) {
+        URI uri = URI.create("unix://target/tmp/asterix_nc1/udf.sock" + pathAndQuery);
+        return uri;
+    }
+
     public URI getEndpoint(String servlet) throws URISyntaxException {
         return createEndpointURI(Servlets.getAbsolutePath(getPath(servlet)));
     }
@@ -2703,15 +2898,36 @@ public class TestExecutor {
         return stripLineComments(stripJavaComments(statement));
     }
 
-    public void cleanup(String testCase, List<String> badtestcases) throws Exception {
+    public final void cleanup(String testCase, SequencedSet<String> badtestcases) throws Exception {
+        cleanup(testCase, badtestcases, false);
+    }
+
+    public void cleanup(String testCase, SequencedSet<String> badtestcases, boolean skipClusterCleanup)
+            throws Exception {
+        if (skipClusterCleanup) {
+            return;
+        }
         try {
             List<Pair<String, DataverseName>> toBeDropped = new ArrayList<>();
             listUserDefinedDataverses(toBeDropped);
             if (!toBeDropped.isEmpty()) {
                 badtestcases.add(testCase);
-                LOGGER.info("Last test left some garbage. Dropping dataverses: " + StringUtils.join(toBeDropped, ','));
+                LOGGER.info("Last test leaked scopes. Dropping scopes: {}",
+                        toBeDropped.stream()
+                                .map(pair -> (pair.getLeft() == null ? "" : (pair.getLeft() + SqlppStatementUtil.DOT))
+                                        + pair.getRight().getCanonicalForm())
+                                .collect(Collectors.joining(", ", "[", "]")));
+                // TODO(mblow): consider that dataverses can have references from views in other dataverses
                 for (Pair<String, DataverseName> dv : toBeDropped) {
                     dropDataverse(dv);
+                }
+            }
+            List<String> databases = listUserDefinedDatabases();
+            if (!databases.isEmpty()) {
+                LOGGER.info("Last test leaked databases. Dropping databases: " + databases);
+                badtestcases.add(testCase);
+                for (String db : databases) {
+                    dropDatabase(db);
                 }
             }
         } catch (Throwable th) {
@@ -2737,20 +2953,39 @@ public class TestExecutor {
                     if (databaseName != null && !databaseName.isNull() && !databaseName.isMissingNode()) {
                         dbName = databaseName.asText();
                     }
-                    outDataverses.add(new Pair<>(dbName, dvName));
+                    outDataverses.add(Pair.of(dbName, dvName));
                 }
             }
+        }
+    }
+
+    protected List<String> listUserDefinedDatabases() throws Exception {
+        String query = "select value(DatabaseName) from Metadata.`Database` where Creator.Name != \"@sys\"";
+        URI uri = getEndpoint(Servlets.QUERY_SERVICE);
+        try {
+            InputStream resultStream = executeQueryService(query, OutputFormat.CLEAN_JSON, uri,
+                    constructQueryParameters(query, OutputFormat.CLEAN_JSON, new ArrayList<Parameter>()), false,
+                    StandardCharsets.UTF_8, code -> code == HttpStatus.SC_OK, false);
+            JsonNode result = extractResult(IOUtils.toString(resultStream, UTF_8));
+            List<String> databases = new ArrayList<>();
+            for (int i = 0; i < result.size(); i++) {
+                databases.add(result.get(i).asText());
+            }
+            return databases;
+        } catch (Exception e) {
+            // assuming databases are not enabled in this cluster
+            return Collections.emptyList();
         }
     }
 
     protected void dropDataverse(Pair<String, DataverseName> dv) throws Exception {
         StringBuilder dropStatement = new StringBuilder();
         dropStatement.append("drop dataverse ");
-        if (dv.first == null) {
-            SqlppStatementUtil.encloseDataverseName(dropStatement, dv.second);
+        if (dv.getLeft() == null) {
+            SqlppStatementUtil.encloseDataverseName(dropStatement, dv.getRight());
         } else {
-            SqlppStatementUtil.enclose(dropStatement, dv.first).append(SqlppStatementUtil.DOT);
-            SqlppStatementUtil.encloseDataverseName(dropStatement, dv.second);
+            SqlppStatementUtil.enclose(dropStatement, dv.getLeft()).append(SqlppStatementUtil.DOT);
+            SqlppStatementUtil.encloseDataverseName(dropStatement, dv.getRight());
         }
         dropStatement.append(";\n");
         InputStream resultStream = executeQueryService(dropStatement.toString(), getEndpoint(Servlets.QUERY_SERVICE),
@@ -2758,8 +2993,18 @@ public class TestExecutor {
         ResultExtractor.extract(resultStream, UTF_8, OutputFormat.CLEAN_JSON);
     }
 
-    protected void listDatasets(DataverseName dataverseName, List<Pair<String, DatasetConfig.DatasetType>> outDatasets)
-            throws Exception {
+    protected void dropDatabase(String db) throws Exception {
+        StringBuilder dropStatement = new StringBuilder();
+        dropStatement.append("DROP DATABASE ");
+        SqlppStatementUtil.enclose(dropStatement, db);
+        dropStatement.append(";");
+        InputStream resultStream = executeQueryService(dropStatement.toString(), getEndpoint(Servlets.QUERY_SERVICE),
+                OutputFormat.CLEAN_JSON, UTF_8);
+        ResultExtractor.extract(resultStream, UTF_8, OutputFormat.CLEAN_JSON);
+    }
+
+    protected void listDatasets(DataverseName dataverseName,
+            Collection<Pair<String, DatasetConfig.DatasetType>> outDatasets) throws Exception {
         String query = "select d.DatasetName, d.DatasetType from Metadata.`Dataset` d where d.DataverseName = '"
                 + dataverseName.getCanonicalForm() + "'";
         InputStream resultStream = executeQueryService(query, getEndpoint(Servlets.QUERY_SERVICE),
@@ -2775,7 +3020,7 @@ public class TestExecutor {
             } catch (IllegalArgumentException e) {
                 throw new Exception("Unexpected dataset type: " + datasetTypeText);
             }
-            outDatasets.add(new Pair<>(datasetName, datasetType));
+            outDatasets.add(Pair.of(datasetName, datasetType));
         }
     }
 

@@ -31,6 +31,7 @@ import org.apache.asterix.lang.common.expression.QuantifiedExpression;
 import org.apache.asterix.lang.common.expression.VariableExpr;
 import org.apache.asterix.lang.common.struct.QuantifiedPair;
 import org.apache.asterix.lang.sqlpp.clause.AbstractBinaryCorrelateClause;
+import org.apache.asterix.lang.sqlpp.clause.ClusterbyClause;
 import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.FromTerm;
 import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppAstVisitor;
@@ -83,6 +84,30 @@ public class BindingVariableVisitor extends AbstractSqlppAstVisitor<Void, Collec
         }
         bindingVars.add(groupbyClause.getGroupVar());
         return null;
+    }
+
+    @Override
+    public Void visit(ClusterbyClause clusterbyClause, Collection<VariableExpr> bindingVars)
+            throws CompilationException {
+        // The clause binds its descriptor and members variables where the query named them, plus the
+        // cluster-id and centroid variables the rewrite derives from the descriptor.
+        //
+        // The decorations are deliberately NOT reported, unlike GROUP BY's. A decoration carries a variable
+        // bound outside the block (a WITH alias, a top-level LET, an enclosing query's variable) through the
+        // clause, never one of the block's own bindings, and the CLUSTER BY correlation check subtracts the
+        // reported bindings from the free variables to find exactly those enclosing variables: reporting the
+        // decorations would subtract the very variable it exists to find.
+        addIfPresent(bindingVars, clusterbyClause.getClusterDescriptorVar());
+        addIfPresent(bindingVars, clusterbyClause.getClusterMembersVar());
+        addIfPresent(bindingVars, clusterbyClause.getClusterIdVar());
+        addIfPresent(bindingVars, clusterbyClause.getCentroidVar());
+        return null;
+    }
+
+    private static void addIfPresent(Collection<VariableExpr> bindingVars, VariableExpr var) {
+        if (var != null) {
+            bindingVars.add(var);
+        }
     }
 
     @Override

@@ -35,6 +35,7 @@ import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.utils.NonTaggedFormatUtil;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
@@ -162,7 +163,7 @@ public class ArrayBTreeAccessMethod extends BTreeAccessMethod {
                     UnnestOperator oldUnnest = (UnnestOperator) workingOp;
                     LeftOuterUnnestOperator newUnnest = new LeftOuterUnnestOperator(oldUnnest.getVariable(),
                             new MutableObject<>(oldUnnest.getExpressionRef().getValue()),
-                            ConstantExpression.MISSING.getValue());
+                            ConstantExpression.MISSING.getValue(), oldUnnest.getTimeTravel());
                     newUnnest.setSourceLocation(oldUnnest.getSourceLocation());
                     newUnnest.getInputs().addAll(oldUnnest.getInputs());
                     newUnnest.setExecutionMode(oldUnnest.getExecutionMode());
@@ -188,7 +189,7 @@ public class ArrayBTreeAccessMethod extends BTreeAccessMethod {
 
         ILogicalOperator indexSearchOp = createIndexSearchPlan(afterJoinRefs, joinRef, conditionRef,
                 indexSubTree.getAssignsAndUnnestsRefs(), indexSubTree, probeSubTree, chosenIndex, analysisCtx, true,
-                isLeftOuterJoin, true, context, newNullPlaceHolderVar, leftOuterMissingValue);
+                isLeftOuterJoin, true, context, newNullPlaceHolderVar, leftOuterMissingValue, new ArrayList<>());
         if (indexSearchOp == null) {
             return false;
         }
@@ -204,7 +205,8 @@ public class ArrayBTreeAccessMethod extends BTreeAccessMethod {
             List<Mutable<ILogicalOperator>> assignBeforeTheOpRefs, OptimizableOperatorSubTree indexSubTree,
             OptimizableOperatorSubTree probeSubTree, Index chosenIndex, AccessMethodAnalysisContext analysisCtx,
             boolean retainInput, boolean retainMissing, boolean requiresBroadcast, IOptimizationContext context,
-            LogicalVariable newMissingNullPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue)
+            LogicalVariable newMissingNullPlaceHolderForLOJ, IAlgebricksConstantValue leftOuterMissingValue,
+            List<Pair<LogicalVariable, List<ILogicalExpression>>> optimizableDisjunctionConditions)
             throws AlgebricksException {
 
         Index.ArrayIndexDetails chosenIndexDetails = (Index.ArrayIndexDetails) chosenIndex.getIndexDetails();
@@ -220,10 +222,12 @@ public class ArrayBTreeAccessMethod extends BTreeAccessMethod {
             }
         }
 
+        // Don't pass in the optimizableDisjunctionConditions
+        // since we cannot optimize disjunctions with array indexes because of the unnest.
         return createBTreeIndexSearchPlan(afterTopOpRefs, topOpRef, conditionRef, assignBeforeTheOpRefs, indexSubTree,
                 probeSubTree, chosenIndex, analysisCtx, retainInput, retainMissing, requiresBroadcast, context,
                 newMissingNullPlaceHolderForLOJ, leftOuterMissingValue, chosenIndexKeyFieldNames,
-                chosenIndexKeyFieldTypes, chosenIndexKeyFieldSourceIndicators);
+                chosenIndexKeyFieldTypes, chosenIndexKeyFieldSourceIndicators, new ArrayList<>());
     }
 
     @Override

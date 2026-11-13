@@ -88,6 +88,7 @@ public class HDFSExternalFileWriter implements IExternalFileWriter {
 
     @Override
     public boolean newFile(String directory, String fileName) throws HyracksDataException {
+        printer.newFile();
         directory = HDFSUtils.updateRootPath(directory, true);
         Path path = new Path(directory, "." + fileName);
         try {
@@ -105,6 +106,12 @@ public class HDFSExternalFileWriter implements IExternalFileWriter {
     @Override
     public void write(IValueReference value) throws HyracksDataException {
         printer.print(value);
+    }
+
+    @Override
+    public long getBytesWritten() {
+        long writtenBytes = outputStream == null ? 0 : outputStream.getPos();
+        return Math.max(writtenBytes, printer.getBytesWritten());
     }
 
     @Override

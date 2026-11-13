@@ -49,6 +49,7 @@ import org.apache.asterix.metadata.entities.Datatype;
 import org.apache.asterix.metadata.entities.Index;
 import org.apache.asterix.metadata.utils.Creator;
 import org.apache.asterix.metadata.utils.KeyFieldTypeUtil;
+import org.apache.asterix.metadata.utils.TupleTranslatorUtils;
 import org.apache.asterix.om.base.ABoolean;
 import org.apache.asterix.om.base.ACollectionCursor;
 import org.apache.asterix.om.base.AInt32;
@@ -69,8 +70,10 @@ import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.utils.RecordUtil;
+import org.apache.asterix.om.vector.VectorIndexParameters;
+import org.apache.asterix.runtime.compression.CompressionManager;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.common.utils.Triple;
 import org.apache.hyracks.api.dataflow.value.ISerializerDeserializer;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
@@ -90,6 +93,7 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
     // Field name of open field.
     public static final String GRAM_LENGTH_FIELD_NAME = "GramLength";
     public static final String FULL_TEXT_CONFIG_FIELD_NAME = "FullTextConfig";
+    public static final String INCLUDE_FIELDS_FIELD_NAME = "IncludeFields";
     public static final String INDEX_SEARCHKEY_TYPE_FIELD_NAME = "SearchKeyType";
     public static final String INDEX_ISENFORCED_FIELD_NAME = "IsEnforced";
     public static final String INDEX_EXCLUDE_UNKNOWN_FIELD_NAME = "ExcludeUnknownKey";
@@ -97,10 +101,12 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
     public static final String INDEX_SEARCHKEY_ELEMENTS_FIELD_NAME = "SearchKeyElements";
     public static final String COMPLEXSEARCHKEY_UNNEST_FIELD_NAME = "UnnestList";
     public static final String COMPLEXSEARCHKEY_PROJECT_FIELD_NAME = "ProjectList";
+    public static final String INDEX_COMPRESSION_SCHEME_FIELD_NAME = "IndexCompressionScheme";
     public static final String SAMPLE_SEED = "SampleSeed";
     public static final String SAMPLE_CARDINALITY_TARGET = "SampleCardinalityTarget";
     public static final String SOURCE_CARDINALITY = "SourceCardinality";
     public static final String SOURCE_AVG_ITEM_SIZE = "SourceAvgItemSize";
+    public static final String SAMPLE_METHOD = "SampleMethod";
     public static final String INDEXES_STATS = "IndexStats";
     public static final String STATS_NUM_PAGES = "NumPages";
     public static final String STATS_INDEX_NAME = "IndexName";
@@ -172,6 +178,7 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
         switch (Index.IndexCategory.of(indexType)) {
             case VALUE:
             case TEXT:
+            case VTREE:
                 // Read the key names from the SearchKeyName field
                 IACursor fieldNameCursor =
                         ((AOrderedList) indexRecord.getValueByPos(indexEntity.searchKeyIndex())).getCursor();
@@ -183,7 +190,7 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                     while (nestedFieldNameCursor.next()) {
                         nestedFieldName.add(((AString) nestedFieldNameCursor.get()).getStringValue());
                     }
-                    searchElements.add(new Pair<>(null, Collections.singletonList(nestedFieldName)));
+                    searchElements.add(Pair.of(null, Collections.singletonList(nestedFieldName)));
                 }
                 break;
             case ARRAY:
@@ -207,7 +214,7 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                             while (innerListCursorForArray.next()) {
                                 project.add(((AString) innerListCursorForArray.get()).getStringValue());
                             }
-                            searchElement = new Pair<>(null, Collections.singletonList(project));
+                            searchElement = Pair.of(null, Collections.singletonList(project));
                             break;
                         case OBJECT:
                             ARecord complexSearchKeyRecord = (ARecord) complexSearchKeyItem;
@@ -250,7 +257,7 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                             } else {
                                 projectList.add(null);
                             }
-                            searchElement = new Pair<>(unnestList, projectList);
+                            searchElement = Pair.of(unnestList, projectList);
                             break;
                         default:
                             throw new AsterixException(ErrorCode.METADATA_ERROR, complexSearchKeyItem.toJSON());
@@ -338,12 +345,12 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                 metaDt = (ARecordType) metadataNode
                         .getDatatype(txnId, metaTypeDatabase, metatypeDataverseName, metatypeName).getDatatype();
             }
-            recordDt = (ARecordType) MetadataManagerUtil.findTypeForDatasetWithoutType(recordDt, metaDt, dataset);
+            recordDt = (ARecordType) MetadataManagerUtil.findTypeForDatasetWithoutType(recordDt, dataset);
             searchKeyType = new ArrayList<>(searchElementCount);
             for (int i = 0; i < searchElementCount; i++) {
                 Pair<List<List<String>>, List<List<String>>> searchElement = searchElements.get(i);
-                List<List<String>> unnestPathList = searchElement.first;
-                List<List<String>> projectPathList = searchElement.second;
+                List<List<String>> unnestPathList = searchElement.getLeft();
+                List<List<String>> projectPathList = searchElement.getRight();
 
                 ARecordType sourceRecordType = keyFieldSourceIndicator.get(i) == 1 ? metaDt : recordDt;
                 IAType inputTypePrime;
@@ -385,7 +392,7 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                         Triple<IAType, Boolean, Boolean> projectTypeResult =
                                 KeyFieldTypeUtil.getKeyProjectType((ARecordType) inputTypePrime, projectPath, null);
                         if (projectTypeResult == null) {
-                            if (indexType != IndexType.BTREE) {
+                            if (indexType != IndexType.BTREE && indexType != IndexType.VTREE) {
                                 throw new AsterixException(ErrorCode.METADATA_ERROR, projectPath.toString());
                             }
                             projectTypePrime = BuiltinType.ANY;
@@ -417,7 +424,7 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
         switch (Index.IndexCategory.of(indexType)) {
             case VALUE:
                 List<List<String>> keyFieldNames =
-                        searchElements.stream().map(Pair::getSecond).map(l -> l.get(0)).collect(Collectors.toList());
+                        searchElements.stream().map(Pair::getRight).map(l -> l.get(0)).collect(Collectors.toList());
                 List<IAType> keyFieldTypes = searchKeyType.stream().map(l -> l.get(0)).collect(Collectors.toList());
 
                 OptionalBoolean excludeUnknownKey = OptionalBoolean.empty();
@@ -460,9 +467,46 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                         isOverridingKeyTypes, excludeUnknownKey, castDefaultNull, datetimeFormat, dateFormat,
                         timeFormat);
                 break;
+            case VTREE:
+                keyFieldNames =
+                        searchElements.stream().map(Pair::getRight).map(List::getFirst).collect(Collectors.toList());
+                keyFieldTypes = searchKeyType.stream().map(List::getFirst).collect(Collectors.toList());
+
+                castDefaultNull = OptionalBoolean.empty();
+                VectorIndexParameters vectorParameters = VectorIndexParameters.readFields(indexRecord);
+
+                // Read include_fields from metadata
+                // Each item is an inner list holding the field's path components, so a nested INCLUDE path like
+                // (a.b) is read back intact (see writeIncludeFields).
+                List<List<String>> includeFieldNames = new ArrayList<>();
+                int includeFieldsPos = indexRecord.getType().getFieldIndex(INCLUDE_FIELDS_FIELD_NAME);
+                if (includeFieldsPos >= 0) {
+                    IACursor cursor = ((AOrderedList) indexRecord.getValueByPos(includeFieldsPos)).getCursor();
+                    while (cursor.next()) {
+                        IACursor pathCursor = ((AOrderedList) cursor.get()).getCursor();
+                        List<String> path = new ArrayList<>();
+                        while (pathCursor.next()) {
+                            path.add(((AString) pathCursor.get()).getStringValue());
+                        }
+                        includeFieldNames.add(path);
+                    }
+                }
+
+                // Create proper source indicators and types for include fields
+                // Include fields always come from the record (not meta), and types are resolved later
+                List<Integer> includeFieldSourceIndicators = new ArrayList<>();
+                List<IAType> includeFieldTypes = new ArrayList<>();
+                for (int i = 0; i < includeFieldNames.size(); i++) {
+                    includeFieldSourceIndicators.add(Index.RECORD_INDICATOR);
+                    includeFieldTypes.add(BuiltinType.ANY); // Type will be resolved from record schema
+                }
+
+                indexDetails = new Index.VectorIndexDetails(keyFieldNames.getFirst(), includeFieldNames,
+                        includeFieldSourceIndicators, includeFieldTypes, isOverridingKeyTypes, vectorParameters);
+                break;
             case TEXT:
                 keyFieldNames =
-                        searchElements.stream().map(Pair::getSecond).map(l -> l.get(0)).collect(Collectors.toList());
+                        searchElements.stream().map(Pair::getRight).map(l -> l.get(0)).collect(Collectors.toList());
                 keyFieldTypes = searchKeyType.stream().map(l -> l.get(0)).collect(Collectors.toList());
                 // Check if there is a gram length as well.
                 int gramLength = -1;
@@ -479,14 +523,14 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                     Pair<List<List<String>>, List<List<String>>> searchElement = searchElements.get(i);
                     List<IAType> typeList = searchKeyType.get(i);
                     int sourceIndicator = keyFieldSourceIndicator.get(i);
-                    elementList.add(new Index.ArrayIndexElement(searchElement.first, searchElement.second, typeList,
-                            sourceIndicator));
+                    elementList.add(new Index.ArrayIndexElement(searchElement.getLeft(), searchElement.getRight(),
+                            typeList, sourceIndicator));
                 }
                 indexDetails = new Index.ArrayIndexDetails(elementList, isOverridingKeyTypes);
                 break;
             case SAMPLE:
                 keyFieldNames =
-                        searchElements.stream().map(Pair::getSecond).map(l -> l.get(0)).collect(Collectors.toList());
+                        searchElements.stream().map(Pair::getRight).map(l -> l.get(0)).collect(Collectors.toList());
                 keyFieldTypes = searchKeyType.stream().map(l -> l.get(0)).collect(Collectors.toList());
 
                 int sampleSeedPos = indexRecord.getType().getFieldIndex(SAMPLE_SEED);
@@ -514,6 +558,14 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                 }
                 int sourceAvgItemSize = ((AInt32) indexRecord.getValueByPos(sourceAvgItemSizePos)).getIntegerValue();
 
+                // If "SampleMethod" is absent the index predates this field and was built with the original
+                // full-scan reservoir sampling (its disk components carry no theta metadata), so report FULL_SCAN.
+                int sampleMethodPos = indexRecord.getType().getFieldIndex(SAMPLE_METHOD);
+                Index.SampleIndexDetails.SampleMethod sampleMethod = sampleMethodPos >= 0
+                        ? Index.SampleIndexDetails.SampleMethod.fromMetadataName(
+                                ((AString) indexRecord.getValueByPos(sampleMethodPos)).getStringValue())
+                        : Index.SampleIndexDetails.SampleMethod.FULL_SCAN;
+
                 int indexesStatsPos = indexRecord.getType().getFieldIndex(INDEXES_STATS);
                 Map<String, IndexStats> indexesStats;
                 if (indexesStatsPos >= 0) {
@@ -533,7 +585,8 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                 }
 
                 indexDetails = new Index.SampleIndexDetails(keyFieldNames, keyFieldSourceIndicator, keyFieldTypes,
-                        sampleCardinalityTarget, sourceCardinality, sourceAvgItemSize, sampleSeed, indexesStats);
+                        sampleCardinalityTarget, sourceCardinality, sourceAvgItemSize, sampleSeed, sampleMethod,
+                        indexesStats);
                 break;
             default:
                 throw new AsterixException(ErrorCode.METADATA_ERROR, indexType.toString());
@@ -548,7 +601,20 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
         Creator creator = Creator.createOrDefault(indexRecord);
 
         return new Index(databaseName, dataverseName, datasetName, indexName, indexType, indexDetails, isEnforcingKeys,
-                isPrimaryIndex, pendingOp, creator);
+                isPrimaryIndex, pendingOp, creator, getCompressionScheme(indexRecord));
+    }
+
+    /** Absent means uncompressed, which is what every secondary index created before this field existed is. */
+    private static String getCompressionScheme(ARecord indexRecord) {
+        ARecordType indexRecordType = indexRecord.getType();
+        int compressionPos = indexRecordType
+                .getFieldIndex(MetadataRecordTypes.DATASET_ARECORD_BLOCK_LEVEL_STORAGE_COMPRESSION_FIELD_NAME);
+        if (compressionPos < 0) {
+            return CompressionManager.NONE;
+        }
+        ARecord compressionRecord = (ARecord) indexRecord.getValueByPos(compressionPos);
+        int schemePos = compressionRecord.getType().getFieldIndex(INDEX_COMPRESSION_SCHEME_FIELD_NAME);
+        return ((AString) compressionRecord.getValueByPos(schemePos)).getStringValue();
     }
 
     @Override
@@ -624,6 +690,9 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
             case SAMPLE:
                 searchKey = ((Index.SampleIndexDetails) index.getIndexDetails()).getKeyFieldNames();
                 break;
+            case VTREE:
+                searchKey = ((Index.VectorIndexDetails) index.getIndexDetails()).getKeyFieldNames();
+                break;
             default:
                 throw new AsterixException(ErrorCode.METADATA_ERROR, indexType.toString());
         }
@@ -687,14 +756,47 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
             case ARRAY:
                 writeComplexSearchKeys((Index.ArrayIndexDetails) index.getIndexDetails());
                 break;
+            case VTREE:
+                Index.VectorIndexDetails vectorIndexDetails = (Index.VectorIndexDetails) index.getIndexDetails();
+                writeWithProperties(vectorIndexDetails);
+                writeIncludeFields(vectorIndexDetails);
+                break;
         }
         writeSearchKeyType(index);
+
+        // The writers below run for every index type, so do not return early from the switch above. Most
+        // are guarded and no-op for a type that has nothing to contribute, but writeIndexCreator is not
+        // type-guarded and must always run: the creator is read back generically, so skipping it makes an
+        // index silently lose its creator on reload.
         writeEnforced(index);
         writeSearchKeySourceIndicator(index);
         writeExcludeUnknownKey(index);
         writeCast(index);
         writeSampleDetails(index);
         writeIndexCreator(index);
+        writeBlockLevelStorageCompression(index);
+    }
+
+    private void writeBlockLevelStorageCompression(Index index) throws HyracksDataException {
+        if (index.isPrimaryIndex() || CompressionManager.NONE.equals(index.getCompressionScheme())) {
+            return;
+        }
+        RecordBuilder compressionObject = new RecordBuilder();
+        compressionObject.reset(DefaultOpenFieldType.NESTED_OPEN_RECORD_TYPE);
+        fieldName.reset();
+        aString.setValue(INDEX_COMPRESSION_SCHEME_FIELD_NAME);
+        stringSerde.serialize(aString, fieldName.getDataOutput());
+        fieldValue.reset();
+        aString.setValue(index.getCompressionScheme());
+        stringSerde.serialize(aString, fieldValue.getDataOutput());
+        compressionObject.addField(fieldName, fieldValue);
+
+        fieldName.reset();
+        aString.setValue(MetadataRecordTypes.DATASET_ARECORD_BLOCK_LEVEL_STORAGE_COMPRESSION_FIELD_NAME);
+        stringSerde.serialize(aString, fieldName.getDataOutput());
+        fieldValue.reset();
+        compressionObject.write(fieldValue.getDataOutput(), true);
+        recordBuilder.addField(fieldName, fieldValue);
     }
 
     private void writeComplexSearchKeys(Index.ArrayIndexDetails indexDetails) throws HyracksDataException {
@@ -787,6 +889,42 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
         }
     }
 
+    /**
+     * Persists the vector index {@code WITH} parameters as open fields of the index record. The parameters,
+     * their storage types and their order all come from {@link VectorIndexParameters}, which also owns the
+     * read side, so a parameter cannot be dropped here by forgetting a second enumeration.
+     */
+    private void writeWithProperties(Index.VectorIndexDetails index) throws HyracksDataException {
+        index.getVectorParameters().writeFields(recordBuilder);
+    }
+
+    private void writeIncludeFields(Index.VectorIndexDetails index) throws HyracksDataException {
+        List<List<String>> includeElements = index.getIncludeFieldNames();
+        OrderedListBuilder listBuilder = new OrderedListBuilder();
+        OrderedListBuilder pathBuilder = new OrderedListBuilder();
+        listBuilder.reset(AOrderedListType.FULL_OPEN_ORDEREDLIST_TYPE);
+        // Each INCLUDE field is a (possibly nested) path serialized as its own inner list of components, so a
+        // nested path like (a.b) round-trips intact. Mirrors buildSearchKeyNameList and the search-key read path.
+        for (List<String> field : includeElements) {
+            pathBuilder.reset(AOrderedListType.FULL_OPEN_ORDEREDLIST_TYPE);
+            for (String component : field) {
+                itemValue.reset();
+                aString.setValue(component);
+                stringSerde.serialize(aString, itemValue.getDataOutput());
+                pathBuilder.addItem(itemValue);
+            }
+            itemValue.reset();
+            pathBuilder.write(itemValue.getDataOutput(), true);
+            listBuilder.addItem(itemValue);
+        }
+        fieldValue.reset();
+        listBuilder.write(fieldValue.getDataOutput(), true);
+        nameValue.reset();
+        aString.setValue(INCLUDE_FIELDS_FIELD_NAME);
+        stringSerde.serialize(aString, nameValue.getDataOutput());
+        recordBuilder.addField(nameValue, fieldValue);
+    }
+
     private void writeSearchKeyType(Index index) throws HyracksDataException, AlgebricksException {
         if (!index.getIndexDetails().isOverridingKeyFieldTypes()) {
             return;
@@ -802,6 +940,12 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
 
         switch (Index.IndexCategory.of(index.getIndexType())) {
             // For value and text indexes, we persist the type as a single string (backwards compatibility).
+            case VTREE:
+                itemValue.reset();
+                aString.setValue("vector");
+                stringSerde.serialize(aString, itemValue.getDataOutput());
+                typeListBuilder.addItem(itemValue);
+                break;
             case VALUE:
                 for (IAType type : ((Index.ValueIndexDetails) index.getIndexDetails()).getKeyFieldTypes()) {
                     itemValue.reset();
@@ -868,6 +1012,15 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
                 break;
             case SAMPLE:
                 keySourceIndicator = ((Index.SampleIndexDetails) index.getIndexDetails()).getKeyFieldSourceIndicators();
+                break;
+            case VTREE:
+                // A vector index key is always record-sourced: QueryTranslator rejects a meta()-sourced vector
+                // field outright. One indicator per SearchKey entry keeps this list aligned with that field the
+                // way the other categories are, and because every value is RECORD_INDICATOR the writer below
+                // serializes nothing — so the record layout is unchanged until meta-sourced keys are allowed.
+                keySourceIndicator = Collections.nCopies(
+                        ((Index.VectorIndexDetails) index.getIndexDetails()).getKeyFieldNames().size(),
+                        Index.RECORD_INDICATOR);
                 break;
             default:
                 throw new AsterixException(ErrorCode.METADATA_ERROR, index.getIndexType().toString());
@@ -990,6 +1143,14 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
             int32Serde.serialize(new AInt32(indexDetails.getSourceAvgItemSize()), fieldValue.getDataOutput());
             recordBuilder.addField(nameValue, fieldValue);
 
+            nameValue.reset();
+            fieldValue.reset();
+            aString.setValue(SAMPLE_METHOD);
+            stringSerde.serialize(aString, nameValue.getDataOutput());
+            aString.setValue(indexDetails.getSampleMethod().getMetadataName());
+            stringSerde.serialize(aString, fieldValue.getDataOutput());
+            recordBuilder.addField(nameValue, fieldValue);
+
             Map<String, IndexStats> indexesStats = indexDetails.getIndexesStats();
             if (!indexesStats.isEmpty()) {
                 indexesStatsListBuilder.reset(AOrderedListType.FULL_OPEN_ORDEREDLIST_TYPE);
@@ -1029,32 +1190,8 @@ public class IndexTupleTranslator extends AbstractTupleTranslator<Index> {
 
     private void writeIndexCreator(Index index) throws HyracksDataException {
         if (indexEntity.databaseNameIndex() >= 0) {
-            Creator creatorInfo = index.getCreator();
-            RecordBuilder creatorObject = new RecordBuilder();
-            creatorObject.reset(DefaultOpenFieldType.NESTED_OPEN_RECORD_TYPE);
-
-            fieldName.reset();
-            aString.setValue(MetadataRecordTypes.FIELD_NAME_CREATOR_NAME);
-            stringSerde.serialize(aString, fieldName.getDataOutput());
-            fieldValue.reset();
-            aString.setValue(creatorInfo.getName());
-            stringSerde.serialize(aString, fieldValue.getDataOutput());
-            creatorObject.addField(fieldName, fieldValue);
-
-            fieldName.reset();
-            aString.setValue(MetadataRecordTypes.FIELD_NAME_CREATOR_UUID);
-            stringSerde.serialize(aString, fieldName.getDataOutput());
-            fieldValue.reset();
-            aString.setValue(creatorInfo.getUuid());
-            stringSerde.serialize(aString, fieldValue.getDataOutput());
-            creatorObject.addField(fieldName, fieldValue);
-
-            fieldName.reset();
-            aString.setValue(MetadataRecordTypes.CREATOR_ARECORD_FIELD_NAME);
-            stringSerde.serialize(aString, fieldName.getDataOutput());
-            fieldValue.reset();
-            creatorObject.write(fieldValue.getDataOutput(), true);
-            recordBuilder.addField(fieldName, fieldValue);
+            TupleTranslatorUtils.writeCreator(index.getCreator(), recordBuilder, fieldName, fieldValue, aString,
+                    stringSerde);
         }
     }
 }

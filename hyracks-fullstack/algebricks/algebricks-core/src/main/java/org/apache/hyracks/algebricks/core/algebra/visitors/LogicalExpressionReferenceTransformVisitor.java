@@ -179,6 +179,18 @@ public abstract class LogicalExpressionReferenceTransformVisitor
     }
 
     @Override
+    public Boolean visitKMeansStageOperator(KMeansStageOperator op, ILogicalExpressionReferenceTransform arg)
+            throws AlgebricksException {
+        return visitOperator(op, arg);
+    }
+
+    @Override
+    public Boolean visitClusterByOperator(ClusterByOperator op, ILogicalExpressionReferenceTransform arg)
+            throws AlgebricksException {
+        return visitOperator(op, arg);
+    }
+
+    @Override
     public Boolean visitUnnestOperator(UnnestOperator op, ILogicalExpressionReferenceTransform arg)
             throws AlgebricksException {
         return visitOperator(op, arg);

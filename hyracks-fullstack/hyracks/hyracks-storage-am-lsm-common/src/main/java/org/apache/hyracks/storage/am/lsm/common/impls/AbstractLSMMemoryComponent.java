@@ -18,8 +18,6 @@
  */
 package org.apache.hyracks.storage.am.lsm.common.impls;
 
-import java.util.concurrent.atomic.AtomicBoolean;
-
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMComponentFilter;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMComponentId;
@@ -35,9 +33,10 @@ import org.apache.logging.log4j.Logger;
 public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent implements ILSMMemoryComponent {
 
     private static final Logger LOGGER = LogManager.getLogger();
-    protected final AtomicBoolean allocated;
+    protected volatile boolean allocated;
     private final IVirtualBufferCache vbc;
-    private final AtomicBoolean isModified;
+    private volatile boolean isModified;
+    private volatile boolean hasTuples;
     private int writerCount;
     private int pendingFlushes = 0;
     private final MemoryComponentMetadata metadata;
@@ -48,8 +47,6 @@ public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent im
         this.vbc = vbc;
         writerCount = 0;
         state = ComponentState.INACTIVE;
-        isModified = new AtomicBoolean();
-        allocated = new AtomicBoolean();
         metadata = new MemoryComponentMetadata();
     }
 
@@ -82,7 +79,7 @@ public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent im
 
     private void activate() throws HyracksDataException {
         if (state == ComponentState.INACTIVE) {
-            if (!allocated.get()) {
+            if (!allocated) {
                 doAllocate();
             }
             state = ComponentState.READABLE_WRITABLE;
@@ -97,6 +94,24 @@ public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent im
             case FORCE_MODIFICATION:
                 if (isMutableComponent) {
                     if (state == ComponentState.READABLE_WRITABLE || state == ComponentState.READABLE_UNWRITABLE) {
+                        writerCount++;
+                    } else {
+                        return false;
+                    }
+                } else {
+                    if (state == ComponentState.READABLE_UNWRITABLE
+                            || state == ComponentState.READABLE_UNWRITABLE_FLUSHING) {
+                        readerCount++;
+                    } else {
+                        return false;
+                    }
+                }
+                break;
+            case BUDGET_FREE_MODIFICATION:
+                if (isMutableComponent) {
+                    if (state == ComponentState.READABLE_WRITABLE) {
+                        // Even when the memory component has the writable state, vbc may be temporarily full
+                        // or this memory component may be full.
                         writerCount++;
                     } else {
                         return false;
@@ -161,6 +176,7 @@ public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent im
         boolean cleanup = false;
         switch (opType) {
             case FORCE_MODIFICATION:
+            case BUDGET_FREE_MODIFICATION:
             case MODIFICATION:
                 if (isMutableComponent) {
                     writerCount--;
@@ -222,18 +238,31 @@ public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent im
 
     @Override
     public void setModified() {
-        isModified.set(true);
+        isModified = true;
     }
 
     @Override
     public boolean isModified() {
-        return isModified.get();
+        return isModified;
+    }
+
+    @Override
+    public void setHasTuples() {
+        // set before isModified, so that whoever sees the component modified also sees that it holds tuples
+        hasTuples = true;
+        isModified = true;
+    }
+
+    @Override
+    public boolean hasTuples() {
+        return hasTuples;
     }
 
     @Override
     public final void reset() throws HyracksDataException {
         state = ComponentState.INACTIVE;
-        isModified.set(false);
+        isModified = false;
+        hasTuples = false;
         metadata.reset();
         if (filter != null) {
             filter.reset();
@@ -252,10 +281,10 @@ public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent im
 
     @Override
     public void cleanup() throws HyracksDataException {
-        if (allocated.get()) {
+        if (allocated) {
             getIndex().deactivate();
             getIndex().destroy();
-            allocated.set(false);
+            allocated = false;
         }
     }
 
@@ -270,15 +299,19 @@ public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent im
     }
 
     @Override
-    public final void allocate() throws HyracksDataException {
-        boolean allocated = false;
+    public final void register() throws HyracksDataException {
         vbc.open();
         vbc.register(this);
+    }
+
+    @Override
+    public final void allocate() throws HyracksDataException {
+        boolean done = false;
         try {
             doAllocate();
-            allocated = true;
+            done = true;
         } finally {
-            if (!allocated) {
+            if (!done) {
                 getIndex().getBufferCache().close();
             }
         }
@@ -292,7 +325,7 @@ public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent im
             created = true;
             getIndex().activate();
             activated = true;
-            allocated.set(true);
+            allocated = true;
         } finally {
             if (created && !activated) {
                 getIndex().destroy();
@@ -312,10 +345,10 @@ public abstract class AbstractLSMMemoryComponent extends AbstractLSMComponent im
     }
 
     protected void doDeallocate() throws HyracksDataException {
-        if (allocated.get()) {
+        if (allocated) {
             getIndex().deactivate();
             getIndex().destroy();
-            allocated.set(false);
+            allocated = false;
         }
         componentId = null;
     }

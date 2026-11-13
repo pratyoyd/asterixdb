@@ -21,7 +21,7 @@ package org.apache.asterix.compiler.provider;
 import java.util.List;
 
 import org.apache.asterix.common.dataflow.ICcApplicationContext;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.core.rewriter.base.AbstractRuleController;
 import org.apache.hyracks.algebricks.core.rewriter.base.IAlgebraicRewriteRule;
 import org.apache.hyracks.algebricks.core.rewriter.base.IRuleSetKind;
@@ -29,7 +29,15 @@ import org.apache.hyracks.algebricks.core.rewriter.base.IRuleSetKind;
 public interface IRuleSetFactory {
 
     enum RuleSetKind implements IRuleSetKind {
-        SAMPLING
+        QUERY,
+        LOGICAL_ADVISOR,
+        SAMPLING,
+        /**
+         * Samples a copy of a subplan that has already been through the logical rewrites, to compute a range map
+         * at compile time. Unlike {@link #SAMPLING}, it does not introduce aggregate combiners: the subplan already
+         * has them, and splitting an aggregate twice feeds one local step's output into another.
+         */
+        RANGE_MAP_SAMPLING
     }
 
     /**
@@ -47,4 +55,11 @@ public interface IRuleSetFactory {
      * @return the physical rewrites
      */
     List<Pair<AbstractRuleController, List<IAlgebraicRewriteRule>>> getPhysicalRewrites(ICcApplicationContext appCtx);
+
+    /**
+     * @return the physical rewrites of the specified kind
+     */
+    List<Pair<AbstractRuleController, List<IAlgebraicRewriteRule>>> getPhysicalRewrites(IRuleSetKind ruleSetKind,
+            ICcApplicationContext appCtx);
+
 }

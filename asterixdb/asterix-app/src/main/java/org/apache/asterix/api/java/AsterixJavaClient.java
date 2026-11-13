@@ -20,14 +20,17 @@ package org.apache.asterix.api.java;
 
 import java.io.PrintWriter;
 import java.io.Reader;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.apache.asterix.api.common.APIFramework;
 import org.apache.asterix.app.result.ResponsePrinter;
 import org.apache.asterix.app.translator.RequestParameters;
 import org.apache.asterix.common.api.RequestReference;
+import org.apache.asterix.common.config.DatasetConfig;
 import org.apache.asterix.common.context.IStorageComponentProvider;
 import org.apache.asterix.common.dataflow.ICcApplicationContext;
 import org.apache.asterix.common.utils.Job;
@@ -35,6 +38,8 @@ import org.apache.asterix.compiler.provider.ILangCompilationProvider;
 import org.apache.asterix.lang.common.base.IParser;
 import org.apache.asterix.lang.common.base.IParserFactory;
 import org.apache.asterix.lang.common.base.Statement;
+import org.apache.asterix.lang.common.statement.DatasetDecl;
+import org.apache.asterix.lang.common.statement.DataverseDecl;
 import org.apache.asterix.metadata.MetadataManager;
 import org.apache.asterix.om.base.IAObject;
 import org.apache.asterix.translator.ExecutionPlans;
@@ -98,15 +103,22 @@ public class AsterixJavaClient {
     }
 
     public void compile(boolean optimize, boolean printRewrittenExpressions, boolean printLogicalPlan,
+            boolean printOptimizedPlan, boolean printPhysicalOpsOnly, boolean generateBinaryRuntime, boolean printJob,
+            PlanFormat pformat) throws Exception {
+        compile(optimize, printRewrittenExpressions, printLogicalPlan, printOptimizedPlan, printPhysicalOpsOnly,
+                generateBinaryRuntime, printJob, pformat, false);
+    }
+
+    public void compile(boolean optimize, boolean printRewrittenExpressions, boolean printLogicalPlan,
             boolean printOptimizedPlan, boolean printPhysicalOpsOnly, boolean generateBinaryRuntime, boolean printJob)
             throws Exception {
         compile(optimize, printRewrittenExpressions, printLogicalPlan, printOptimizedPlan, printPhysicalOpsOnly,
-                generateBinaryRuntime, printJob, PlanFormat.STRING);
+                generateBinaryRuntime, printJob, PlanFormat.STRING, false);
     }
 
     public void compile(boolean optimize, boolean printRewrittenExpressions, boolean printLogicalPlan,
             boolean printOptimizedPlan, boolean printPhysicalOpsOnly, boolean generateBinaryRuntime, boolean printJob,
-            PlanFormat pformat) throws Exception {
+            PlanFormat pformat, boolean addAnalyzeForOptimizerTests) throws Exception {
         queryJobSpec = null;
         dmlJobs = null;
         executionPlans = null;
@@ -122,9 +134,14 @@ public class AsterixJavaClient {
         String statement = builder.toString();
         IParser parser = parserFactory.createParser(statement);
         List<Statement> statements = parser.parse();
+        if (addAnalyzeForOptimizerTests) {
+            insertAnalyzeStatements(statements);
+        }
+
         MetadataManager.INSTANCE.init();
 
-        SessionConfig conf = new SessionConfig(OutputFormat.ADM, optimize, true, generateBinaryRuntime, pformat);
+        SessionConfig conf = new SessionConfig(OutputFormat.ADM, optimize, true, generateBinaryRuntime, pformat,
+                SessionConfig.HyracksJobFormat.JSON);
         conf.setOOBData(false, printRewrittenExpressions, printLogicalPlan, printOptimizedPlan, printJob);
         if (printPhysicalOpsOnly) {
             conf.set(SessionConfig.FORMAT_ONLY_PHYSICAL_OPS, true);
@@ -141,6 +158,43 @@ public class AsterixJavaClient {
         translator.compileAndExecute(hcc, requestParameters);
         executionPlans = translator.getExecutionPlans();
         writer.flush();
+    }
+
+    private void insertAnalyzeStatements(List<Statement> statements) throws Exception {
+        Set<String> alreadyInserted = new HashSet<>();
+        String currentDv = null;
+
+        for (int i = 0; i < statements.size(); i++) {
+            Statement s = statements.get(i);
+
+            if (s.getKind() == Statement.Kind.DATAVERSE_DECL) {
+                currentDv = ((DataverseDecl) s).getDataverseName().toString();
+                continue;
+            }
+
+            if (s.getKind() == Statement.Kind.CREATE_DATASET) {
+                DatasetDecl dsDecl = (DatasetDecl) s;
+                String dsName = dsDecl.getName().getValue();
+                String dv = currentDv;
+                if (dsDecl.getNamespace() != null && dsDecl.getNamespace().getDataverseName() != null) {
+                    String[] parts = dsDecl.getNamespace().getDataverseName().getCanonicalForm().split("/");
+                    dv = String.join(".", parts);
+                }
+
+                // add analyze statements for INTERNAL datasets only
+                // as we don't support analyze for external datasets
+                if (dsDecl.getDatasetType() == DatasetConfig.DatasetType.INTERNAL) {
+                    String fq = (dv != null && !dv.isEmpty()) ? dv + "." + dsName : dsName;
+                    if (alreadyInserted.add(fq)) {
+                        String sql = "ANALYZE DATASET " + fq + ";";
+                        List<Statement> analyzeStmts = parserFactory.createParser(sql).parse();
+                        //insert analyze statement right after the create dataset statement
+                        statements.addAll(i + 1, analyzeStmts);
+                        i += analyzeStmts.size();
+                    }
+                }
+            }
+        }
     }
 
     public void execute() throws Exception {

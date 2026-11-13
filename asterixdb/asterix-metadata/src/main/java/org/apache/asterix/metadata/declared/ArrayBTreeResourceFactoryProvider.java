@@ -34,8 +34,8 @@ import org.apache.asterix.metadata.utils.IndexUtil;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.om.types.IAType;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.data.IBinaryComparatorFactoryProvider;
 import org.apache.hyracks.algebricks.data.ITypeTraitProvider;
 import org.apache.hyracks.api.compression.ICompressorDecompressorFactory;
@@ -50,7 +50,6 @@ import org.apache.hyracks.storage.am.lsm.common.api.ILSMOperationTrackerFactory;
 import org.apache.hyracks.storage.am.lsm.common.api.ILSMPageWriteCallbackFactory;
 import org.apache.hyracks.storage.common.IResourceFactory;
 import org.apache.hyracks.storage.common.IStorageManager;
-import org.apache.hyracks.storage.common.compression.NoOpCompressorDecompressorFactory;
 
 public class ArrayBTreeResourceFactoryProvider implements IResourceFactoryProvider {
 
@@ -87,13 +86,12 @@ public class ArrayBTreeResourceFactoryProvider implements IResourceFactoryProvid
                 AsterixVirtualBufferCacheProvider vbcProvider =
                         new AsterixVirtualBufferCacheProvider(dataset.getDatasetId());
 
-                final ICompressorDecompressorFactory compDecompFactory;
                 if (index.isPrimaryIndex()) {
                     throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE,
                             "Array indexes cannot be " + "primary indexes.");
-                } else {
-                    compDecompFactory = NoOpCompressorDecompressorFactory.INSTANCE;
                 }
+                final ICompressorDecompressorFactory compDecompFactory =
+                        mdProvider.getCompressionManager().getFactory(index.getCompressionScheme());
 
                 return new LSMBTreeLocalResourceFactory(storageManager, typeTraits, cmpFactories, filterTypeTraits,
                         filterCmpFactories, filterFields, opTrackerFactory, ioOpCallbackFactory,
@@ -136,7 +134,7 @@ public class ArrayBTreeResourceFactoryProvider implements IResourceFactoryProvid
             for (int i = 0; i < e.getProjectList().size(); i++) {
                 Pair<IAType, Boolean> keyTypePair = ArrayIndexUtil.getNonNullableOpenFieldType(e.getTypeList().get(i),
                         e.getUnnestList(), e.getProjectList().get(i), sourceType);
-                IAType keyType = keyTypePair.first;
+                IAType keyType = keyTypePair.getLeft();
                 secondaryTypeTraits[secondaryTypeTraitPos++] = typeTraitProvider.getTypeTrait(keyType);
             }
         }
@@ -175,7 +173,7 @@ public class ArrayBTreeResourceFactoryProvider implements IResourceFactoryProvid
             for (int i = 0; i < e.getProjectList().size(); i++) {
                 Pair<IAType, Boolean> keyTypePair = ArrayIndexUtil.getNonNullableOpenFieldType(e.getTypeList().get(i),
                         e.getUnnestList(), e.getProjectList().get(i), sourceType);
-                IAType keyType = keyTypePair.first;
+                IAType keyType = keyTypePair.getLeft();
                 secondaryCmpFactories[secondaryCmpFactoriesPos++] =
                         cmpFactoryProvider.getBinaryComparatorFactory(keyType, true);
             }

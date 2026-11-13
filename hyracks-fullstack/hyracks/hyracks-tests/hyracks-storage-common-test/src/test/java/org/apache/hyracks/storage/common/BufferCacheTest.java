@@ -21,6 +21,7 @@ package org.apache.hyracks.storage.common;
 import static org.apache.hyracks.storage.common.buffercache.context.read.DefaultBufferCacheReadContextProvider.NEW;
 
 import java.io.File;
+import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -29,25 +30,37 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.lang3.mutable.MutableObject;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
+import org.apache.hyracks.api.exceptions.ErrorCode;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.HyracksException;
 import org.apache.hyracks.api.io.FileReference;
 import org.apache.hyracks.api.io.IIOManager;
+import org.apache.hyracks.storage.common.buffercache.BufferCache;
 import org.apache.hyracks.storage.common.buffercache.CachedPage;
+import org.apache.hyracks.storage.common.buffercache.ClockPageReplacementStrategy;
+import org.apache.hyracks.storage.common.buffercache.DefaultDiskCachedPageAllocator;
+import org.apache.hyracks.storage.common.buffercache.DelayPageCleanerPolicy;
 import org.apache.hyracks.storage.common.buffercache.HaltOnFailureCallback;
+import org.apache.hyracks.storage.common.buffercache.HeapBufferAllocator;
 import org.apache.hyracks.storage.common.buffercache.IBufferCache;
 import org.apache.hyracks.storage.common.buffercache.ICachedPage;
+import org.apache.hyracks.storage.common.buffercache.IFileDescriptorListener;
 import org.apache.hyracks.storage.common.buffercache.NoOpPageWriteCallback;
+import org.apache.hyracks.storage.common.buffercache.context.read.DefaultBufferCacheReadContextProvider;
 import org.apache.hyracks.storage.common.buffercache.context.write.DefaultBufferCacheWriteContext;
 import org.apache.hyracks.storage.common.file.BufferedFileHandle;
+import org.apache.hyracks.storage.common.file.FileMapManager;
 import org.apache.hyracks.test.support.TestStorageManagerComponentHolder;
 import org.apache.hyracks.test.support.TestUtils;
 import org.apache.logging.log4j.Level;
@@ -467,6 +480,389 @@ public class BufferCacheTest {
         aPage = bufferCache.confiscatePage(BufferedFileHandle.getDiskPageId(fileId, testPageId));
         Assert.assertEquals(PAGE_SIZE, aPage.getBuffer().limit());
         Assert.assertEquals(0, aPage.getBuffer().position());
+    }
+
+    private BufferCache createDescriptorBoundedCache(int numPages, int maxOpenDescriptors) throws HyracksDataException {
+        return createDescriptorBoundedCache(numPages, maxOpenDescriptors, Thread::new);
+    }
+
+    private BufferCache createDescriptorBoundedCache(int numPages, int maxOpenDescriptors, ThreadFactory threadFactory)
+            throws HyracksDataException {
+        return createDescriptorBoundedCache(numPages, maxOpenDescriptors, threadFactory, new HashMap<>());
+    }
+
+    private BufferCache createDescriptorBoundedCache(int numPages, int maxOpenDescriptors, ThreadFactory threadFactory,
+            Map<Integer, BufferedFileHandle> fileInfoMap) throws HyracksDataException {
+        TestStorageManagerComponentHolder.init(PAGE_SIZE, numPages, MAX_OPEN_FILES);
+        return new BufferCache(TestStorageManagerComponentHolder.getIOManager(),
+                new ClockPageReplacementStrategy(new HeapBufferAllocator(), DefaultDiskCachedPageAllocator.INSTANCE,
+                        PAGE_SIZE, numPages),
+                new DelayPageCleanerPolicy(1000), new FileMapManager(), Integer.MAX_VALUE, maxOpenDescriptors, 10,
+                threadFactory, fileInfoMap, DefaultBufferCacheReadContextProvider.DEFAULT);
+    }
+
+    /**
+     * Creates and opens a file, writes a page identifying it, and writes that page to disk; forces it if asked.
+     */
+    private int createFileWithPage(BufferCache bufferCache, boolean force) throws HyracksDataException {
+        FileReference file = TestStorageManagerComponentHolder.getIOManager().resolve(getFileName());
+        int fileId = bufferCache.createFile(file);
+        bufferCache.openFile(fileId);
+        ICachedPage page = bufferCache.pin(BufferedFileHandle.getDiskPageId(fileId, 0), NEW);
+        page.acquireWriteLatch();
+        try {
+            for (int i = 0; i < 8; i++) {
+                page.getBuffer().putInt(i * 4, fileId * 31 + i);
+            }
+        } finally {
+            page.releaseWriteLatch(true);
+        }
+        try {
+            bufferCache.flush(page);
+        } finally {
+            bufferCache.unpin(page);
+        }
+        if (force) {
+            bufferCache.force(fileId, true);
+        }
+        return fileId;
+    }
+
+    private static void verifyPage(IBufferCache bufferCache, int fileId) throws HyracksDataException {
+        ICachedPage page = bufferCache.pin(BufferedFileHandle.getDiskPageId(fileId, 0));
+        page.acquireReadLatch();
+        try {
+            for (int i = 0; i < 8; i++) {
+                Assert.assertEquals("file " + fileId + " int " + i, fileId * 31 + i, page.getBuffer().getInt(i * 4));
+            }
+        } finally {
+            page.releaseReadLatch();
+            bufferCache.unpin(page);
+        }
+    }
+
+    private static void awaitTrue(String what, Callable<Boolean> condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (!condition.call()) {
+            if (System.nanoTime() - deadline > 0) {
+                Assert.fail("timed out waiting for " + what);
+            }
+            TimeUnit.MILLISECONDS.sleep(10);
+        }
+    }
+
+    @Test
+    public void releasedDescriptorsAreReopenedOnNextIoTest() throws Exception {
+        final int maxOpenDescriptors = 4;
+        final int numFiles = 16;
+        // fewer cache pages than files, so that reading the files back must go to disk
+        BufferCache bufferCache = createDescriptorBoundedCache(NUM_PAGES, maxOpenDescriptors);
+        final AtomicInteger listenedReleases = new AtomicInteger();
+        final AtomicInteger listenedReopens = new AtomicInteger();
+        final AtomicInteger listenedPasses = new AtomicInteger();
+        bufferCache.setDescriptorListener(new IFileDescriptorListener() {
+            @Override
+            public void descriptorReleased(long idleNanos) {
+                Assert.assertTrue(idleNanos >= 0);
+                listenedReleases.incrementAndGet();
+            }
+
+            @Override
+            public void descriptorReopened(long releasedNanos) {
+                Assert.assertTrue(releasedNanos >= 0);
+                listenedReopens.incrementAndGet();
+            }
+
+            @Override
+            public void releasePassCompleted(int released, long durationNanos, boolean underBound) {
+                listenedPasses.incrementAndGet();
+            }
+        });
+        Assert.assertEquals(maxOpenDescriptors, bufferCache.getMaxOpenDescriptors());
+        List<Integer> fileIds = new ArrayList<>();
+        for (int i = 0; i < numFiles; i++) {
+            fileIds.add(createFileWithPage(bufferCache, true));
+        }
+        Assert.assertEquals(numFiles, bufferCache.getOpenedDescriptorCount());
+        Assert.assertEquals(numFiles, bufferCache.getOpenFileCount());
+        awaitTrue("descriptors to be released", () -> bufferCache.getOpenDescriptorCount() <= maxOpenDescriptors);
+        Assert.assertTrue(bufferCache.getReleasedDescriptorCount() >= numFiles - maxOpenDescriptors);
+
+        // every file is still open as far as the cache is concerned, and reads correctly
+        for (int fileId : fileIds) {
+            verifyPage(bufferCache, fileId);
+        }
+        Assert.assertTrue("expected reads to reopen released descriptors",
+                bufferCache.getReopenedDescriptorCount() > 0);
+
+        for (int fileId : fileIds) {
+            bufferCache.closeFile(fileId);
+        }
+        bufferCache.close();
+        Assert.assertEquals(0, bufferCache.getOpenDescriptorCount());
+        // every descriptor acquired was given up, either released or closed
+        Assert.assertEquals(bufferCache.getOpenedDescriptorCount() + bufferCache.getReopenedDescriptorCount(),
+                bufferCache.getReleasedDescriptorCount() + bufferCache.getClosedDescriptorCount());
+        Assert.assertEquals(bufferCache.getReleasedDescriptorCount(), listenedReleases.get());
+        Assert.assertEquals(bufferCache.getReopenedDescriptorCount(), listenedReopens.get());
+        // a pass counts itself just before notifying, so one finishing as the cache closes may still be on its way
+        awaitTrue("the listener to see every pass",
+                () -> bufferCache.getDescriptorReleasePassCount() == listenedPasses.get());
+        Assert.assertTrue(listenedPasses.get() > 0);
+    }
+
+    @Test
+    public void unforcedWritesKeepTheirDescriptorTest() throws Exception {
+        final int maxOpenDescriptors = 2;
+        // the third open schedules a release pass before that file has been written, and a file with nothing
+        // written is rightly releasable; hold the pass back until all three have unforced writes. Workers are
+        // gated as they are created, so the page cleaner, started by the constructor, is not held
+        final CountDownLatch filesWritten = new CountDownLatch(1);
+        final AtomicBoolean holdNewWorkers = new AtomicBoolean();
+        BufferCache bufferCache = createDescriptorBoundedCache(NUM_PAGES, maxOpenDescriptors, r -> {
+            final boolean hold = holdNewWorkers.get();
+            return new Thread(() -> {
+                if (hold) {
+                    try {
+                        filesWritten.await();
+                    } catch (InterruptedException e) {
+                        // the cache is shutting down its executor
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                r.run();
+            });
+        });
+        holdNewWorkers.set(true);
+        List<Integer> fileIds = new ArrayList<>();
+        // the third open goes over the bound, but a file with writes not yet forced must keep its descriptor
+        for (int i = 0; i < 3; i++) {
+            fileIds.add(createFileWithPage(bufferCache, false));
+        }
+        Assert.assertEquals(0, bufferCache.getDescriptorReleasePassCount());
+        filesWritten.countDown();
+        awaitTrue("the release pass", () -> bufferCache.getDescriptorReleasePassCount() > 0);
+        Assert.assertEquals(0, bufferCache.getReleasedDescriptorCount());
+        Assert.assertEquals(3, bufferCache.getOpenDescriptorCount());
+        Assert.assertEquals(1, bufferCache.getDescriptorReleasePassCount());
+        Assert.assertEquals(1, bufferCache.getDescriptorReleasePassOverBoundCount());
+
+        // once forced they are releasable; a pass that found nothing to release backs off, so wait that out, and
+        // the next open schedules another
+        for (int fileId : fileIds) {
+            bufferCache.force(fileId, true);
+        }
+        TimeUnit.MILLISECONDS.sleep(1100);
+        fileIds.add(createFileWithPage(bufferCache, true));
+        awaitTrue("descriptors to get back under the bound",
+                () -> bufferCache.getOpenDescriptorCount() <= maxOpenDescriptors);
+        Assert.assertTrue(bufferCache.getReleasedDescriptorCount() >= 2);
+
+        for (int fileId : fileIds) {
+            verifyPage(bufferCache, fileId);
+            bufferCache.closeFile(fileId);
+        }
+        bufferCache.close();
+        Assert.assertEquals(0, bufferCache.getOpenDescriptorCount());
+    }
+
+    @Test
+    public void concurrentReadsWhileDescriptorsAreReleasedTest() throws Exception {
+        final int maxOpenDescriptors = 4;
+        final int numFiles = 32;
+        final int numThreads = 8;
+        final int readsPerThread = 2000;
+        BufferCache bufferCache = createDescriptorBoundedCache(NUM_PAGES, maxOpenDescriptors);
+        List<Integer> fileIds = new ArrayList<>();
+        for (int i = 0; i < numFiles; i++) {
+            fileIds.add(createFileWithPage(bufferCache, true));
+        }
+        ExecutorService readers = Executors.newFixedThreadPool(numThreads);
+        try {
+            List<Future<Void>> results = new ArrayList<>();
+            for (int t = 0; t < numThreads; t++) {
+                final Random random = new Random(t);
+                results.add(readers.submit(() -> {
+                    for (int i = 0; i < readsPerThread; i++) {
+                        verifyPage(bufferCache, fileIds.get(random.nextInt(numFiles)));
+                    }
+                    return null;
+                }));
+            }
+            for (Future<Void> result : results) {
+                result.get(2, TimeUnit.MINUTES);
+            }
+        } finally {
+            readers.shutdownNow();
+        }
+        Assert.assertTrue(bufferCache.getReleasedDescriptorCount() > 0);
+        Assert.assertTrue(bufferCache.getReopenedDescriptorCount() > 0);
+        for (int fileId : fileIds) {
+            bufferCache.closeFile(fileId);
+        }
+        bufferCache.close();
+        Assert.assertEquals(0, bufferCache.getOpenDescriptorCount());
+    }
+
+    @Test
+    public void handleOperationsWhileDescriptorsAreReleasedTest() throws Exception {
+        final int maxOpenDescriptors = 4;
+        final int numFiles = 32;
+        final int numThreads = 8;
+        final int opsPerThread = 2000;
+        Map<Integer, BufferedFileHandle> fileInfoMap = new HashMap<>();
+        BufferCache bufferCache = createDescriptorBoundedCache(NUM_PAGES, maxOpenDescriptors, Thread::new, fileInfoMap);
+        IIOManager ioManager = TestStorageManagerComponentHolder.getIOManager();
+        List<BufferedFileHandle> handles = new ArrayList<>();
+        for (int i = 0; i < numFiles; i++) {
+            int fileId = createFileWithPage(bufferCache, true);
+            synchronized (fileInfoMap) {
+                handles.add(fileInfoMap.get(fileId));
+            }
+        }
+        awaitTrue("descriptors to be released", () -> bufferCache.getOpenDescriptorCount() <= maxOpenDescriptors);
+        BufferedFileHandle released = handles.stream().filter(h -> !h.isDescriptorOpen()).findFirst().orElseThrow();
+        long reopened = bufferCache.getReopenedDescriptorCount();
+        int expected = bufferCache.getPageSizeWithHeader();
+        Assert.assertEquals(expected,
+                (long) released.doOnHandle(handle -> ioManager.syncRead(handle, 0, ByteBuffer.allocate(expected))));
+        Assert.assertTrue(bufferCache.getReopenedDescriptorCount() > reopened);
+
+        ExecutorService workers = Executors.newFixedThreadPool(numThreads);
+        try {
+            List<Future<Void>> results = new ArrayList<>();
+            for (int t = 0; t < numThreads; t++) {
+                final Random random = new Random(t);
+                results.add(workers.submit(() -> {
+                    ByteBuffer buffer = ByteBuffer.allocate(expected);
+                    for (int i = 0; i < opsPerThread; i++) {
+                        buffer.clear();
+                        BufferedFileHandle handle = handles.get(random.nextInt(numFiles));
+                        Assert.assertEquals(expected, (long) handle.doOnHandle(h -> ioManager.syncRead(h, 0, buffer)));
+                    }
+                    return null;
+                }));
+            }
+            for (Future<Void> result : results) {
+                result.get(2, TimeUnit.MINUTES);
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+        for (BufferedFileHandle handle : handles) {
+            bufferCache.closeFile(handle.getFileId());
+        }
+        bufferCache.close();
+        Assert.assertEquals(0, bufferCache.getOpenDescriptorCount());
+    }
+
+    @Test
+    public void cacheWritesAreSyncedOnReleaseTest() throws Exception {
+        final int maxOpenDescriptors = 4;
+        final int numFiles = 16;
+        Map<Integer, BufferedFileHandle> fileInfoMap = new HashMap<>();
+        BufferCache bufferCache = createDescriptorBoundedCache(NUM_PAGES, maxOpenDescriptors, Thread::new, fileInfoMap);
+        final AtomicInteger listenedSyncs = new AtomicInteger();
+        bufferCache.setDescriptorListener(new IFileDescriptorListener() {
+            @Override
+            public void releaseSynced(long durationNanos) {
+                Assert.assertTrue(durationNanos >= 0);
+                listenedSyncs.incrementAndGet();
+            }
+        });
+        IIOManager ioManager = TestStorageManagerComponentHolder.getIOManager();
+        int pageSize = bufferCache.getPageSizeWithHeader();
+        List<BufferedFileHandle> handles = new ArrayList<>();
+        for (int i = 0; i < numFiles; i++) {
+            int fileId = createFileWithPage(bufferCache, true);
+            BufferedFileHandle handle;
+            synchronized (fileInfoMap) {
+                handle = fileInfoMap.get(fileId);
+            }
+            handles.add(handle);
+            // rewrite the page with its own bytes, as filling a cache from a durable copy would
+            ByteBuffer page = ByteBuffer.allocate(pageSize);
+            Assert.assertEquals(pageSize, (long) handle.doOnHandle(h -> ioManager.syncRead(h, 0, page)));
+            page.flip();
+            Assert.assertEquals(pageSize, (long) handle.doCacheWriteOnHandle(h -> ioManager.syncWrite(h, 0, page)));
+        }
+        // the cache writes are never forced, yet do not keep the descriptors open
+        awaitTrue("descriptors to be released", () -> bufferCache.getOpenDescriptorCount() <= maxOpenDescriptors);
+        Assert.assertTrue(bufferCache.getReleasedDescriptorCount() >= numFiles - maxOpenDescriptors);
+        Assert.assertTrue(bufferCache.getDescriptorReleaseSyncCount() >= numFiles - maxOpenDescriptors);
+        Assert.assertEquals(bufferCache.getDescriptorReleaseSyncCount(), listenedSyncs.get());
+        for (BufferedFileHandle handle : handles) {
+            verifyPage(bufferCache, handle.getFileId());
+        }
+        for (BufferedFileHandle handle : handles) {
+            bufferCache.closeFile(handle.getFileId());
+        }
+        bufferCache.close();
+        Assert.assertEquals(0, bufferCache.getOpenDescriptorCount());
+    }
+
+    @Test
+    public void releaseSyncsOnlyUnsyncedCacheWritesTest() throws Exception {
+        Map<Integer, BufferedFileHandle> fileInfoMap = new HashMap<>();
+        // unbounded, so that only this test releases the descriptor
+        BufferCache bufferCache = createDescriptorBoundedCache(NUM_PAGES, Integer.MAX_VALUE, Thread::new, fileInfoMap);
+        IIOManager ioManager = TestStorageManagerComponentHolder.getIOManager();
+        int pageSize = bufferCache.getPageSizeWithHeader();
+        int fileId = createFileWithPage(bufferCache, true);
+        BufferedFileHandle handle;
+        synchronized (fileInfoMap) {
+            handle = fileInfoMap.get(fileId);
+        }
+        ByteBuffer page = ByteBuffer.allocate(pageSize);
+
+        Assert.assertTrue(handle.tryReleaseDescriptor());
+        Assert.assertEquals(0, bufferCache.getDescriptorReleaseSyncCount());
+
+        Assert.assertEquals(pageSize, (long) handle.doOnHandle(h -> ioManager.syncRead(h, 0, page)));
+        Assert.assertTrue(handle.tryReleaseDescriptor());
+        Assert.assertEquals("a read leaves nothing to sync", 0, bufferCache.getDescriptorReleaseSyncCount());
+
+        page.flip();
+        Assert.assertEquals(pageSize, (long) handle.doCacheWriteOnHandle(h -> ioManager.syncWrite(h, 0, page)));
+        Assert.assertTrue(handle.tryReleaseDescriptor());
+        Assert.assertEquals(1, bufferCache.getDescriptorReleaseSyncCount());
+
+        page.clear();
+        Assert.assertEquals(pageSize, (long) handle.doOnHandle(h -> ioManager.syncRead(h, 0, page)));
+        Assert.assertTrue(handle.tryReleaseDescriptor());
+        Assert.assertEquals("the cache write was already synced", 1, bufferCache.getDescriptorReleaseSyncCount());
+
+        verifyPage(bufferCache, fileId);
+        bufferCache.closeFile(fileId);
+        bufferCache.close();
+        Assert.assertEquals(0, bufferCache.getOpenDescriptorCount());
+    }
+
+    @Test
+    public void reopeningARemovedFileFailsTest() throws Exception {
+        Map<Integer, BufferedFileHandle> fileInfoMap = new HashMap<>();
+        BufferCache bufferCache = createDescriptorBoundedCache(NUM_PAGES, Integer.MAX_VALUE, Thread::new, fileInfoMap);
+        IIOManager ioManager = TestStorageManagerComponentHolder.getIOManager();
+        int fileId = createFileWithPage(bufferCache, true);
+        BufferedFileHandle handle;
+        synchronized (fileInfoMap) {
+            handle = fileInfoMap.get(fileId);
+        }
+        File file = handle.getFileReference().getFile();
+        Assert.assertTrue(handle.tryReleaseDescriptor());
+        Assert.assertTrue(file.delete());
+        try {
+            handle.doOnHandle(h -> ioManager.syncRead(h, 0, ByteBuffer.allocate(bufferCache.getPageSizeWithHeader())));
+            Assert.fail("expected reopening a removed file to fail");
+        } catch (HyracksDataException e) {
+            Assert.assertTrue(e.toString(), e.matches(ErrorCode.FILE_DOES_NOT_EXIST));
+        }
+        Assert.assertFalse("reopening must not recreate the file", file.exists());
+        Assert.assertFalse(handle.isDescriptorOpen());
+        bufferCache.closeFile(fileId);
+        bufferCache.close();
+        Assert.assertEquals(0, bufferCache.getOpenDescriptorCount());
     }
 
     @AfterClass

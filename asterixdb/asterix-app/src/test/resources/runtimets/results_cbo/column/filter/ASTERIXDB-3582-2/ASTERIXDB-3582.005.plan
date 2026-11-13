@@ -1,0 +1,26 @@
+distribute result [$$52] [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+-- DISTRIBUTE_RESULT  |PARTITIONED|
+  exchange [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+  -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+    assign [$$52] <- [{"id": $$54, "sold": $$56, "qty": $$53}] project: [$$52] [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+    -- ASSIGN  |PARTITIONED|
+      select (gt($$s.getField("lqty"), 19)) project: [$$54, $$56, $$53] [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+      -- STREAM_SELECT  |PARTITIONED|
+        unnest $$s <- scan-collection($$56) [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+        -- UNNEST  |PARTITIONED|
+          select (lt($$53, 3)) [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+          -- STREAM_SELECT  |PARTITIONED|
+            assign [$$53] <- [$$i.getField("qty")] project: [$$54, $$56, $$53] [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+            -- ASSIGN  |PARTITIONED|
+              unnest $$i <- scan-collection($$55) project: [$$54, $$56, $$i] [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+              -- UNNEST  |PARTITIONED|
+                assign [$$56, $$55] <- [$$o.getField("sold"), $$o.getField("bought")] project: [$$54, $$56, $$55] [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+                -- ASSIGN  |PARTITIONED|
+                  exchange [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+                  -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                    data-scan []<-[$$54, $$o] <- marketing.inventory project ({sold:any,bought:[{qty:any}]}) filter on: gt(scan-collection($$o.getField("sold")).getField("lqty"), 19) range-filter on: and(gt(scan-collection($$o.getField("sold")).getField("lqty"), 19), lt(scan-collection($$o.getField("bought")).getField("qty"), 3)) [cardinality: 1.0, doc-size: 102.0, op-cost: 0.0, total-cost: 1.0]
+                    -- DATASOURCE_SCAN  |PARTITIONED|
+                      exchange [cardinality: 0.0, doc-size: 0.0, op-cost: 0.0, total-cost: 0.0]
+                      -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                        empty-tuple-source [cardinality: 0.0, doc-size: 0.0, op-cost: 0.0, total-cost: 0.0]
+                        -- EMPTY_TUPLE_SOURCE  |PARTITIONED|

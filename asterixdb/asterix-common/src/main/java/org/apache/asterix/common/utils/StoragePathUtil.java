@@ -33,9 +33,9 @@ import org.apache.asterix.common.metadata.DataverseName;
 import org.apache.asterix.common.metadata.MetadataConstants;
 import org.apache.asterix.common.metadata.Namespace;
 import org.apache.asterix.common.storage.ResourceReference;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksAbsolutePartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.io.DefaultIoDeviceFileSplit;
 import org.apache.hyracks.api.io.FileReference;
@@ -69,7 +69,7 @@ public class StoragePathUtil {
             loc[p] = splits[p].getNodeName();
         }
         AlgebricksPartitionConstraint pc = new AlgebricksAbsolutePartitionConstraint(loc);
-        return new Pair<>(splitProvider, pc);
+        return Pair.of(splitProvider, pc);
     }
 
     public static FileSplit getFileSplitForClusterPartition(ClusterPartition partition, String relativePath) {
@@ -137,6 +137,13 @@ public class StoragePathUtil {
      */
     public static String getFileRelativePath(String fileAbsolutePath) {
         return ResourceReference.of(fileAbsolutePath).getFileRelativePath().toString();
+    }
+
+    public static FileReference getIndexRootPath(IIOManager ioManager, String relativePath)
+            throws HyracksDataException {
+        int separatorIndex = relativePath.lastIndexOf(File.separatorChar);
+        String parentDirectory = relativePath.substring(0, separatorIndex);
+        return ioManager.resolve(parentDirectory);
     }
 
     /**
@@ -229,7 +236,17 @@ public class StoragePathUtil {
     }
 
     public static boolean isRelativeParent(FileReference parent, FileReference child) {
-        return child.getRelativePath().startsWith(parent.getRelativePath());
+        String childPath = child.getRelativePath();
+        String parentPath = parent.getRelativePath();
+        boolean isMatch = childPath.startsWith(parentPath);
+        if (isMatch) {
+            int parentPathLength = parentPath.length();
+            if (childPath.length() == parentPathLength) {
+                return true;
+            }
+            return childPath.charAt(parentPathLength) == File.separatorChar;
+        }
+        return false;
     }
 
     public static String getNamespacePath(INamespacePathResolver nsPathResolver, Namespace namespace, int partition) {

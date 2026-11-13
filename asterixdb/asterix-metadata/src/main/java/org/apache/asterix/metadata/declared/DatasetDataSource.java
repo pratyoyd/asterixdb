@@ -20,6 +20,8 @@ package org.apache.asterix.metadata.declared;
 
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_EXTERNAL_SCAN_BUFFER_SIZE;
 import static org.apache.asterix.external.util.ExternalDataConstants.SUBPATH;
+import static org.apache.asterix.external.util.iceberg.IcebergConstants.ICEBERG_SNAPSHOT_ID_PROPERTY_KEY;
+import static org.apache.asterix.external.util.iceberg.IcebergConstants.ICEBERG_SNAPSHOT_TIMESTAMP_PROPERTY_KEY;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -27,6 +29,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.asterix.common.config.CompilerProperties;
 import org.apache.asterix.common.config.DatasetConfig.DatasetType;
 import org.apache.asterix.common.external.IExternalFilterEvaluatorFactory;
 import org.apache.asterix.common.metadata.DataverseName;
@@ -43,9 +46,9 @@ import org.apache.asterix.metadata.utils.KeyFieldTypeUtil;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.runtime.projection.ExternalDatasetProjectionFiltrationInfo;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.DefaultProjectionFiltrationInfo;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
@@ -136,9 +139,8 @@ public class DatasetDataSource extends DataSource {
                 PhysicalOptimizationConfig physicalOptimizationConfig = context.getPhysicalOptimizationConfig();
                 int externalScanBufferSize = physicalOptimizationConfig.getExternalScanBufferSize();
                 Map<String, String> properties =
-                        addExternalProjectionInfo(projectionFiltrationInfo, edd.getProperties());
-                properties = addSubPath(externalDataSource.getProperties(), properties);
-                properties.put(KEY_EXTERNAL_SCAN_BUFFER_SIZE, String.valueOf(externalScanBufferSize));
+                        prepareExternalDatasetProperties(edd.getProperties(), externalDataSource.getProperties(),
+                                projectionFiltrationInfo, metadataProvider, externalScanBufferSize);
                 IExternalFilterEvaluatorFactory filterEvaluatorFactory = metadataProvider
                         .createExternalFilterEvaluatorFactory(context, typeEnv, projectionFiltrationInfo, properties);
                 ITypedAdapterFactory adapterFactory =
@@ -163,8 +165,7 @@ public class DatasetDataSource extends DataSource {
                                     dataset.getMetaItemTypeDataverseName(), dataset.getMetaItemTypeName())
                             .getDatatype();
                 }
-                datasetType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(datasetType, metaItemType,
-                        dataset);
+                datasetType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(datasetType, dataset);
                 int numberOfPrimaryKeys = dataset.getPrimaryKeys().size();
                 ITupleProjectorFactory tupleProjectorFactory =
                         IndexUtil.createTupleProjectorFactory(context, typeEnv, dataset.getDatasetFormatInfo(),
@@ -181,31 +182,50 @@ public class DatasetDataSource extends DataSource {
         }
     }
 
-    private Map<String, String> addExternalProjectionInfo(IProjectionFiltrationInfo projectionInfo,
-            Map<String, String> properties) {
-        Map<String, String> propertiesCopy = properties;
+    private Map<String, String> prepareExternalDatasetProperties(Map<String, String> originalProperties,
+            Map<String, Serializable> dataSourceProps, IProjectionFiltrationInfo projectionInfo,
+            MetadataProvider metadataProvider, int externalScanBufferSize) {
+        // Always create a copy to avoid modifying the original properties map
+        Map<String, String> properties = new HashMap<>(originalProperties);
+
+        // Add external scan buffer size
+        properties.put(KEY_EXTERNAL_SCAN_BUFFER_SIZE, String.valueOf(externalScanBufferSize));
+
+        // Add external collection compiler properties
+        setExternalCollectionCompilerProperties(metadataProvider, properties);
+
+        // Add subpath if present
+        Serializable subPath = dataSourceProps.get(SUBPATH);
+        if (subPath instanceof String) {
+            properties.put(SUBPATH, (String) subPath);
+        }
+
+        // Add time travel properties (Iceberg snapshot ID or timestamp)
+        Serializable snapshotId = dataSourceProps.get(ICEBERG_SNAPSHOT_ID_PROPERTY_KEY);
+        Serializable snapshotTimestamp = dataSourceProps.get(ICEBERG_SNAPSHOT_TIMESTAMP_PROPERTY_KEY);
+
+        String snapshotKey =
+                snapshotId != null ? ICEBERG_SNAPSHOT_ID_PROPERTY_KEY : ICEBERG_SNAPSHOT_TIMESTAMP_PROPERTY_KEY;
+        Serializable snapshotValue = snapshotId != null ? snapshotId : snapshotTimestamp;
+
+        if (snapshotValue instanceof String) {
+            properties.remove(ICEBERG_SNAPSHOT_ID_PROPERTY_KEY);
+            properties.remove(ICEBERG_SNAPSHOT_TIMESTAMP_PROPERTY_KEY);
+            properties.put(snapshotKey, (String) snapshotValue);
+        }
+
+        // Add projection info if needed
         if (projectionInfo != DefaultProjectionFiltrationInfo.INSTANCE) {
-            //properties could be cached and reused, so we make a copy per query
-            propertiesCopy = new HashMap<>(properties);
             try {
                 ExternalDatasetProjectionFiltrationInfo externalProjectionInfo =
                         (ExternalDatasetProjectionFiltrationInfo) projectionInfo;
-                ExternalDataUtils.setExternalDataProjectionInfo(externalProjectionInfo, propertiesCopy);
+                ExternalDataUtils.setExternalDataProjectionInfo(externalProjectionInfo, properties);
             } catch (IOException e) {
                 throw new IllegalStateException(e);
             }
         }
-        return propertiesCopy;
-    }
 
-    private Map<String, String> addSubPath(Map<String, Serializable> dataSourceProps, Map<String, String> properties) {
-        Serializable subPath = dataSourceProps.get(SUBPATH);
-        if (!(subPath instanceof String)) {
-            return properties;
-        }
-        Map<String, String> propertiesCopy = new HashMap<>(properties);
-        propertiesCopy.put(SUBPATH, (String) subPath);
-        return propertiesCopy;
+        return properties;
     }
 
     private int[] createFilterIndexes(List<LogicalVariable> filterVars, IOperatorSchema opSchema) {
@@ -223,5 +243,24 @@ public class DatasetDataSource extends DataSource {
     @Override
     public boolean isScanAccessPathALeaf() {
         return dataset.getDatasetType() == DatasetType.EXTERNAL;
+    }
+
+    public static void setExternalCollectionCompilerProperties(MetadataProvider metadataProvider,
+            Map<String, String> configuration) {
+        String deltaFileSplits =
+                (String) metadataProvider.getConfig().get(CompilerProperties.COMPILER_DELTALAKE_FILESPLITS_KEY);
+        if (deltaFileSplits != null) {
+            configuration.put(CompilerProperties.COMPILER_DELTALAKE_FILESPLITS_KEY, deltaFileSplits);
+        }
+        String parquetFileSplits =
+                (String) metadataProvider.getConfig().get(CompilerProperties.COMPILER_PARQUET_FILESPLITS_KEY);
+        if (parquetFileSplits != null) {
+            configuration.put(CompilerProperties.COMPILER_PARQUET_FILESPLITS_KEY, parquetFileSplits);
+        }
+        String hdfsSplitParallelism =
+                (String) metadataProvider.getConfig().get(CompilerProperties.COMPILER_HDFS_SPLIT_PARALLELISM_KEY);
+        if (hdfsSplitParallelism != null) {
+            configuration.put(CompilerProperties.COMPILER_HDFS_SPLIT_PARALLELISM_KEY, hdfsSplitParallelism);
+        }
     }
 }

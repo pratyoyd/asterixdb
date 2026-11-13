@@ -17,18 +17,21 @@
  * under the License.
  */
 
-use TinySocial;
-
-{
-  "t1": (select array_contains(t.`referred-topics`, "speed") from TweetMessages t order by t.tweetid),
-  "t2": (select array_contains([3,8,98,40], 8)),
-  "t3": (select array_contains([3,8,98,40], 40.0)),
-  "t4": (select array_contains([3,8,98,40], -3)),
-  "t5": (select array_contains([3,"sth",98,40], 98)),
-  "t6": (select array_contains([3,8,98,40], null)),
-  "t7": (select array_contains([3,8,98,40], missing)),
-  "t8": (select array_contains(missing, 6)),
-  "t9": (select array_contains(null, 6)),
-  "t10": (select array_contains(5, "sth")),
-  "t11": (select array_contains([5, {"id":77}, "sth"], "sth"))
-};
+USE TinySocial;
+FROM
+[
+  (select array_contains(t.`referred-topics`, "speed") from TweetMessages t order by t.tweetid),
+  (select array_contains([3,8,98,40], 8)),
+  (select array_contains([3,8,98,40], 40.0)),
+  (select array_contains([3,8,98,40], -3)),
+  (select array_contains([3,"sth",98,40], 98)),
+  (select array_contains([3,8,98,40], null)),
+  (select array_contains([3,8,98,40], missing)),
+  (select array_contains(missing, 6)),
+  (select array_contains(null, 6)),
+  (select array_contains(5, "sth")),
+  (select array_contains([5, {"id":77}, "sth"], "sth")),
+  (select array_contains([1, 2, null], 3)),
+  (select not array_contains([1, 2, null], 3))
+] AS t
+SELECT VALUE t;

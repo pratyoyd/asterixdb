@@ -22,15 +22,22 @@ import static org.apache.asterix.common.exceptions.ErrorCode.INVALID_REQ_PARAM_V
 import static org.apache.asterix.common.exceptions.ErrorCode.MAXIMUM_VALUE_ALLOWED_FOR_PARAM;
 import static org.apache.asterix.common.exceptions.ErrorCode.MINIMUM_VALUE_ALLOWED_FOR_PARAM;
 import static org.apache.asterix.common.exceptions.ErrorCode.PARAMETERS_REQUIRED;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_DELIMITER;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_ESCAPE;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_QUOTE;
+import static org.apache.asterix.common.utils.CSVConstants.KEY_RECORD_DELIMITER;
 import static org.apache.asterix.external.util.ExternalDataConstants.FORMAT_CSV;
 import static org.apache.asterix.external.util.ExternalDataConstants.FORMAT_JSON_LOWER_CASE;
 import static org.apache.asterix.external.util.ExternalDataConstants.FORMAT_PARQUET;
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_PARQUET_PAGE_SIZE;
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_PARQUET_ROW_GROUP_SIZE;
+import static org.apache.asterix.external.util.ExternalDataConstants.KEY_WRITER_MAX_FILE_SIZE;
 import static org.apache.asterix.external.util.ExternalDataConstants.KEY_WRITER_MAX_RESULT;
 import static org.apache.asterix.external.util.ExternalDataConstants.PARQUET_MAX_SCHEMAS_KEY;
 import static org.apache.asterix.external.util.ExternalDataConstants.PARQUET_MAX_SCHEMAS_MAX_VALUE;
 import static org.apache.asterix.external.util.ExternalDataConstants.PARQUET_WRITER_VERSION_KEY;
+import static org.apache.asterix.external.util.ExternalDataConstants.WRITER_MAX_FILE_SIZE_MAXIMUM;
+import static org.apache.asterix.external.util.ExternalDataConstants.WRITER_MAX_FILE_SIZE_MINIMUM;
 import static org.apache.asterix.external.util.ExternalDataConstants.WRITER_MAX_RESULT_MINIMUM;
 
 import java.util.List;
@@ -53,13 +60,14 @@ public class WriterValidationUtil {
         validateAdapter(adapter, supportedAdapters, sourceLocation);
         validateFormat(configuration, sourceLocation);
         validateMaxResult(configuration, sourceLocation);
+        validateMaxFileSize(configuration);
     }
 
     private static void validateQuote(Map<String, String> configuration, SourceLocation sourceLocation)
             throws CompilationException {
-        String quote = configuration.get(ExternalDataConstants.KEY_QUOTE);
+        String quote = configuration.get(KEY_QUOTE);
         if (quote != null && !ExternalDataConstants.WRITER_SUPPORTED_QUOTES.contains(quote.toLowerCase())) {
-            throw CompilationException.create(ErrorCode.INVALID_QUOTE, sourceLocation, quote,
+            throw CompilationException.create(ErrorCode.CSV_INVALID_QUOTE, sourceLocation, quote,
                     ExternalDataConstants.WRITER_SUPPORTED_QUOTES.toString());
         }
     }
@@ -179,6 +187,29 @@ public class WriterValidationUtil {
         }
     }
 
+    private static void validateMaxFileSize(Map<String, String> configuration) throws CompilationException {
+        String maxFileSize = configuration.get(KEY_WRITER_MAX_FILE_SIZE);
+        if (maxFileSize == null) {
+            return;
+        }
+
+        long value;
+        try {
+            value = StorageUtil.getByteValue(maxFileSize);
+        } catch (IllegalArgumentException e) {
+            throw CompilationException.create(ErrorCode.ILLEGAL_SIZE_PROVIDED, KEY_WRITER_MAX_FILE_SIZE, maxFileSize);
+        }
+
+        if (value < WRITER_MAX_FILE_SIZE_MINIMUM) {
+            throw new CompilationException(MINIMUM_VALUE_ALLOWED_FOR_PARAM, KEY_WRITER_MAX_FILE_SIZE,
+                    StorageUtil.toHumanReadableSize(WRITER_MAX_FILE_SIZE_MINIMUM), maxFileSize);
+        }
+        if (value > WRITER_MAX_FILE_SIZE_MAXIMUM) {
+            throw new CompilationException(MAXIMUM_VALUE_ALLOWED_FOR_PARAM, KEY_WRITER_MAX_FILE_SIZE,
+                    StorageUtil.toHumanReadableSize(WRITER_MAX_FILE_SIZE_MAXIMUM), maxFileSize);
+        }
+    }
+
     private static void validateMaxParquetSchemas(Map<String, String> configuration, SourceLocation sourceLocation)
             throws CompilationException {
         String maxResult = configuration.get(PARQUET_MAX_SCHEMAS_KEY);
@@ -251,28 +282,26 @@ public class WriterValidationUtil {
 
     private static void validateDelimiter(Map<String, String> configuration, SourceLocation sourceLocation)
             throws CompilationException {
-        // Will this affect backward compatibility
-        String delimiter = configuration.get(ExternalDataConstants.KEY_DELIMITER);
-        unitByteCondition(delimiter, sourceLocation, ErrorCode.INVALID_DELIMITER);
+        String delimiter = configuration.get(KEY_DELIMITER);
+        unitByteCondition(delimiter, KEY_DELIMITER, sourceLocation, ErrorCode.INVALID_DELIMITER);
     }
 
     private static void validateEscape(Map<String, String> configuration, SourceLocation sourceLocation)
             throws CompilationException {
-        // Will this affect backward compatibility?
-        String escape = configuration.get(ExternalDataConstants.KEY_ESCAPE);
-        unitByteCondition(escape, sourceLocation, ErrorCode.INVALID_ESCAPE);
+        String escape = configuration.get(KEY_ESCAPE);
+        unitByteCondition(escape, KEY_ESCAPE, sourceLocation, ErrorCode.CSV_INVALID_ESCAPE);
     }
 
     private static void validateRecordDelimiter(Map<String, String> configuration, SourceLocation sourceLocation)
             throws CompilationException {
-        String recordDel = configuration.get(ExternalDataConstants.KEY_RECORD_DELIMITER);
-        unitByteCondition(recordDel, sourceLocation, ErrorCode.INVALID_FORCE_QUOTE);
+        String recordDel = configuration.get(KEY_RECORD_DELIMITER);
+        unitByteCondition(recordDel, KEY_RECORD_DELIMITER, sourceLocation, ErrorCode.INVALID_CHAR_LENGTH);
     }
 
-    private static void unitByteCondition(String param, SourceLocation sourceLocation, ErrorCode errorCode)
-            throws CompilationException {
+    private static void unitByteCondition(String param, String paramName, SourceLocation sourceLocation,
+            ErrorCode errorCode) throws CompilationException {
         if (param != null && param.length() > 1 && param.getBytes().length != 1) {
-            throw CompilationException.create(errorCode, sourceLocation, param);
+            throw CompilationException.create(errorCode, sourceLocation, param, paramName);
         }
     }
 

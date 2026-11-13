@@ -24,6 +24,7 @@ import java.nio.ByteOrder;
 
 import org.apache.asterix.external.input.record.reader.hdfs.parquet.converter.AbstractComplexConverter;
 import org.apache.asterix.external.input.record.reader.hdfs.parquet.converter.ParquetConverterContext;
+import org.apache.asterix.external.util.TimestampZoneProjector;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
@@ -34,14 +35,15 @@ class TimestampConverter extends GenericPrimitiveConverter {
     private static final long NANOS_PER_MILLIS = 1000000L;
 
     private final LogicalTypeAnnotation.TimeUnit timeUnit;
-    private final int timeZoneOffset;
+    // Only a UTC-adjusted timestamp may be shifted; an INT96 or a local timestamp carries no zone.
+    private final boolean adjustedToUtc;
 
     TimestampConverter(AbstractComplexConverter parent, String stringFieldName, int index,
-            ParquetConverterContext context, LogicalTypeAnnotation.TimeUnit timeUnit, int timeZoneOffset)
+            ParquetConverterContext context, LogicalTypeAnnotation.TimeUnit timeUnit, boolean adjustedToUtc)
             throws IOException {
         super(ATypeTag.DATETIME, parent, stringFieldName, index, context);
         this.timeUnit = timeUnit;
-        this.timeZoneOffset = timeZoneOffset;
+        this.adjustedToUtc = adjustedToUtc;
     }
 
     /**
@@ -67,7 +69,13 @@ class TimestampConverter extends GenericPrimitiveConverter {
     @Override
     public void addLong(long value) {
         long convertedTime = TimeConverter.getConvertedTime(timeUnit, value);
-        context.serializeDateTime(convertedTime + timeZoneOffset, parent.getDataOutput());
+        // asked of the context rather than hard-coded: with timestamp-to-long the column maps to BIGINT and this
+        // converter is never built, so the answer cannot differ today -- but a second copy of the rule that can
+        // disagree with the reader is exactly what isShiftedOnRead exists to prevent
+        if (TimestampZoneProjector.isShiftedOnRead(adjustedToUtc, context.isTimestampAsLong())) {
+            convertedTime = context.applyTimeZone(convertedTime);
+        }
+        context.serializeDateTime(convertedTime, parent.getDataOutput());
         parent.addValue(this);
     }
 

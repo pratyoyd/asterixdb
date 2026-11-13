@@ -105,27 +105,32 @@ public class LSMInvertedIndexDiskComponent extends AbstractLSMWithBuddyDiskCompo
 
     @Override
     public void markAsValid(boolean persist, IPageWriteFailureCallback callback) throws HyracksDataException {
-        ComponentUtils.markAsValid(getBloomFilterBufferCache(), getBloomFilter(), persist);
+        try {
+            ComponentUtils.markAsValid(getBloomFilterBufferCache(), getBloomFilter(), persist);
 
-        // Flush inverted index second.
-        invIndex.getBufferCache().force((invIndex).getInvListsFileId(), true);
-        ComponentUtils.markAsValid(getMetadataHolder(), persist, callback);
-        if (!callback.hasFailed()) {
-            // Flush deleted keys BTree.
-            ComponentUtils.markAsValid(getBuddyIndex(), persist, callback);
-        }
-        if (callback.hasFailed()) {
-            throw HyracksDataException.create(callback.getFailure());
+            // Flush inverted index second.
+            invIndex.getBufferCache().force((invIndex).getInvListsFileId(), true);
+            ComponentUtils.markAsValid(getMetadataHolder(), persist, callback);
+            if (!callback.hasFailed()) {
+                // Flush deleted keys BTree.
+                ComponentUtils.markAsValid(getBuddyIndex(), persist, callback);
+            }
+            if (callback.hasFailed()) {
+                throw HyracksDataException.create(callback.getFailure());
+            }
+        } catch (HyracksDataException ex) {
+            returnPages();
+            throw ex;
         }
     }
 
     @Override
     protected IChainedComponentBulkLoader createMergeIndexBulkLoader(float fillFactor, boolean verifyInput,
             long numElementsHint, boolean checkIfEmptyIndex, IPageWriteCallback callback) throws HyracksDataException {
-        IIndexBulkLoader indexBulkLoader =
-                invIndex.createMergeBulkLoader(fillFactor, verifyInput, numElementsHint, checkIfEmptyIndex, callback);
-        IIndexBulkLoader buddyBulkLoader =
-                getBuddyIndex().createBulkLoader(fillFactor, verifyInput, numElementsHint, checkIfEmptyIndex, callback);
+        IIndexBulkLoader indexBulkLoader = invIndex.createMergeBulkLoader(fillFactor, verifyInput, numElementsHint,
+                checkIfEmptyIndex, sampler, callback);
+        IIndexBulkLoader buddyBulkLoader = getBuddyIndex().createBulkLoader(fillFactor, verifyInput, numElementsHint,
+                checkIfEmptyIndex, sampler, callback);
         return new IndexWithBuddyBulkLoader(indexBulkLoader, buddyBulkLoader);
     }
 }

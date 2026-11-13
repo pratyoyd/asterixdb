@@ -53,6 +53,7 @@ import org.apache.asterix.om.constants.AsterixConstantValue;
 import org.apache.asterix.om.functions.BuiltinFunctionInfo;
 import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.typecomputer.base.TypeCastUtils;
+import org.apache.asterix.om.typecomputer.impl.TypeComputeUtils;
 import org.apache.asterix.om.types.AOrderedListType;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.ATypeTag;
@@ -61,8 +62,8 @@ import org.apache.asterix.om.types.IAType;
 import org.apache.asterix.om.utils.NonTaggedFormatUtil;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalPlan;
@@ -194,7 +195,7 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
             metaType = (ARecordType) mp.findType(dataset.getMetaItemTypeDatabaseName(),
                     dataset.getMetaItemTypeDataverseName(), dataset.getMetaItemTypeName());
         }
-        recType = (ARecordType) mp.findTypeForDatasetWithoutType(recType, metaType, dataset);
+        recType = (ARecordType) mp.findTypeForDatasetWithoutType(recType, dataset);
 
         List<Index> indexes =
                 mp.getDatasetIndexes(dataset.getDatabaseName(), dataset.getDataverseName(), dataset.getDatasetName());
@@ -318,6 +319,44 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
                 case ARRAY:
                     // These details are handled separately for array indexes.
                     break;
+                case VTREE:
+                    // Vector indexes are handled similarly to VALUE indexes
+                    Index.VectorIndexDetails vectorIndexDetails2 = (Index.VectorIndexDetails) index.getIndexDetails();
+                    // Start with the vector field (key field)
+                    secondaryKeyFields = new ArrayList<>(vectorIndexDetails2.getKeyFieldNames());
+                    secondaryKeyTypes = new ArrayList<>();
+                    // Get actual type from schema for vector field (must match injectFieldAccessesForIndexes)
+                    List<String> vectorFieldName2 = secondaryKeyFields.get(0);
+                    IAType vectorFieldType2 = recType.getSubFieldType(vectorFieldName2);
+                    if (vectorFieldType2 == null) {
+                        vectorFieldType2 = BuiltinType.ANY;
+                    }
+                    secondaryKeyTypes.add(vectorFieldType2);
+                    secondaryKeySources = new ArrayList<>();
+                    secondaryKeySources.add(Index.RECORD_INDICATOR);
+
+                    // Add include fields after vector field
+                    // This produces tuple format: [vector, include_fields..., pk...]
+                    List<List<String>> includeFieldNames = vectorIndexDetails2.getIncludeFieldNames();
+                    List<Integer> includeFieldSources = vectorIndexDetails2.getIncludeFieldSourceIndicators();
+                    if (includeFieldNames != null && !includeFieldNames.isEmpty()) {
+                        for (int j = 0; j < includeFieldNames.size(); j++) {
+                            List<String> includeFieldName = includeFieldNames.get(j);
+                            secondaryKeyFields.add(includeFieldName);
+                            // Get actual type from schema (must match injectFieldAccessesForIndexes)
+                            IAType includeFieldType = recType.getSubFieldType(includeFieldName);
+                            if (includeFieldType == null) {
+                                includeFieldType = BuiltinType.ANY;
+                            }
+                            secondaryKeyTypes.add(includeFieldType);
+                            if (includeFieldSources != null && j < includeFieldSources.size()) {
+                                secondaryKeySources.add(includeFieldSources.get(j));
+                            } else {
+                                secondaryKeySources.add(Index.RECORD_INDICATOR);
+                            }
+                        }
+                    }
+                    break;
                 default:
                     continue;
             }
@@ -396,7 +435,7 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
                     IAType secondaryKeyType;
                     Pair<IAType, Boolean> keyPairType = Index.getNonNullableOpenFieldType(index,
                             secondaryKeyTypes.get(0), secondaryKeyFields.get(0), recType);
-                    secondaryKeyType = keyPairType.first;
+                    secondaryKeyType = keyPairType.getLeft();
 
                     List<Object> varTypes = new ArrayList<>();
                     varTypes.add(NonTaggedFormatUtil.getTokenType(secondaryKeyType));
@@ -539,7 +578,7 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
                 // Get type, dimensions and number of keys
                 Pair<IAType, Boolean> keyPairType = Index.getNonNullableOpenFieldType(index, secondaryKeyTypes.get(0),
                         secondaryKeyFields.get(0), recType);
-                IAType spatialType = keyPairType.first;
+                IAType spatialType = keyPairType.getLeft();
                 boolean isPointMBR =
                         spatialType.getTypeTag() == ATypeTag.POINT || spatialType.getTypeTag() == ATypeTag.POINT3D;
                 int dimension = NonTaggedFormatUtil.getNumDimensions(spatialType.getTypeTag());
@@ -584,7 +623,7 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
                 assignCoordinates.getInputs().add(new MutableObject<ILogicalOperator>(currentTop));
                 context.computeAndSetTypeEnvironmentForOperator(assignCoordinates);
                 replicateOutput = assignCoordinates;
-                boolean forceFilter = keyPairType.second;
+                boolean forceFilter = keyPairType.getRight();
                 Mutable<ILogicalExpression> filterExpression = createAnyUnknownFilterExpression(keyVarList,
                         context.getOutputTypeEnvironment(assignCoordinates), forceFilter);
                 AssignOperator originalAssignCoordinates = null;
@@ -801,7 +840,11 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
             throws AlgebricksException {
         if (recordExpr.getExpressionTag() == LogicalExpressionTag.VARIABLE) {
             IAType type = (IAType) typeEnvironment.getType(recordExpr);
-            return type != null && type.getTypeTag() == ATypeTag.OBJECT;
+            // the payload type can be missable, e.g. cast-lax() output for datasets with a meta part. a missing
+            // payload is the encoding for delete: the primary op emits a DELETE_EXISTING indicator, and on that
+            // indicator the secondary op only deletes the previous entry, so the unknown keys the field accesses
+            // produce for the new record are never inserted
+            return type != null && TypeComputeUtils.getActualType(type).getTypeTag() == ATypeTag.OBJECT;
         }
         return false;
     }
@@ -834,6 +877,45 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
                     skTypes = textIndexDetails.getKeyFieldTypes();
                     indicators = textIndexDetails.getKeyFieldSourceIndicators();
                     break;
+                case VTREE:
+                    Index.VectorIndexDetails vectorIndexDetails = (Index.VectorIndexDetails) index.getIndexDetails();
+                    // For vector indexes, get the vector field name
+                    skNames = new ArrayList<>(vectorIndexDetails.getKeyFieldNames());
+                    // For vector fields, try to get the actual type from the schema
+                    // If not available (open field), use ANY type for type inference
+                    skTypes = new ArrayList<>();
+                    List<String> vectorFieldName = skNames.get(0);
+                    IAType vectorFieldType = recType.getSubFieldType(vectorFieldName);
+                    if (vectorFieldType == null) {
+                        // Open field - use ANY type to allow runtime type inference
+                        vectorFieldType = BuiltinType.ANY;
+                    }
+                    skTypes.add(vectorFieldType);
+                    // Vector field is always from the record
+                    indicators = new ArrayList<>();
+                    indicators.add(Index.RECORD_INDICATOR);
+
+                    // Handle include fields
+                    List<List<String>> vectorIncludeFieldNames = vectorIndexDetails.getIncludeFieldNames();
+                    List<Integer> vectorIncludeFieldSources = vectorIndexDetails.getIncludeFieldSourceIndicators();
+                    if (vectorIncludeFieldNames != null && !vectorIncludeFieldNames.isEmpty()) {
+                        for (int j = 0; j < vectorIncludeFieldNames.size(); j++) {
+                            List<String> includeFieldName = vectorIncludeFieldNames.get(j);
+                            skNames.add(includeFieldName);
+                            // Get actual type from schema (not from index metadata which may be ANY)
+                            IAType includeFieldType = recType.getSubFieldType(includeFieldName);
+                            if (includeFieldType == null) {
+                                includeFieldType = BuiltinType.ANY;
+                            }
+                            skTypes.add(includeFieldType);
+                            if (vectorIncludeFieldSources != null && j < vectorIncludeFieldSources.size()) {
+                                indicators.add(vectorIncludeFieldSources.get(j));
+                            } else {
+                                indicators.add(Index.RECORD_INDICATOR);
+                            }
+                        }
+                    }
+                    break;
                 default:
                     throw new CompilationException(ErrorCode.COMPILATION_UNKNOWN_INDEX_TYPE,
                             String.valueOf(index.getIndexType()));
@@ -860,7 +942,7 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
 
                 AbstractFunctionCallExpression theFieldAccessFunc;
                 LogicalVariable fieldVar = context.newVar();
-                if (fieldType == null && !ATypeTag.ANY.equals(skType.getTypeTag())) {
+                if (fieldType == null) {
                     // Open field. must prevent inlining to maintain the cast before the primaryOp and
                     // make handling of records with incorrect value type for this field easier and cleaner
                     context.addNotToBeInlinedVar(fieldVar);
@@ -871,6 +953,13 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
                     theFieldAccessFunc = createCastExpression(index, skType, fieldAccessFunc, sourceLoc,
                             indexFieldId.funId, indexFieldId.extraArg);
                 } else {
+                    // sanity check. (heterogeneous) index keys with type ANY should not be on typed fields
+                    ATypeTag skTag = skType.getTypeTag();
+                    if (ATypeTag.ANY.equals(skTag)) {
+                        throw new CompilationException(ErrorCode.COMPILATION_ILLEGAL_STATE, sourceLoc,
+                                "type mismatch for field " + indexFieldId.fieldName + ". secondary key type " + skTag
+                                        + ", field type " + fieldType.getTypeTag());
+                    }
                     // Get the desired field position
                     int pos = indexFieldId.fieldName.size() > 1 ? -1
                             : sourceType.getFieldIndex(indexFieldId.fieldName.get(0));
@@ -903,23 +992,24 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
     private static IndexFieldId createIndexFieldId(Index index, List<String> skName, IAType skType, Integer skSrc,
             ARecordType sourceType, SourceLocation srcLoc) throws AlgebricksException {
         IAType fieldType = sourceType.getSubFieldType(skName);
-        FunctionIdentifier skFun = null;
-        IAObject fmtArg = null;
         Pair<FunctionIdentifier, IAObject> castExpr;
         if (ATypeTag.ANY.equals(skType.getTypeTag())) {
-            return new IndexFieldId(skSrc, skName, skType.getTypeTag(), skFun, fmtArg);
+            // heterogeneous index needs to make sure the keys are in the open format (for records & lists values)
+            return new IndexFieldId(skSrc, skName, skType.getTypeTag(), BuiltinFunctions.CAST_TYPE, null);
         }
+        FunctionIdentifier skFun = null;
+        IAObject fmtArg = null;
         if (fieldType == null) {
             // open field
             castExpr = getCastExpression(index, skType, srcLoc);
-            skFun = castExpr.first;
-            fmtArg = castExpr.second;
+            skFun = castExpr.getLeft();
+            fmtArg = castExpr.getRight();
         } else {
             // closed field
             if (IndexUtil.castDefaultNull(index)) {
                 castExpr = IndexUtil.getTypeConstructorDefaultNull(index, skType, srcLoc);
-                skFun = castExpr.first;
-                fmtArg = castExpr.second;
+                skFun = castExpr.getLeft();
+                fmtArg = castExpr.getRight();
             }
         }
         return new IndexFieldId(skSrc, skName, skType.getTypeTag(), skFun, fmtArg);
@@ -930,9 +1020,9 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
         if (IndexUtil.castDefaultNull(index)) {
             return IndexUtil.getTypeConstructorDefaultNull(index, skType, srcLoc);
         } else if (index.isEnforced()) {
-            return new Pair<>(BuiltinFunctions.CAST_TYPE, null);
+            return Pair.of(BuiltinFunctions.CAST_TYPE, null);
         } else {
-            return new Pair<>(BuiltinFunctions.CAST_TYPE_LAX, null);
+            return Pair.of(BuiltinFunctions.CAST_TYPE_LAX, null);
         }
     }
 
@@ -1054,10 +1144,34 @@ public class IntroduceSecondaryIndexInsertDeleteRule implements IAlgebraicRewrit
                 boolean excludeUnknown = indexDetails.getExcludeUnknownKey().getOrElse(false);
                 return createAllUnknownFilterExpression(secondaryKeyVars, typeEnv, forceFilter, excludeUnknown);
             }
+        } else if (indexType == IndexType.VTREE) {
+            return createUsableVectorFilterExpression(index, secondaryKeyVars);
         } else {
             // inverted index && array index
             return createAnyUnknownFilterExpression(secondaryKeyVars, typeEnv, forceFilter);
         }
+    }
+
+    /**
+     * Builds {@code is-vector(vector, dimension)} over a VTREE index's vector key. A record that fails it
+     * is left out of that index and stays in the collection.
+     */
+    private Mutable<ILogicalExpression> createUsableVectorFilterExpression(Index index,
+            List<LogicalVariable> secondaryKeyVars) {
+        if (secondaryKeyVars.isEmpty()) {
+            return null;
+        }
+        // Element 0 is the vector and the rest are INCLUDE fields, which the index stores
+        // unconstrained and this predicate therefore ignores.
+        VariableReferenceExpression vectorVarRef = new VariableReferenceExpression(secondaryKeyVars.get(0));
+        vectorVarRef.setSourceLocation(sourceLoc);
+        int dimension = ((Index.VectorIndexDetails) index.getIndexDetails()).getVectorParameters().getDimension();
+        ScalarFunctionCallExpression isVectorFuncExpr = new ScalarFunctionCallExpression(
+                FunctionUtil.getFunctionInfo(BuiltinFunctions.IS_VECTOR_WITH_DIMENSION),
+                new MutableObject<ILogicalExpression>(vectorVarRef), new MutableObject<ILogicalExpression>(
+                        new ConstantExpression(new AsterixConstantValue(new AInt32(dimension)))));
+        isVectorFuncExpr.setSourceLocation(sourceLoc);
+        return new MutableObject<>(isVectorFuncExpr);
     }
 
     private Mutable<ILogicalExpression> createAnyUnknownFilterExpression(List<LogicalVariable> secondaryKeyVars,

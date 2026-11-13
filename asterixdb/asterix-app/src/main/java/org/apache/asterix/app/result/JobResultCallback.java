@@ -59,6 +59,14 @@ public class JobResultCallback implements IJobResultCallback {
         }
     }
 
+    @Override
+    public void notifyResultSweep(JobId jobId, ResultJobRecord resultJobRecord) {
+        String requestId = resultJobRecord.getRequestId();
+        if (requestId != null) {
+            appCtx.getRequestTracker().notifyResultSweep(jobId, requestId);
+        }
+    }
+
     private void updateResultMetadata(JobId jobId, ResultJobRecord resultJobRecord) {
         final ResultSetMetaData resultSetMetaData = resultJobRecord.getResultSetMetaData();
         if (resultSetMetaData == null) {
@@ -66,6 +74,8 @@ public class JobResultCallback implements IJobResultCallback {
         }
         final ResultMetadata metadata = (ResultMetadata) resultSetMetaData.getMetadata();
         metadata.setJobDuration(resultJobRecord.getJobDuration());
+        metadata.setResultCount(resultJobRecord.getResultCount());
+        metadata.setResultSetOrdered(resultJobRecord.isResultSetOrdered());
         aggregateJobStats(jobId, metadata);
     }
 
@@ -89,7 +99,7 @@ public class JobResultCallback implements IJobResultCallback {
                 final Collection<TaskProfile> jobletTasksProfile = jp.getTaskProfiles().values();
                 for (TaskProfile tp : jobletTasksProfile) {
                     processedObjects += tp.getStatsCollector().getAggregatedStats().getInputTupleCounter().get();
-                    pagesRead += tp.getStatsCollector().getAggregatedStats().getPageReads().get();
+                    pagesRead += tp.getStatsCollector().getAggregatedStats().getPageReadCounter().get();
                     nonPagedReads += tp.getStatsCollector().getAggregatedStats().coldReadCounter().get();
                     cloudReadRequestsCount +=
                             tp.getStatsCollector().getAggregatedStats().cloudReadRequestCounter().get();
@@ -105,7 +115,8 @@ public class JobResultCallback implements IJobResultCallback {
                     }
                 }
             }
-            metadata.setQueueWaitTimeInNanos(TimeUnit.MILLISECONDS.toNanos(run.getQueueWaitTimeInMillis()));
+            metadata.setEndTimeMillis(System.currentTimeMillis());
+            metadata.setQueueWaitTimeNanos(TimeUnit.MILLISECONDS.toNanos(run.getQueueWaitTime()));
         }
         metadata.setProcessedObjects(processedObjects);
         metadata.setBufferCacheHitRatio(pagesRead > 0 ? (pagesRead - nonPagedReads) / (double) pagesRead : Double.NaN);

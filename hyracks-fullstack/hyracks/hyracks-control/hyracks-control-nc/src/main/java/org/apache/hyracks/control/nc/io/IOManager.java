@@ -174,6 +174,22 @@ public class IOManager implements IIOManager {
         return fHandle;
     }
 
+    /**
+     * Reopen a handle whose descriptor was closed, in the mode it was opened in. Unlike opening, this does not check
+     * the mode, which for writing would create the file empty if it has since been removed, so the file must still
+     * exist.
+     *
+     * @param fHandle the handle to reopen
+     * @throws HyracksDataException if the file no longer exists or cannot be opened
+     */
+    public void reopen(IFileHandle fHandle) throws HyracksDataException {
+        FileReference fileRef = fHandle.getFileReference();
+        if (!fileRef.getFile().exists()) {
+            throw HyracksDataException.create(ErrorCode.FILE_DOES_NOT_EXIST, fileRef.getAbsolutePath());
+        }
+        ((FileHandle) fHandle).ensureOpen();
+    }
+
     @Override
     public int syncWrite(IFileHandle fHandle, long offset, ByteBuffer data) throws HyracksDataException {
         IoRequest req = asyncWrite(fHandle, offset, data);
@@ -262,6 +278,22 @@ public class IOManager implements IIOManager {
         } catch (IOException e) {
             throw HyracksDataException.create(e);
         }
+    }
+
+    /**
+     * Writes to local storage only and skips any long-term (cloud) upload, which the cloud IO managers
+     * implement by overriding both overloads. Multi-pass writers use it to publish a page locally and upload
+     * it once its final bytes are known, since the cloud writer is append-only. It is a method here because
+     * its caller, {@code LocalOnlyWriteContext}, cannot depend on {@code hyracks-cloud}. Goes through
+     * {@link #syncWrite} so an interrupt on the calling thread does not close the file channel.
+     */
+    public int localWriteOnly(IFileHandle fHandle, long offset, ByteBuffer data) throws HyracksDataException {
+        return syncWrite(fHandle, offset, data);
+    }
+
+    /** Gathering-write counterpart of {@link #localWriteOnly(IFileHandle, long, ByteBuffer)}. */
+    public long localWriteOnly(IFileHandle fHandle, long offset, ByteBuffer[] data) throws HyracksDataException {
+        return syncWrite(fHandle, offset, data);
     }
 
     /**
@@ -382,7 +414,7 @@ public class IOManager implements IIOManager {
     }
 
     private File getWorkspaceFolder(IODeviceHandle dev) {
-        return new File(dev.getMount(), dev.getWorkspace());
+        return Path.of(dev.getMount().getPath(), dev.getWorkspace()).normalize().toFile();
     }
 
     @Override
@@ -433,7 +465,7 @@ public class IOManager implements IIOManager {
     }
 
     @Override
-    public FileReference resolve(String path) throws HyracksDataException {
+    public FileReference resolve(String path) {
         return new FileReference(deviceComputer.resolve(path, getIODevices()), path);
     }
 
@@ -491,8 +523,12 @@ public class IOManager implements IIOManager {
 
             @Override
             public int write(ByteBuffer src) throws IOException {
+                int origPos = src.position();
                 int written = IOManager.this.syncWrite(fHandle, position, src);
                 position += written;
+                if (src.position() < origPos + written) {
+                    src.position(origPos + written);
+                }
                 return written;
             }
 

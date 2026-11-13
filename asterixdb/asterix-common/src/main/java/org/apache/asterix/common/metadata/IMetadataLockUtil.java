@@ -52,9 +52,12 @@ public interface IMetadataLockUtil {
             String metaItemTypeDatabase, DataverseName metaItemTypeDataverseName, String metaItemTypeName,
             boolean metaItemTypeAnonymous, String nodeGroupName, String compactionPolicyName,
             boolean isDefaultCompactionPolicy, DatasetConfig.DatasetType datasetType, Object datasetDetails,
-            IMetadataProvider metadataProvider) throws AlgebricksException;
+            IMetadataProvider metadataProvider, String catalogName) throws AlgebricksException;
 
     void dropDatasetBegin(IMetadataLockManager lockManager, LockList locks, String database,
+            DataverseName dataverseName, String datasetName) throws AlgebricksException;
+
+    void truncateDatasetBegin(IMetadataLockManager lockManager, LockList locks, String database,
             DataverseName dataverseName, String datasetName) throws AlgebricksException;
 
     void modifyDatasetBegin(IMetadataLockManager lockManager, LockList locks, String database,
@@ -167,4 +170,18 @@ public interface IMetadataLockUtil {
 
     void disconnectFeedBegin(IMetadataLockManager lockManager, LockList locks, String database,
             DataverseName dataverseName, String datasetName, String feedName) throws AlgebricksException;
+
+    // catalog helpers
+    void createCatalogBegin(IMetadataLockManager lockManager, LockList locks, String catalogName)
+            throws AlgebricksException;
+
+    void dropCatalogBegin(IMetadataLockManager lockManager, LockList locks, String catalogName)
+            throws AlgebricksException;
+
+    // CRS helpers
+    void createCRSBegin(IMetadataLockManager lockManager, LockList locks, String database, DataverseName dataverseName,
+            int srid) throws AlgebricksException;
+
+    void dropCRSBegin(IMetadataLockManager lockManager, LockList locks, String database, DataverseName dataverseName,
+            int srid) throws AlgebricksException;
 }

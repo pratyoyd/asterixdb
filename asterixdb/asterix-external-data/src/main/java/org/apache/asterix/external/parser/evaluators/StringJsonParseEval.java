@@ -22,6 +22,7 @@ import static org.apache.asterix.om.functions.BuiltinFunctions.STRING_PARSE_JSON
 
 import java.io.DataOutput;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.external.parser.JSONDataParser;
@@ -30,8 +31,8 @@ import org.apache.asterix.external.provider.context.DefaultExternalRuntimeDataCo
 import org.apache.asterix.om.exceptions.ExceptionUtil;
 import org.apache.asterix.om.types.ATypeTag;
 import org.apache.asterix.runtime.evaluators.functions.PointableHelper;
-import org.apache.hyracks.algebricks.runtime.base.IEvaluatorContext;
 import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.IWarningCollector;
 import org.apache.hyracks.api.exceptions.SourceLocation;
@@ -42,8 +43,12 @@ import org.apache.hyracks.data.std.primitive.VoidPointable;
 import org.apache.hyracks.data.std.util.ArrayBackedValueStorage;
 import org.apache.hyracks.data.std.util.ByteArrayAccessibleInputStream;
 import org.apache.hyracks.dataflow.common.data.accessors.IFrameTupleReference;
+import org.apache.hyracks.util.LogRedactionUtil;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 public class StringJsonParseEval implements IScalarEvaluator {
+    private static final Logger LOGGER = LogManager.getLogger();
     private final IEvaluatorContext ctx;
     private final IScalarEvaluator inputEval;
     private final JSONDataParser parser;
@@ -53,6 +58,12 @@ public class StringJsonParseEval implements IScalarEvaluator {
     private final ByteArrayAccessibleInputStream inputStream;
     private final ArrayBackedValueStorage resultStorage;
     private final DataOutput out;
+
+    private enum ParseOutcome {
+        SUCCESS,
+        EOF,
+        ERROR
+    }
 
     public StringJsonParseEval(IEvaluatorContext ctx, IScalarEvaluator inputEval, SourceLocation sourceLocation)
             throws IOException {
@@ -82,22 +93,30 @@ public class StringJsonParseEval implements IScalarEvaluator {
         if (bytes[offset] == ATypeTag.SERIALIZED_STRING_TYPE_TAG) {
             utf8Val.set(bytes, offset + 1, inputVal.getLength() - 1);
             inputStream.setContent(bytes, utf8Val.getCharStartOffset(), utf8Val.getUTF8Length());
-            resultStorage.reset();
-            try {
-                if (parser.parseAnyValue(out)) {
-                    result.set(resultStorage);
+            ParseOutcome outcome = tryParseAndSetResult(result);
+            if (outcome == ParseOutcome.SUCCESS) {
+                return;
+            }
+            resetParser();
+            if (outcome == ParseOutcome.ERROR
+                    && containsCesu8Surrogate(bytes, utf8Val.getCharStartOffset(), utf8Val.getUTF8Length())) {
+                // AsterixDB stores strings in CESU-8 (surrogate pairs encoded as two 3-byte sequences).
+                // Jackson 2.20+ rejects raw surrogate bytes in UTF-8 streams per RFC 3629.
+                // If the failure looks like a surrogate encoding issue, decode via CESU-8 to a Java
+                // String, re-encode as proper UTF-8, and retry once before treating as a real error.
+                byte[] utf8Bytes = utf8Val.toString().getBytes(StandardCharsets.UTF_8);
+                inputStream.setContent(utf8Bytes, 0, utf8Bytes.length);
+                outcome = tryParseAndSetResult(result);
+                if (outcome == ParseOutcome.SUCCESS) {
                     return;
-                } else {
-                    //Reset the parser: EOF was encountered
-                    resetParser();
                 }
-            } catch (HyracksDataException e) {
+                resetParser();
+            }
+            if (outcome == ParseOutcome.ERROR) {
                 IWarningCollector warningCollector = ctx.getWarningCollector();
                 if (warningCollector.shouldWarn()) {
                     warningCollector.warn(Warning.of(sourceLocation, ErrorCode.RECORD_READER_MALFORMED_INPUT_STREAM));
                 }
-                //Reset the parser: An error was encountered.
-                resetParser();
             }
         } else {
             ExceptionUtil.warnTypeMismatch(ctx, sourceLocation, STRING_PARSE_JSON, bytes[offset], 0, ATypeTag.STRING);
@@ -106,11 +125,45 @@ public class StringJsonParseEval implements IScalarEvaluator {
         PointableHelper.setNull(result);
     }
 
+    /**
+     * Attempts to parse the current inputStream content.
+     * Returns {@link ParseOutcome#SUCCESS} and sets {@code result} on success,
+     * {@link ParseOutcome#EOF} if the input was empty, or {@link ParseOutcome#ERROR} on a parse failure.
+     */
+    private ParseOutcome tryParseAndSetResult(IPointable result) throws HyracksDataException {
+        resultStorage.reset();
+        try {
+            if (parser.parseAnyValue(out)) {
+                result.set(resultStorage);
+                return ParseOutcome.SUCCESS;
+            }
+            return ParseOutcome.EOF;
+        } catch (HyracksDataException e) {
+            LOGGER.debug("failed to parse json value: {}", LogRedactionUtil.userData(e.toString()));
+            return ParseOutcome.ERROR;
+        }
+    }
+
     private void resetParser() throws HyracksDataException {
         try {
             parser.reset(inputStream);
         } catch (IOException e) {
             throw HyracksDataException.create(e);
         }
+    }
+
+    /**
+     * Returns true if the byte range contains a CESU-8 encoded surrogate (0xED [0xA0-0xBF] ...).
+     * Such sequences are valid CESU-8 but invalid UTF-8, and are rejected by Jackson 2.20+.
+     * Scanning for 0xED is cheap and covers the vast majority of inputs with zero allocation.
+     */
+    private static boolean containsCesu8Surrogate(byte[] bytes, int offset, int length) {
+        int end = offset + length;
+        for (int i = offset; i < end - 1; i++) {
+            if ((bytes[i] & 0xFF) == 0xED && (bytes[i + 1] & 0xF0) == 0xA0) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -18,7 +18,7 @@
  */
 package org.apache.asterix.cloud.writer;
 
-import java.io.IOException;
+import java.util.Optional;
 
 import org.apache.asterix.cloud.clients.ICloudClient;
 import org.apache.asterix.cloud.clients.ICloudGuardian;
@@ -27,21 +27,24 @@ import org.apache.asterix.cloud.clients.aws.s3.S3CloudClient;
 import org.apache.asterix.common.api.IApplicationContext;
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.external.util.ExternalDataConstants;
-import org.apache.asterix.external.util.aws.s3.S3AuthUtils;
+import org.apache.asterix.external.util.aws.s3.S3Constants;
+import org.apache.asterix.external.util.aws.s3.S3Utils;
 import org.apache.asterix.runtime.writer.ExternalFileWriterConfiguration;
 import org.apache.asterix.runtime.writer.IExternalFileWriter;
 import org.apache.asterix.runtime.writer.IExternalFileWriterFactory;
 import org.apache.asterix.runtime.writer.IExternalFileWriterFactoryProvider;
 import org.apache.asterix.runtime.writer.IExternalPrinter;
 import org.apache.asterix.runtime.writer.IExternalPrinterFactory;
+import org.apache.hyracks.algebricks.runtime.evaluators.EvaluatorContext;
+import org.apache.hyracks.api.context.IEvaluatorContext;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.exceptions.HyracksDataException;
 import org.apache.hyracks.api.exceptions.IWarningCollector;
+import org.apache.hyracks.api.util.ExceptionUtils;
 
 import software.amazon.awssdk.core.exception.SdkException;
-import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 
-public final class S3ExternalFileWriterFactory extends AbstractCloudExternalFileWriterFactory {
+public final class S3ExternalFileWriterFactory extends AbstractCloudExternalFileWriterFactory<SdkException> {
     private static final long serialVersionUID = 4551318140901866805L;
     static final char SEPARATOR = '/';
     public static final IExternalFileWriterFactoryProvider PROVIDER = new IExternalFileWriterFactoryProvider() {
@@ -64,26 +67,32 @@ public final class S3ExternalFileWriterFactory extends AbstractCloudExternalFile
     @Override
     ICloudClient createCloudClient(IApplicationContext appCtx) throws CompilationException {
         S3ClientConfig config = S3ClientConfig.of(configuration, writeBufferSize);
-        return new S3CloudClient(config, S3AuthUtils.buildAwsS3Client(appCtx, configuration),
+        return new S3CloudClient(config, S3Utils.buildClient(appCtx, configuration),
                 ICloudGuardian.NoOpCloudGuardian.INSTANCE);
     }
 
     @Override
-    boolean isNoContainerFoundException(IOException e) {
-        return e.getCause() instanceof NoSuchBucketException;
+    String getAdapterName() {
+        return ExternalDataConstants.KEY_ADAPTER_NAME_AWS_S3;
     }
 
     @Override
-    boolean isSdkException(Throwable e) {
-        return e instanceof SdkException;
+    int getPathMaxLengthInBytes() {
+        return S3Constants.MAX_KEY_LENGTH_IN_BYTES;
+    }
+
+    @Override
+    Optional<SdkException> getSdkException(Throwable ex) {
+        return ExceptionUtils.getCauseOfType(ex, SdkException.class);
     }
 
     @Override
     public IExternalFileWriter createWriter(IHyracksTaskContext context, IExternalPrinterFactory printerFactory)
             throws HyracksDataException {
+        IEvaluatorContext evaluatorContext = new EvaluatorContext(context);
         buildClient(((IApplicationContext) context.getJobletContext().getServiceContext().getApplicationContext()));
         String bucket = configuration.get(ExternalDataConstants.CONTAINER_NAME_FIELD_NAME);
-        IExternalPrinter printer = printerFactory.createPrinter();
+        IExternalPrinter printer = printerFactory.createPrinter(evaluatorContext);
         IWarningCollector warningCollector = context.getWarningCollector();
         return new S3ExternalFileWriter(printer, cloudClient, bucket, staticPath == null, warningCollector,
                 pathSourceLocation);

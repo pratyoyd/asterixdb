@@ -25,6 +25,7 @@ import static org.apache.asterix.api.http.server.ServletConstants.HYRACKS_CONNEC
 import static org.apache.asterix.common.api.IClusterManagementWork.ClusterState.ACTIVE;
 import static org.apache.asterix.common.api.IClusterManagementWork.ClusterState.REBALANCE_REQUIRED;
 import static org.apache.asterix.common.api.IClusterManagementWork.ClusterState.SHUTTING_DOWN;
+import static org.apache.hyracks.api.util.JavaSerializationUtils.registerReplacement;
 import static org.apache.hyracks.control.common.controllers.ControllerConfig.Option.CLOUD_DEPLOYMENT;
 
 import java.io.File;
@@ -49,6 +50,7 @@ import org.apache.asterix.api.http.server.ClusterControllerDetailsApiServlet;
 import org.apache.asterix.api.http.server.ConnectorApiServlet;
 import org.apache.asterix.api.http.server.DiagnosticsApiServlet;
 import org.apache.asterix.api.http.server.NodeControllerDetailsApiServlet;
+import org.apache.asterix.api.http.server.PlanCacheApiServlet;
 import org.apache.asterix.api.http.server.QueryResultApiServlet;
 import org.apache.asterix.api.http.server.QueryServiceServlet;
 import org.apache.asterix.api.http.server.QueryStatusApiServlet;
@@ -120,6 +122,7 @@ import org.apache.hyracks.api.job.JobFlag;
 import org.apache.hyracks.api.job.resource.IJobCapacityController;
 import org.apache.hyracks.api.lifecycle.LifeCycleComponentManager;
 import org.apache.hyracks.api.result.IJobResultCallback;
+import org.apache.hyracks.api.util.JavaSerializationUtils.SerializableExceptionProxy;
 import org.apache.hyracks.control.cc.BaseCCApplication;
 import org.apache.hyracks.control.cc.ClusterControllerService;
 import org.apache.hyracks.control.common.controllers.CCConfig;
@@ -136,6 +139,12 @@ import org.apache.hyracks.util.LoggingConfigUtil;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.projectnessie.client.http.HttpClientException;
+import org.projectnessie.client.rest.NessieServiceException;
+import org.projectnessie.error.BaseNessieClientServerException;
+
+import com.azure.storage.blob.models.BlobStorageException;
+import com.azure.storage.file.datalake.models.DataLakeStorageException;
 
 public class CCApplication extends BaseCCApplication {
 
@@ -154,6 +163,15 @@ public class CCApplication extends BaseCCApplication {
         ccServiceCtx.setThreadFactory(
                 new AsterixThreadFactory(ccServiceCtx.getThreadFactory(), new LifeCycleComponentManager()));
         validateEnvironment();
+        registerSerializationReplacements();
+    }
+
+    private void registerSerializationReplacements() {
+        registerReplacement(BlobStorageException.class, SerializableExceptionProxy::new);
+        registerReplacement(DataLakeStorageException.class, SerializableExceptionProxy::new);
+        registerReplacement(BaseNessieClientServerException.class, SerializableExceptionProxy::new);
+        registerReplacement(NessieServiceException.class, SerializableExceptionProxy::new);
+        registerReplacement(HttpClientException.class, SerializableExceptionProxy::new);
     }
 
     @Override
@@ -170,7 +188,8 @@ public class CCApplication extends BaseCCApplication {
         String strIP = ccServiceCtx.getCCContext().getClusterControllerInfo().getClientNetAddress();
         int port = ccServiceCtx.getCCContext().getClusterControllerInfo().getClientNetPort();
         hcc = new HyracksConnection(strIP, port,
-                ccServiceCtx.getControllerService().getNetworkSecurityManager().getSocketChannelFactory());
+                ccServiceCtx.getControllerService().getNetworkSecurityManager().getSocketChannelFactory(),
+                ccServiceCtx.getControllerService().getExecutor());
         MetadataBuiltinFunctions.init();
         ReplicationProperties repProp =
                 new ReplicationProperties(PropertiesAccessor.getInstance(ccServiceCtx.getAppConfig()));
@@ -300,6 +319,7 @@ public class CCApplication extends BaseCCApplication {
     public void stop() throws Exception {
         LOGGER.info("Stopping Asterix cluster controller");
         super.stop();
+        webManager.closeChannels(); // stop accepting new requests
         appCtx.getClusterStateManager().setState(SHUTTING_DOWN);
         ((ActiveNotificationHandler) appCtx.getActiveNotificationHandler()).stop();
         AsterixStateProxy.unregisterRemoteObject();
@@ -339,6 +359,7 @@ public class CCApplication extends BaseCCApplication {
         addServlet(jsonAPIServer, Servlets.CONNECTOR);
         addServlet(jsonAPIServer, Servlets.SHUTDOWN);
         addServlet(jsonAPIServer, Servlets.VERSION);
+        addServlet(jsonAPIServer, Servlets.PLAN_CACHE);
         addServlet(jsonAPIServer, Servlets.CLUSTER_STATE);
         addServlet(jsonAPIServer, Servlets.REBALANCE);
         addServlet(jsonAPIServer, Servlets.CLUSTER_STATE_NODE_DETAIL); // must not precede add of CLUSTER_STATE
@@ -385,6 +406,8 @@ public class CCApplication extends BaseCCApplication {
                 return new ShutdownApiServlet(appCtx, ctx, paths);
             case Servlets.VERSION:
                 return new VersionApiServlet(ctx, paths);
+            case Servlets.PLAN_CACHE:
+                return new PlanCacheApiServlet(ctx, paths);
             case Servlets.CLUSTER_STATE:
                 return new ClusterApiServlet(appCtx, ctx, paths);
             case Servlets.CLUSTER_STATE_NODE_DETAIL:

@@ -20,6 +20,7 @@ package org.apache.hyracks.util;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.StandardSocketOptions;
 import java.net.URI;
@@ -39,6 +40,8 @@ import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.conn.util.InetAddressUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+
+import com.google.common.net.InetAddresses;
 
 public class NetworkUtil {
 
@@ -180,6 +183,10 @@ public class NetworkUtil {
         }
     }
 
+    public static String extractHostPort(URI uri) {
+        return toHostPort(uri.getHost(), uri.getPort());
+    }
+
     public static String encodeIPv6LiteralHost(String hostname) {
         return InetAddressUtils.isIPv6Address(hostname) ? "[" + hostname + "]" : hostname;
     }
@@ -228,6 +235,24 @@ public class NetworkUtil {
     }
 
     public static InetSocketAddress toInetSocketAddress(HttpHost httpHost) {
-        return new InetSocketAddress(httpHost.getAddress(), httpHost.getPort());
+        // HttpHost.create(String) leaves the resolved InetAddress null; new InetSocketAddress((InetAddress) null, ...)
+        // would yield the wildcard 0.0.0.0, so fall back to resolving the host name in that case.
+        InetAddress address = httpHost.getAddress();
+        return address != null ? new InetSocketAddress(address, httpHost.getPort())
+                : toInetSocketAddress(httpHost.getHostName(), httpHost.getPort());
     }
+
+    /**
+     * Returns {@code true} if the given hostname string is an IP address literal (IPv4 or IPv6),
+     * rather than a DNS name.
+     */
+    public static boolean isIpLiteral(String host) {
+        if (host == null || host.isEmpty()) {
+            return false;
+        }
+        // Strip IPv6 brackets if present
+        String bare = host.charAt(0) == '[' ? host.substring(1, host.length() - 1) : host;
+        return InetAddresses.isInetAddress(bare);
+    }
+
 }

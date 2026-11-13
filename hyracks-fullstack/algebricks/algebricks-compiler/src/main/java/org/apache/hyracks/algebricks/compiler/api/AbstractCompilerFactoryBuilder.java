@@ -22,9 +22,9 @@ import java.util.List;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksAbsolutePartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IConflictingTypeResolver;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IExpressionEvalSizeComputer;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IExpressionRuntimeProvider;
@@ -32,6 +32,7 @@ import org.apache.hyracks.algebricks.core.algebra.expressions.IExpressionTypeCom
 import org.apache.hyracks.algebricks.core.algebra.expressions.IMergeAggregationExpressionFactory;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IMissableTypeComputer;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IPartialAggregationTypeComputer;
+import org.apache.hyracks.algebricks.core.jobgen.impl.ICompilationContext;
 import org.apache.hyracks.algebricks.core.rewriter.base.AbstractRuleController;
 import org.apache.hyracks.algebricks.core.rewriter.base.IAlgebraicRewriteRule;
 import org.apache.hyracks.algebricks.core.rewriter.base.IRuleSetKind;
@@ -57,6 +58,7 @@ public abstract class AbstractCompilerFactoryBuilder {
     protected Supplier<List<Pair<AbstractRuleController, List<IAlgebraicRewriteRule>>>> logicalRewrites;
     protected Function<IRuleSetKind, List<Pair<AbstractRuleController, List<IAlgebraicRewriteRule>>>> logicalRewritesByKind;
     protected Supplier<List<Pair<AbstractRuleController, List<IAlgebraicRewriteRule>>>> physicalRewrites;
+    protected Function<IRuleSetKind, List<Pair<AbstractRuleController, List<IAlgebraicRewriteRule>>>> physicalRewritesByKind;
     protected ITypeTraitProvider typeTraitProvider;
     protected ISerializerDeserializerProvider serializerDeserializerProvider;
     protected IBinaryHashFunctionFactoryProvider hashFunctionFactoryProvider;
@@ -83,6 +85,7 @@ public abstract class AbstractCompilerFactoryBuilder {
     protected AlgebricksAbsolutePartitionConstraint clusterLocations;
     protected IWarningCollector warningCollector;
     protected long maxWarnings;
+    protected ICompilationContext compilationContext;
 
     public abstract ICompilerFactory create();
 
@@ -99,6 +102,11 @@ public abstract class AbstractCompilerFactoryBuilder {
     public void setPhysicalRewrites(
             Supplier<List<Pair<AbstractRuleController, List<IAlgebraicRewriteRule>>>> physicalRewrites) {
         this.physicalRewrites = physicalRewrites;
+    }
+
+    public void setPhysicalRewritesByKind(
+            Function<IRuleSetKind, List<Pair<AbstractRuleController, List<IAlgebraicRewriteRule>>>> physicalRewritesByKind) {
+        this.physicalRewritesByKind = physicalRewritesByKind;
     }
 
     public void setTypeTraitProvider(ITypeTraitProvider typeTraitProvider) {
@@ -309,5 +317,9 @@ public abstract class AbstractCompilerFactoryBuilder {
 
     public long getMaxWarnings() {
         return maxWarnings;
+    }
+
+    public void setCompilationContext(ICompilationContext compilationContext) {
+        this.compilationContext = compilationContext;
     }
 }

@@ -33,7 +33,7 @@ public abstract class BaseClientRequest implements IClientRequest {
     private final IRequestReference requestReference;
     private boolean cancellable = false;
     private volatile long completionTime = -1;
-    protected volatile State state = State.RECEIVED;
+    protected State state = State.RECEIVED;
 
     public BaseClientRequest(IRequestReference requestReference) {
         this.requestReference = requestReference;
@@ -50,20 +50,32 @@ public abstract class BaseClientRequest implements IClientRequest {
     }
 
     @Override
-    public synchronized void cancel(ICcApplicationContext appCtx) throws HyracksDataException {
+    public synchronized boolean cancel(ICcApplicationContext appCtx) throws HyracksDataException {
         if (complete) {
-            return;
+            // it should also be true that the request has already been untracked by the RequestTracker
+            return false;
         }
-        if (cancellable) {
+        if (cancellable && !isStatementJobFinished()) {
             complete();
             state = State.CANCELLED;
             doCancel(appCtx);
+            return true;
         }
+        return false;
     }
 
     @Override
     public synchronized void markCancellable() {
         cancellable = true;
+    }
+
+    @Override
+    public synchronized boolean markUncancellable() {
+        if (state == State.CANCELLED) {
+            return false;
+        }
+        cancellable = false;
+        return true;
     }
 
     @Override
@@ -83,8 +95,11 @@ public abstract class BaseClientRequest implements IClientRequest {
         return cancellable;
     }
 
-    public void setRunning() {
-        state = State.RUNNING;
+    /** Marks the request as running, unless it has already been cancelled or completed. */
+    public synchronized void setRunning() {
+        if (state == State.RECEIVED) {
+            state = State.RUNNING;
+        }
     }
 
     @Override
@@ -102,11 +117,17 @@ public abstract class BaseClientRequest implements IClientRequest {
         return putJson();
     }
 
-    private ObjectNode putJson() {
+    // Synchronized so that state and cancellable are read as one consistent pair.
+    // The monitor is also what cancel() holds while doCancel() waits for the job manager to abort the request's
+    // jobs, and the job manager's thread is the one delivering jobCreated/jobStarted/jobFinished. So this must
+    // never be reached from those notifications (e.g. by logging toJson() there): the cancel would wait on that
+    // thread while that thread waits here. Nor may it be reached while holding ClientRequest's jobsLock, as
+    // ClientRequest.addJob() takes the monitor and then jobsLock.
+    private synchronized ObjectNode putJson() {
         ObjectNode json = JSONUtil.createObject();
         json.put("uuid", requestReference.getUuid());
         json.put("requestTime", new ADateTime(requestReference.getTime()).toSimpleString());
-        json.put("elapsedTime", getElapsedTimeInSecs() + "s");
+        json.put("elapsedTime", getElapsedTimeInSecs());
         json.put("node", requestReference.getNode());
         json.put("state", state.getLabel());
         json.put("userAgent", requestReference.getUserAgent());
@@ -117,9 +138,27 @@ public abstract class BaseClientRequest implements IClientRequest {
 
     private double getElapsedTimeInSecs() {
         // this is just an estimation as the request might have been received on a node with a different system time
+        return getElapsedTimeMillis() / 1000d;
+    }
+
+    public long getElapsedTimeMillis() {
+        // this is just an estimation as the request might have been received on a node with a different system time
         long runningTime = completionTime > 0 ? completionTime : System.currentTimeMillis();
-        return (runningTime - requestReference.getTime()) / 1000d;
+        return (runningTime - requestReference.getTime());
+    }
+
+    public long getRequestTimeMillis() {
+        return requestReference.getTime();
     }
 
     protected abstract void doCancel(ICcApplicationContext appCtx) throws HyracksDataException;
+
+    /**
+     * @return true if the job of the statement being executed has finished. Such a statement is done but for
+     *         committing its job and sending its result, which a cancel must not interrupt: its job's work stands,
+     *         and the request is not cancelled.
+     */
+    protected boolean isStatementJobFinished() {
+        return false;
+    }
 }

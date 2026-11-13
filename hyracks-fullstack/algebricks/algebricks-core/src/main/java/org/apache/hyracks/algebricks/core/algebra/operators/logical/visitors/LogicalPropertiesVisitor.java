@@ -224,6 +224,16 @@ public class LogicalPropertiesVisitor implements ILogicalOperatorVisitor<Void, I
     }
 
     @Override
+    public Void visitKMeansStageOperator(KMeansStageOperator op, IOptimizationContext ctx) throws AlgebricksException {
+        return null;
+    }
+
+    @Override
+    public Void visitClusterByOperator(ClusterByOperator op, IOptimizationContext ctx) throws AlgebricksException {
+        return null;
+    }
+
+    @Override
     public Void visitUnnestMapOperator(UnnestMapOperator op, IOptimizationContext arg) throws AlgebricksException {
         // TODO Auto-generated method stub
         return null;

@@ -1,29 +1,58 @@
+distribute result [$$61]
 -- DISTRIBUTE_RESULT  |PARTITIONED|
+  exchange
   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+    assign [$$61] <- [{"D": $$D}] project: [$$61]
     -- ASSIGN  |PARTITIONED|
+      select ($$56) project: [$$D]
       -- STREAM_SELECT  |PARTITIONED|
+        project ([$$D, $$56])
         -- STREAM_PROJECT  |PARTITIONED|
-          -- SUBPLAN  |PARTITIONED|
-                  {
+          subplan {
+                    aggregate [$$56] <- [non-empty-stream()]
                     -- AGGREGATE  |LOCAL|
+                      select ($$54)
                       -- STREAM_SELECT  |LOCAL|
-                        -- SUBPLAN  |LOCAL|
-                                {
-                                  -- AGGREGATE  |LOCAL|
-                                    -- STREAM_SELECT  |LOCAL|
-                                      -- ASSIGN  |LOCAL|
-                                        -- UNNEST  |LOCAL|
-                                          -- NESTED_TUPLE_SOURCE  |LOCAL|
-                                }
-                          -- STREAM_SELECT  |LOCAL|
-                            -- ASSIGN  |LOCAL|
-                              -- UNNEST  |LOCAL|
-                                -- NESTED_TUPLE_SOURCE  |LOCAL|
-                  }
+                        project ([$$54])
+                        -- STREAM_PROJECT  |LOCAL|
+                          subplan {
+                                    aggregate [$$54] <- [non-empty-stream()]
+                                    -- AGGREGATE  |LOCAL|
+                                      select (and(eq($$70, 3), eq($$69, 3), eq($$68, 2)))
+                                      -- STREAM_SELECT  |LOCAL|
+                                        assign [$$70, $$69, $$68] <- [$$DII.getField("field3"), $$DII.getField("field3_notindexed"), $$DII.getField("field2")] project: [$$70, $$69, $$68]
+                                        -- ASSIGN  |LOCAL|
+                                          unnest $$DII <- scan-collection($$67) project: [$$DII]
+                                          -- UNNEST  |LOCAL|
+                                            project ([$$67])
+                                            -- STREAM_PROJECT  |LOCAL|
+                                              nested tuple source
+                                              -- NESTED_TUPLE_SOURCE  |LOCAL|
+                                 }
+                          -- SUBPLAN  |LOCAL|
+                            select (eq($$66, 2)) project: [$$67]
+                            -- STREAM_SELECT  |LOCAL|
+                              assign [$$67, $$66] <- [$$DOI.getField("inner_items"), $$DOI.getField("field2_notindexed")] project: [$$67, $$66]
+                              -- ASSIGN  |LOCAL|
+                                unnest $$DOI <- scan-collection($$65) project: [$$DOI]
+                                -- UNNEST  |LOCAL|
+                                  project ([$$65])
+                                  -- STREAM_PROJECT  |LOCAL|
+                                    nested tuple source
+                                    -- NESTED_TUPLE_SOURCE  |LOCAL|
+                 }
+          -- SUBPLAN  |PARTITIONED|
+            select (and(eq($$D.getField("field4"), 4), eq($$D.getField("field1"), 1)))
             -- STREAM_SELECT  |PARTITIONED|
+              assign [$$65] <- [$$D.getField("outer_items")]
               -- ASSIGN  |PARTITIONED|
+                project ([$$D])
                 -- STREAM_PROJECT  |PARTITIONED|
+                  exchange
                   -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
-                    -- DATASOURCE_SCAN (TestDataverse.Dataset1)  |PARTITIONED|
+                    data-scan []<-[$$62, $$D] <- TestDataverse.Dataset1
+                    -- DATASOURCE_SCAN  |PARTITIONED|
+                      exchange
                       -- ONE_TO_ONE_EXCHANGE  |PARTITIONED|
+                        empty-tuple-source
                         -- EMPTY_TUPLE_SOURCE  |PARTITIONED|

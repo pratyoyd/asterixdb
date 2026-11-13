@@ -28,9 +28,13 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
+import java.lang.management.ThreadInfo;
+import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.SequencedSet;
 
 import org.apache.asterix.app.external.ExternalUDFLibrarian;
 import org.apache.asterix.app.external.IExternalUDFLibrarian;
@@ -54,7 +58,16 @@ public class LangExecutionUtil {
 
     private static final boolean cleanupOnStart = true;
     private static final boolean cleanupOnStop = true;
-    private static final List<String> badTestCases = new ArrayList<>();
+    private static final SequencedSet<String> badTestCases = new LinkedHashSet<>();
+
+    /**
+     * Name fragments that identify an execution engine thread. {@code Super Activity} is what
+     * {@code SuperActivityOperatorNodePushable.getDisplayName()} produces; the space-free {@code SuperActivity}
+     * matches no display name in the tree today and is carried over from the previous check only so that this
+     * change removes no marker.
+     */
+    private static final String[] EXECUTION_ENGINE_THREAD_MARKERS =
+            { "Operator", "SuperActivity", "Super Activity", "PipelinedPartition" };
     private static TestExecutor testExecutor;
 
     private static ExternalUDFLibrarian librarian;
@@ -210,14 +223,43 @@ public class LangExecutionUtil {
     }
 
     public static void checkThreadLeaks() throws IOException {
-        String threadDump = ThreadDumpUtil.takeDumpJSONString();
         // Currently we only do sanity check for threads used in the execution engine.
         // Later we should check if there are leaked storage threads as well.
-        if (threadDump.contains("Operator") || threadDump.contains("SuperActivity")
-                || threadDump.contains("PipelinedPartition")) {
-            System.out.print(threadDump);
-            throw new AssertionError("There are leaked threads in the execution engine.");
+        List<String> leaked = leakedExecutionEngineThreads();
+        if (!leaked.isEmpty()) {
+            System.out.print(ThreadDumpUtil.takeDumpJSONString());
+            throw new AssertionError("There are leaked threads in the execution engine: " + leaked);
         }
+    }
+
+    /**
+     * A thread belongs to the execution engine if its <em>name</em> says so: {@code Task} names its threads after
+     * the operator's display name and {@code MaterializingPipelinedPartition} after its own class, and
+     * {@code MaintainedThreadNameExecutorService} restores the original name once the task is done -- so an
+     * engine-named thread still present at teardown is genuinely leaked.
+     * <p>
+     * Only names are matched. Searching the whole thread dump also matched stack frames of threads that have
+     * nothing to do with the engine: reactor-netty's {@code InternalMonoOperator}, on the Azure client's event
+     * loop, made every azblob-backed suite fail whenever that loop happened to be inside a subscribe() at dump
+     * time.
+     */
+    private static List<String> leakedExecutionEngineThreads() {
+        ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
+        List<String> leaked = new ArrayList<>();
+        for (ThreadInfo thread : threadMXBean.getThreadInfo(threadMXBean.getAllThreadIds(), 0)) {
+            if (thread == null) {
+                // the thread terminated between listing the ids and asking for its info
+                continue;
+            }
+            String name = thread.getThreadName();
+            for (String marker : EXECUTION_ENGINE_THREAD_MARKERS) {
+                if (name.contains(marker)) {
+                    leaked.add(name);
+                    break;
+                }
+            }
+        }
+        return leaked;
     }
 
     public static void checkOpenRunFileLeaks() throws IOException {

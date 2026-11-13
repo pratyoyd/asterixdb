@@ -32,11 +32,11 @@ import org.apache.asterix.optimizer.rules.AsterixExtractFunctionsFromJoinConditi
 import org.apache.asterix.optimizer.rules.AsterixInlineVariablesRule;
 import org.apache.asterix.optimizer.rules.AsterixIntroduceGroupByCombinerRule;
 import org.apache.asterix.optimizer.rules.AsterixPushMapOperatorThroughUnionRule;
+import org.apache.asterix.optimizer.rules.AttachCompileTimeRangeMapRule;
 import org.apache.asterix.optimizer.rules.ByNameToByIndexFieldAccessRule;
 import org.apache.asterix.optimizer.rules.CancelUnnestSingletonListRule;
 import org.apache.asterix.optimizer.rules.CancelUnnestWithNestedListifyRule;
 import org.apache.asterix.optimizer.rules.CheckFilterExpressionTypeRule;
-import org.apache.asterix.optimizer.rules.CheckFullParallelSortRule;
 import org.apache.asterix.optimizer.rules.CheckInsertUpsertReturningRule;
 import org.apache.asterix.optimizer.rules.CleanupWriteOperatorRule;
 import org.apache.asterix.optimizer.rules.ConstantFoldingRule;
@@ -76,10 +76,12 @@ import org.apache.asterix.optimizer.rules.NormalizeWritingPathRule;
 import org.apache.asterix.optimizer.rules.PlaqueCrossExprJobGenRule;
 import org.apache.asterix.optimizer.rules.PlaquePageFilterRule;
 import org.apache.asterix.optimizer.rules.PlaqueRewriteRule;
+import org.apache.asterix.optimizer.rules.ProtectClusterByPlaceholderRule;
 import org.apache.asterix.optimizer.rules.PullSelectOutOfSpatialJoin;
 import org.apache.asterix.optimizer.rules.PushAggFuncIntoStandaloneAggregateRule;
 import org.apache.asterix.optimizer.rules.PushAggregateIntoNestedSubplanRule;
 import org.apache.asterix.optimizer.rules.PushFieldAccessRule;
+import org.apache.asterix.optimizer.rules.PushFilterIntoVectorSearchRule;
 import org.apache.asterix.optimizer.rules.PushGroupByThroughProduct;
 import org.apache.asterix.optimizer.rules.PushLimitIntoOrderByRule;
 import org.apache.asterix.optimizer.rules.PushLimitIntoPrimarySearchRule;
@@ -95,7 +97,11 @@ import org.apache.asterix.optimizer.rules.RemoveRedundantSelectRule;
 import org.apache.asterix.optimizer.rules.RemoveSortInFeedIngestionRule;
 import org.apache.asterix.optimizer.rules.RemoveUnknownCheckForKnownTypeExpressionRule;
 import org.apache.asterix.optimizer.rules.RemoveUnusedOneToOneEquiJoinRule;
+import org.apache.asterix.optimizer.rules.ResolveTimeTravelValueRule;
+import org.apache.asterix.optimizer.rules.RewriteClusterByToKMeansRule;
+import org.apache.asterix.optimizer.rules.RewriteCountDistinctToHashRule;
 import org.apache.asterix.optimizer.rules.RewriteDistinctAggregateRule;
+import org.apache.asterix.optimizer.rules.STTransformResolveCRSRule;
 import org.apache.asterix.optimizer.rules.SetAsterixMemoryRequirementsRule;
 import org.apache.asterix.optimizer.rules.SetAsterixPhysicalOperatorsRule;
 import org.apache.asterix.optimizer.rules.SetClosedRecordConstructorsRule;
@@ -107,8 +113,10 @@ import org.apache.asterix.optimizer.rules.am.IntroduceJoinAccessMethodRule;
 import org.apache.asterix.optimizer.rules.am.IntroduceLSMComponentFilterRule;
 import org.apache.asterix.optimizer.rules.am.IntroducePrimaryIndexForAggregationRule;
 import org.apache.asterix.optimizer.rules.am.IntroduceSelectAccessMethodRule;
+import org.apache.asterix.optimizer.rules.am.IntroduceTopKAccessMethodRule;
 import org.apache.asterix.optimizer.rules.cbo.EnumerateJoinsRule;
 import org.apache.asterix.optimizer.rules.cbo.JoinEnum;
+import org.apache.asterix.optimizer.rules.cbo.indexadvisor.AdviseIndexRule;
 import org.apache.asterix.optimizer.rules.subplan.AsterixMoveFreeVariableOperatorOutOfSubplanRule;
 import org.apache.asterix.optimizer.rules.subplan.InlineSubplanInputForNestedTupleSourceRule;
 import org.apache.asterix.optimizer.rules.temporal.TranslateIntervalExpressionRule;
@@ -155,9 +163,14 @@ public final class RuleCollections {
         return Collections.singletonList(new FullTextContainsParameterCheckAndSetRule());
     }
 
+    public static List<IAlgebraicRewriteRule> buildSTTransformRuleCollection() {
+        return Collections.singletonList(new STTransformResolveCRSRule());
+    }
+
     public static List<IAlgebraicRewriteRule> buildNormalizationRuleCollection(ICcApplicationContext appCtx) {
         List<IAlgebraicRewriteRule> normalization = new LinkedList<>();
         // normalization.add(new IntroduceUnionOperatorRule());
+        normalization.add(new ProtectClusterByPlaceholderRule());
         normalization.add(new CheckInsertUpsertReturningRule());
         normalization.add(new NormalizeWritingPathRule(appCtx));
         normalization.add(new IntroduceUnnestForCollectionToSequenceRule());
@@ -190,6 +203,8 @@ public final class RuleCollections {
         normalization.add(new ListifyUnnestingFunctionRule());
         normalization.add(new RemoveRedundantSelectRule());
         normalization.add(new CancelUnnestSingletonListRule());
+        // must run before UnnestToDataScanRule, which is where a time travel value is read
+        normalization.add(new ResolveTimeTravelValueRule(appCtx));
         normalization.add(new UnnestToDataScanRule());
         normalization.add(new MetaFunctionToMetaVariableRule());
         normalization.add(new FuzzyEqRule());
@@ -263,14 +278,21 @@ public final class RuleCollections {
     }
 
     public static List<IAlgebraicRewriteRule> buildConsolidationRuleCollection() {
+        return buildConsolidationRuleCollection(true);
+    }
+
+    public static List<IAlgebraicRewriteRule> buildConsolidationRuleCollection(boolean introduceCombiners) {
         List<IAlgebraicRewriteRule> consolidation = new LinkedList<>();
         consolidation.add(new ConsolidateSelectsRule());
         consolidation.add(new ConsolidateAssignsRule(false));
         consolidation.add(new InlineAssignIntoAggregateRule());
+        consolidation.add(new RewriteCountDistinctToHashRule());
         consolidation.add(new RewriteDistinctAggregateRule());
-        // The following rule should run after RewriteDistinctAggregateRule
-        consolidation.add(new AsterixIntroduceGroupByCombinerRule());
-        consolidation.add(new IntroduceAggregateCombinerRule());
+        if (introduceCombiners) {
+            // The following rule should run after RewriteDistinctAggregateRule
+            consolidation.add(new AsterixIntroduceGroupByCombinerRule());
+            consolidation.add(new IntroduceAggregateCombinerRule());
+        }
         consolidation.add(new PlaqueRewriteRule());
         // Re-infer all types after introducing aggregate combiners
         consolidation.add(new ReinferAllTypesRule());
@@ -290,7 +312,9 @@ public final class RuleCollections {
 
     public static List<IAlgebraicRewriteRule> buildAccessMethodRuleCollection() {
         List<IAlgebraicRewriteRule> accessMethod = new LinkedList<>();
+        accessMethod.add(new AttachCompileTimeRangeMapRule());
         accessMethod.add(new IntroduceSelectAccessMethodRule());
+        accessMethod.add(new IntroduceTopKAccessMethodRule());
         accessMethod.add(new IntroduceJoinAccessMethodRule());
         //accessMethod.add(new IntroduceUnionForEagerAggregation());
         accessMethod.add(new IntroduceLSMComponentFilterRule());
@@ -304,6 +328,7 @@ public final class RuleCollections {
 
     public static List<IAlgebraicRewriteRule> buildPlanCleanupRuleCollection() {
         List<IAlgebraicRewriteRule> planCleanupRules = new LinkedList<>();
+        planCleanupRules.add(new AdviseIndexRule());
         planCleanupRules.add(new SwitchInnerJoinBranchRule());
         planCleanupRules.add(new AsterixPushMapOperatorThroughUnionRule(LogicalOperatorTag.ASSIGN));
         planCleanupRules.add(new ExtractCommonExpressionsRule());
@@ -365,12 +390,15 @@ public final class RuleCollections {
         physicalRewritesAllLevels.add(new ExtractBatchableExternalFunctionCallsRule());
         //Turned off the following rule for now not to change OptimizerTest results.
         physicalRewritesAllLevels.add(new SetupCommitExtensionOpRule());
+        // Before physical-operator assignment and property enforcement, which need the stages; after every
+        // logical rule, which do not. Until here the plan carries one opaque cluster-by node over an ordinary
+        // input, so the logical phases optimize the upstream and nothing else.
+        physicalRewritesAllLevels.add(new RewriteClusterByToKMeansRule());
         physicalRewritesAllLevels.add(new SetAsterixPhysicalOperatorsRule(cmf));
         physicalRewritesAllLevels.add(new SetAsterixMemoryRequirementsRule());
         // must run after SetMemoryRequirementsRule
         physicalRewritesAllLevels.add(new HybridToInMemoryHashJoinRule());
         physicalRewritesAllLevels.add(new AddEquivalenceClassForRecordConstructorRule());
-        physicalRewritesAllLevels.add(new CheckFullParallelSortRule());
         physicalRewritesAllLevels.add(new EnforceStructuralPropertiesRule(BuiltinFunctions.RANGE_MAP,
                 BuiltinFunctions.LOCAL_SAMPLING, BuiltinFunctions.NULL_WRITER));
         physicalRewritesAllLevels.add(new RemoveSortInFeedIngestionRule());
@@ -397,7 +425,8 @@ public final class RuleCollections {
         physicalRewritesTopLevel.add(new ConstantFoldingRule(appCtx));
         physicalRewritesTopLevel.add(new PushLimitIntoOrderByRule());
         physicalRewritesTopLevel.add(new PushLimitIntoPrimarySearchRule());
-        // remove assigns that could become unused after PushLimitIntoPrimarySearchRule
+        physicalRewritesTopLevel.add(new PushFilterIntoVectorSearchRule());
+        // remove assigns that could become unused after PushLimitIntoPrimarySearchRule or PushFilterIntoVectorSearchRule
         physicalRewritesTopLevel.add(new RemoveUnusedAssignAndAggregateRule());
         physicalRewritesTopLevel.add(new IntroduceProjectsRule());
 
@@ -454,7 +483,8 @@ public final class RuleCollections {
         prepareForJobGenRewrites.add(new PopulateResultMetadataRule());
         prepareForJobGenRewrites.add(new AnnotateOperatorCostCardinalityRule());
         prepareForJobGenRewrites.add(new EnsureColumnarSupportedTypesRule());
-
+        // EmbedProjectRule should run last. The assumption is that this rules set will run once
+        prepareForJobGenRewrites.add(new EmbedProjectRule());
         return prepareForJobGenRewrites;
     }
 }

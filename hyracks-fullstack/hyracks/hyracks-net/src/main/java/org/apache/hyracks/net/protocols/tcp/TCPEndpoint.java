@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 
 import org.apache.hyracks.api.network.ISocketChannel;
 import org.apache.hyracks.api.network.ISocketChannelFactory;
@@ -58,12 +59,14 @@ public class TCPEndpoint {
     private int nextThread;
 
     private final ISocketChannelFactory socketChannelFactory;
+    private final ExecutorService executor;
 
     public TCPEndpoint(ITCPConnectionListener connectionListener, int nThreads,
-            ISocketChannelFactory socketChannelFactory) {
+            ISocketChannelFactory socketChannelFactory, ExecutorService executor) {
         this.connectionListener = connectionListener;
         this.nThreads = nThreads;
         this.socketChannelFactory = socketChannelFactory;
+        this.executor = executor;
     }
 
     public void start(InetSocketAddress localAddress) throws IOException {
@@ -110,7 +113,7 @@ public class TCPEndpoint {
 
     @Override
     public String toString() {
-        return "TCPEndpoint [Local Address: " + localAddress + "]";
+        return "TCPEndpoint [" + (localAddress == null ? "<outgoing>" : "Local Address: " + localAddress) + "]";
     }
 
     private class IOThread extends Thread {
@@ -127,7 +130,7 @@ public class TCPEndpoint {
         private final Selector selector;
 
         public IOThread() throws IOException {
-            super("TCPEndpoint IO Thread [" + localAddress + "]");
+            super("TCPEndpoint IO Thread [" + (localAddress == null ? "<outgoing>" : localAddress) + "]");
             setDaemon(true);
             setPriority(Thread.NORM_PRIORITY);
             this.pendingConnections = new ArrayList<>();
@@ -144,44 +147,44 @@ public class TCPEndpoint {
                 try {
                     int n = selector.select();
                     collectOutstandingWork();
-                    if (!workingPendingConnections.isEmpty()) {
-                        for (InetSocketAddress address : workingPendingConnections) {
-                            SocketChannel channel = SocketChannel.open();
-                            register(channel);
-                            boolean connect = false;
-                            boolean failure = false;
-                            try {
-                                connect = channel.connect(address);
-                            } catch (IOException e) {
-                                failure = true;
-                                synchronized (connectionListener) {
-                                    connectionListener.connectionFailure(address, e);
-                                }
-                            }
-                            if (!failure) {
-                                if (!connect) {
-                                    SelectionKey key = channel.register(selector, SelectionKey.OP_CONNECT);
-                                    key.attach(address);
-                                } else {
-                                    socketConnected(address, channel);
-                                }
+                    for (Iterator<InetSocketAddress> iterator = workingPendingConnections.iterator(); iterator
+                            .hasNext();) {
+                        InetSocketAddress address = iterator.next();
+                        iterator.remove();
+                        SocketChannel channel = SocketChannel.open();
+                        register(channel);
+                        boolean connect = false;
+                        boolean failure = false;
+                        try {
+                            connect = channel.connect(address);
+                        } catch (IOException e) {
+                            failure = true;
+                            synchronized (connectionListener) {
+                                connectionListener.connectionFailure(address, e);
                             }
                         }
-                        workingPendingConnections.clear();
+                        if (!failure) {
+                            if (!connect) {
+                                SelectionKey key = channel.register(selector, SelectionKey.OP_CONNECT);
+                                key.attach(address);
+                            } else {
+                                socketConnected(address, channel);
+                            }
+                        }
                     }
-                    if (!workingIncomingConnections.isEmpty()) {
-                        for (SocketChannel channel : workingIncomingConnections) {
-                            register(channel);
-                            connectionReceived(channel);
-                        }
-                        workingIncomingConnections.clear();
+                    for (Iterator<SocketChannel> iterator = workingIncomingConnections.iterator(); iterator
+                            .hasNext();) {
+                        SocketChannel channel = iterator.next();
+                        iterator.remove();
+                        register(channel);
+                        connectionReceived(channel);
                     }
                     synchronized (handshakeCompletedConnections) {
-                        if (!handshakeCompletedConnections.isEmpty()) {
-                            for (final PendingHandshakeConnection conn : handshakeCompletedConnections) {
-                                handshakeCompleted(conn);
-                            }
-                            handshakeCompletedConnections.clear();
+                        for (Iterator<PendingHandshakeConnection> iterator =
+                                handshakeCompletedConnections.iterator(); iterator.hasNext();) {
+                            PendingHandshakeConnection conn = iterator.next();
+                            iterator.remove();
+                            handshakeCompleted(conn);
                         }
                     }
                     if (n > 0) {
@@ -210,6 +213,11 @@ public class TCPEndpoint {
                             if (key.isAcceptable()) {
                                 assert sc == serverSocketChannel;
                                 SocketChannel channel = serverSocketChannel.accept();
+                                if (channel == null) {
+                                    // the pending connection was reset before it could be accepted
+                                    LOGGER.debug("no connection to accept on {}", TCPEndpoint.this);
+                                    continue;
+                                }
                                 distributeIncomingConnection(channel);
                             } else if (key.isConnectable()) {
                                 SocketChannel channel = (SocketChannel) sc;
@@ -257,7 +265,11 @@ public class TCPEndpoint {
                 }
             } catch (Exception e) {
                 LOGGER.error("failed to establish connection after handshake", e);
-                handleHandshakeFailure(conn);
+                try {
+                    handleHandshakeFailure(conn);
+                } catch (Exception ex) {
+                    e.addSuppressed(ex);
+                }
             }
         }
 
@@ -314,7 +326,8 @@ public class TCPEndpoint {
         }
 
         private void asyncHandshake(PendingHandshakeConnection connection) {
-            CompletableFuture.supplyAsync(connection.socketChannel::handshake).exceptionally(ex -> false)
+            CompletableFuture.supplyAsync(connection.socketChannel::handshake, TCPEndpoint.this.executor)
+                    .exceptionally(ex -> false)
                     .thenAccept(handshakeSuccess -> handleHandshakeCompletion(handshakeSuccess, connection));
         }
 

@@ -26,7 +26,6 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Arrays;
 
-import org.apache.hyracks.api.comm.VSizeFrame;
 import org.apache.hyracks.api.context.IHyracksTaskContext;
 import org.apache.hyracks.api.dataflow.IIntrospectingOperator;
 import org.apache.hyracks.api.dataflow.value.*;
@@ -136,7 +135,7 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
             byte[] searchCallbackProceedResultTrueValue, ITupleProjectorFactory projectorFactory,
             ITuplePartitionerFactory tuplePartitionerFactory, int[][] partitionsMap) throws HyracksDataException {
         this.ctx = ctx;
-        this.appender = new FrameTupleAppender(new VSizeFrame(ctx), true);
+        appender = new FrameTupleAppender(ctx.allocateVSizeFrame(), true);
         //TODO(partitioning) partitionsMap should not be null
         this.partitions = partitionsMap != null ? partitionsMap[partition] : new int[] { partition };
         for (int i = 0; i < partitions.length; i++) {
@@ -497,7 +496,7 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
                 if (appender.getTupleCount() > 0) {
                     appender.write(writer, true);
                 }
-                stats.getPageReads().update(ctx.getThreadStats().getPinnedPagesCount());
+                stats.getPageReadCounter().update(ctx.getThreadStats().getPinnedPagesCount());
                 stats.coldReadCounter().update(ctx.getThreadStats().getColdReadCount());
                 stats.cloudReadRequestCounter().update(ctx.getThreadStats().getCloudReadRequestCount());
                 stats.cloudReadPageCounter().update(ctx.getThreadStats().getCloudPageReadCount());
@@ -631,7 +630,7 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
         this.stats = stats;
     }
 
-    private void searchPartition(int tupleCount) throws Exception {
+    protected void searchPartition(int tupleCount) throws Exception {
         for (int i = 0; i < tupleCount && !finished; i++) {
             int storagePartition = tuplePartitioner.partition(accessor, i);
             int pIdx = storagePartitionId2Index.get(storagePartition);
@@ -642,7 +641,7 @@ public abstract class IndexSearchOperatorNodePushable extends AbstractUnaryInput
         }
     }
 
-    private void searchAllPartitions(int tupleCount) throws Exception {
+    protected void searchAllPartitions(int tupleCount) throws Exception {
         for (int p = 0; p < partitions.length; p++) {
             for (int i = 0; i < tupleCount && !finished; i++) {
                 resetSearchPredicate(i);

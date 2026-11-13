@@ -23,8 +23,8 @@ import java.util.List;
 import org.apache.asterix.common.exceptions.CompilationException;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.commons.lang3.mutable.Mutable;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
@@ -101,10 +101,10 @@ public class SweepIllegalNonfunctionalFunctions implements IAlgebraicRewriteRule
         @Override
         public Void visitGroupByOperator(GroupByOperator op, Void arg) throws AlgebricksException {
             for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : op.getGroupByList()) {
-                sweepExpression(p.second.getValue());
+                sweepExpression(p.getRight().getValue());
             }
             for (Pair<LogicalVariable, Mutable<ILogicalExpression>> p : op.getDecorList()) {
-                sweepExpression(p.second.getValue());
+                sweepExpression(p.getRight().getValue());
             }
             return null;
         }
@@ -134,7 +134,7 @@ public class SweepIllegalNonfunctionalFunctions implements IAlgebraicRewriteRule
         @Override
         public Void visitOrderOperator(OrderOperator op, Void arg) throws AlgebricksException {
             for (Pair<IOrder, Mutable<ILogicalExpression>> p : op.getOrderExpressions()) {
-                sweepExpression(p.second.getValue());
+                sweepExpression(p.getRight().getValue());
             }
             return null;
         }
@@ -201,6 +201,16 @@ public class SweepIllegalNonfunctionalFunctions implements IAlgebraicRewriteRule
 
         @Override
         public Void visitIntersectOperator(IntersectOperator op, Void arg) throws AlgebricksException {
+            return null;
+        }
+
+        @Override
+        public Void visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+            return null;
+        }
+
+        @Override
+        public Void visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
             return null;
         }
 
@@ -282,10 +292,10 @@ public class SweepIllegalNonfunctionalFunctions implements IAlgebraicRewriteRule
                 sweepExpression(me.getValue());
             }
             for (Pair<IOrder, Mutable<ILogicalExpression>> p : op.getOrderExpressions()) {
-                sweepExpression(p.second.getValue());
+                sweepExpression(p.getRight().getValue());
             }
             for (Pair<IOrder, Mutable<ILogicalExpression>> p : op.getFrameValueExpressions()) {
-                sweepExpression(p.second.getValue());
+                sweepExpression(p.getRight().getValue());
             }
             for (Mutable<ILogicalExpression> me : op.getFrameStartExpressions()) {
                 sweepExpression(me.getValue());

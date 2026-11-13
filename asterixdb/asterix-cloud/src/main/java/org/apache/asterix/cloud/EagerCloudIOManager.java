@@ -62,13 +62,23 @@ final class EagerCloudIOManager extends AbstractCloudIOManager {
     protected void downloadPartitions(boolean metadataNode, int metadataPartition) throws HyracksDataException {
         IParallelDownloader downloader = cloudClient.createParallelDownloader(bucket, localIoManager);
         LOGGER.info("Downloading all files located in {}", partitionPaths);
-        downloader.downloadDirectories(partitionPaths);
+        downloader.downloadDirectoriesWithRetry(partitionPaths);
         LOGGER.info("Finished downloading {}", partitionPaths);
     }
 
     @Override
     protected Set<UncachedFileReference> getUncachedFiles() {
         return Collections.emptySet();
+    }
+
+    @Override
+    public int getUncachedFileCount() {
+        return 0;
+    }
+
+    @Override
+    public long getUncachedFileBytes() {
+        return 0L;
     }
 
     @Override

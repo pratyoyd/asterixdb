@@ -42,8 +42,9 @@ public class AvroLogicalTypesExampleGenerator {
             + "    { \"name\": \"timestampMillisField\", \"type\": { \"type\": \"long\", \"logicalType\": \"timestamp-millis\" } },\n"
             + "    { \"name\": \"timestampMicrosField\", \"type\": { \"type\": \"long\", \"logicalType\": \"timestamp-micros\" } },\n"
             + "    { \"name\": \"localTimestampMillisField\", \"type\": { \"type\": \"long\", \"logicalType\": \"local-timestamp-millis\" } },\n"
-            + "    { \"name\": \"localTimestampMicrosField\", \"type\": { \"type\": \"long\", \"logicalType\": \"local-timestamp-micros\" } }\n"
-            + "  ]\n" + "}";
+            + "    { \"name\": \"localTimestampMicrosField\", \"type\": { \"type\": \"long\", \"logicalType\": \"local-timestamp-micros\" } },\n"
+            + "    { \"name\": \"nullableField\", \"type\": [\"null\", \"string\"], \"default\": null }\n" + "  ]\n"
+            + "}";
 
     private static final String AVRO_GEN_BASEDIR = "target/generated_avro_files";
     private static final String FILE_NAME = "avro_logical_type.avro";
@@ -66,11 +67,13 @@ public class AvroLogicalTypesExampleGenerator {
             record.put("uuidField", "123e4567-e89b-12d3-a456-426614174000");
             record.put("dateField", 20061);
             record.put("timeMillisField", 12345678);
-            record.put("timeMicrosField", 12345678901234L);
+            // time-micros is microseconds after midnight (< 86,400,000,000); 45296789012 = 12:34:56.789012
+            record.put("timeMicrosField", 45296789012L);
             record.put("timestampMillisField", 1733344079083L);
             record.put("timestampMicrosField", 1733344079083000L);
             record.put("localTimestampMillisField", 1733344079083L);
             record.put("localTimestampMicrosField", 1733344079083000L);
+            record.put("nullableField", null);
 
             dataFileWriter.append(record);
         } catch (IOException e) {

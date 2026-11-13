@@ -1,0 +1,572 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.asterix.external.input.record.reader.iceberg;
+
+import static org.apache.asterix.common.exceptions.ErrorCode.EXTERNAL_SOURCE_ERROR;
+import static org.apache.asterix.external.util.iceberg.IcebergConstants.ICEBERG_SCHEMA_ID_PROPERTY_KEY;
+import static org.apache.asterix.external.util.iceberg.IcebergConstants.ICEBERG_SNAPSHOT_ID_PROPERTY_KEY;
+import static org.apache.asterix.external.util.iceberg.IcebergSnapshotUtils.snapshotIdExists;
+import static org.apache.asterix.external.util.iceberg.IcebergUtils.selectRequestedColumns;
+
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.PriorityQueue;
+import java.util.Set;
+import java.util.TimeZone;
+
+import org.apache.asterix.common.dataflow.ICcApplicationContext;
+import org.apache.asterix.common.exceptions.AsterixException;
+import org.apache.asterix.common.exceptions.CompilationException;
+import org.apache.asterix.common.exceptions.ErrorCode;
+import org.apache.asterix.common.external.IExternalFilterEvaluatorFactory;
+import org.apache.asterix.external.api.IExternalDataRuntimeContext;
+import org.apache.asterix.external.api.IIcebergRecordReaderFactory;
+import org.apache.asterix.external.api.IRecordReader;
+import org.apache.asterix.external.input.filter.IcebergTableFilterEvaluatorFactory;
+import org.apache.asterix.external.parser.IcebergParquetDataParser;
+import org.apache.asterix.external.util.ExternalDataConstants;
+import org.apache.asterix.external.util.ExternalDataUtils;
+import org.apache.asterix.external.util.iceberg.IcebergConstants;
+import org.apache.asterix.external.util.iceberg.IcebergSnapshotUtils;
+import org.apache.asterix.external.util.iceberg.IcebergUtils;
+import org.apache.asterix.external.util.iceberg.NumericLiteralPredicateRewriter;
+import org.apache.asterix.external.util.iceberg.TimestampZonePredicateRewriter;
+import org.apache.asterix.external.util.iceberg.VariantBoundsEvaluator;
+import org.apache.asterix.external.util.iceberg.VariantPredicateRewriter;
+import org.apache.hyracks.algebricks.common.constraints.AlgebricksAbsolutePartitionConstraint;
+import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
+import org.apache.hyracks.api.application.IServiceContext;
+import org.apache.hyracks.api.exceptions.HyracksDataException;
+import org.apache.hyracks.api.exceptions.IWarningCollector;
+import org.apache.hyracks.api.exceptions.Warning;
+import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.TableScan;
+import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.data.Record;
+import org.apache.iceberg.expressions.And;
+import org.apache.iceberg.expressions.Binder;
+import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.expressions.Expressions;
+import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.util.TableScanUtil;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+public class IcebergParquetRecordReaderFactory implements IIcebergRecordReaderFactory<Record> {
+
+    private static final long serialVersionUID = 1L;
+    private static final Logger LOGGER = LogManager.getLogger();
+    private static final List<String> RECORD_READER_NAMES = Arrays.asList(ExternalDataConstants.KEY_ADAPTER_NAME_AWS_S3,
+            ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_BLOB, ExternalDataConstants.KEY_ADAPTER_NAME_AZURE_DATALAKE,
+            ExternalDataConstants.KEY_ADAPTER_NAME_GCS);
+
+    private final List<FileScanTask> fileScanTasks = new ArrayList<>();
+    private final List<PartitionWorkLoadBasedOnSize> partitionWorkLoadsBasedOnSize = new ArrayList<>();
+
+    private Schema projectedSchema;
+    // Shipped to the readers so that they read the planned files without loading the table from the catalog again
+    private Schema schemaAtSnapshot;
+    private IcebergFileIoDescriptor fileIoDescriptor;
+    private Map<String, String> originalConfiguration;
+    private Map<String, String> catalogProperties;
+
+    private transient AlgebricksAbsolutePartitionConstraint partitionConstraint;
+    // Every reader of this scan on a node is created from this one deserialized factory, so they share it
+    private transient IcebergDeleteCache deleteCache;
+
+    public IcebergParquetRecordReaderFactory() {
+    }
+
+    @Override
+    public Class<?> getRecordClass() throws AsterixException {
+        return Record.class;
+    }
+
+    @Override
+    public List<String> getRecordReaderNames() {
+        return RECORD_READER_NAMES;
+    }
+
+    @Override
+    public AlgebricksAbsolutePartitionConstraint getPartitionConstraint() {
+        return partitionConstraint;
+    }
+
+    static boolean isDeleteCacheEnabled(Map<String, String> configuration) {
+        return Boolean.parseBoolean(configuration.getOrDefault(ExternalDataConstants.IcebergOptions.USE_DELETE_CACHE,
+                Boolean.toString(ExternalDataConstants.IcebergOptions.DEFAULT_USE_DELETE_CACHE)));
+    }
+
+    /**
+     * @return the delete cache the scan's readers on this node share, or {@code null} when the cache is disabled, in
+     *         which case each reader loads the delete files of every data file itself
+     */
+    synchronized IcebergDeleteCache deleteCache() {
+        if (!isDeleteCacheEnabled(originalConfiguration)) {
+            return null;
+        }
+        if (deleteCache == null) {
+            deleteCache = new IcebergDeleteCache();
+        }
+        return deleteCache;
+    }
+
+    private int getPartitionsCount() {
+        return getPartitionConstraint().getLocations().length;
+    }
+
+    @Override
+    public IRecordReader<Record> createRecordReader(IExternalDataRuntimeContext context) throws HyracksDataException {
+        try {
+            int partition = context.getPartition();
+            return new IcebergFileRecordReader(partitionWorkLoadsBasedOnSize.get(partition).getFileScanTasks(),
+                    projectedSchema, schemaAtSnapshot, fileIoDescriptor, deleteCache(),
+                    new HashMap<>(originalConfiguration), context.getTaskContext().getWarningCollector());
+        } catch (Exception e) {
+            throw HyracksDataException.create(e);
+        }
+    }
+
+    @Override
+    public Set<String> getReaderSupportedFormats() {
+        return Collections.singleton(IcebergConstants.ICEBERG_PARQUET_FORMAT);
+    }
+
+    /**
+     * Whether data files may be skipped using the manifest bounds of a shredded VARIANT sub-field. Default on; the
+     * off switch exists because this ships in releases rather than patches, and because the off path is a useful
+     * oracle — the same query must return the same rows, only reading more files.
+     * <p>
+     * Separate from {@code variantProjectionPushdown} on purpose: that one only changes how many columns are read,
+     * while this one changes which files are read at all.
+     */
+    private boolean isVariantStatsPushdownEnabled() {
+        return Boolean.parseBoolean(
+                originalConfiguration.getOrDefault(ExternalDataConstants.IcebergOptions.VARIANT_STATS_PUSHDOWN,
+                        Boolean.toString(ExternalDataConstants.IcebergOptions.DEFAULT_VARIANT_STATS_PUSHDOWN)));
+    }
+
+    /**
+     * Rejects the scan when a column it reads, at any depth, has a type that cannot be read.
+     *
+     * @param schema the columns the scan reads
+     * @throws CompilationException naming the type and the column, if {@code schema} has such a column
+     * @see IcebergParquetDataParser#findUnsupportedColumn(Schema)
+     */
+    static void ensureTypesSupported(Schema schema) throws CompilationException {
+        Integer id = IcebergParquetDataParser.findUnsupportedColumn(schema);
+        if (id != null) {
+            throw CompilationException.create(ErrorCode.UNSUPPORTED_ICEBERG_TYPE, schema.findType(id).toString(),
+                    schema.findColumnName(id));
+        }
+    }
+
+    private boolean isTimestampAsLong() {
+        return Boolean.parseBoolean(originalConfiguration
+                .getOrDefault(ExternalDataConstants.IcebergOptions.TIMESTAMP_AS_LONG, ExternalDataConstants.FALSE));
+    }
+
+    /**
+     * Drops the filter rather than let scan planning throw, if it cannot be bound against the schema.
+     * <p>
+     * This has a known, reachable trigger, not just hypothetical ones: {@code IcebergTableFilterBuilder} takes the
+     * reference name from the field-access path the query wrote and never checks it against the Iceberg schema, so a
+     * predicate on a field the table does not have — a typo, or a column added in a later schema than the one being
+     * read — arrives here unbindable. Pushing it fails the whole query with "Cannot find field"; dropping it returns
+     * the right answer and merely reads more, since the engine still applies the predicate to the rows.
+     * <p>
+     * A warning is raised so the lost pushdown is visible to whoever wrote the query rather than showing up only as
+     * unexplained slowness.
+     */
+    static Expression bindableOrNoFilter(Expression expression, Schema schema, IWarningCollector warningCollector) {
+        if (expression == null) {
+            return Expressions.alwaysTrue();
+        }
+        // No fast path for "the whole thing binds" here: withoutUnbindable checks exactly that as its first step and
+        // returns the expression untouched, so checking twice would just bind the whole expression twice.
+        return withoutUnbindable(expression, schema, warningCollector);
+    }
+
+    /** @return whether Iceberg can bind {@code expression} against the schema, i.e. whether the scan would accept it. */
+    private static boolean bindable(Expression expression, Schema schema) {
+        try {
+            // caseSensitive=true matches how the scan itself binds, so this rehearses the real call.
+            Binder.bind(schema.asStruct(), expression, true);
+            return true;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Drops only the parts that cannot bind, keeping the rest pushable.
+     * <p>
+     * {@code Binder.bind} is all-or-nothing over the whole expression, so one unbindable reference would otherwise cost
+     * the pushdown of everything ANDed with it: {@code WHERE good = 1 AND nosuchcolumn = 2} would read every file
+     * despite {@code good = 1} being perfectly pushable. Weakening rules are the same discipline used when stripping
+     * variant sub-field predicates — a pushed filter may only ever admit MORE files:
+     * <ul>
+     * <li>{@code AND}: drop each unbindable side; losing a conjunct weakens the filter, which is safe.</li>
+     * <li>{@code OR}: if either side fails to bind the whole disjunction is dropped, since removing a disjunct would
+     * strengthen the filter and could wrongly skip files.</li>
+     * <li>{@code NOT}: dropped whole when its child fails to bind, since a weaker child yields a stronger negation.</li>
+     * </ul>
+     * One warning is raised per dropped part, naming it, so the lost pushdown is attributable rather than showing up
+     * as unexplained slowness.
+     */
+    private static Expression withoutUnbindable(Expression expression, Schema schema,
+            IWarningCollector warningCollector) {
+        if (bindable(expression, schema)) {
+            return expression;
+        }
+        if (expression instanceof And) {
+            And and = (And) expression;
+            return Expressions.and(withoutUnbindable(and.left(), schema, warningCollector),
+                    withoutUnbindable(and.right(), schema, warningCollector));
+        }
+        // OR and NOT cannot be weakened piecewise, and a leaf has no parts: drop whole and say which.
+        warn(expression, warningCollector);
+        return Expressions.alwaysTrue();
+    }
+
+    private static void warn(Expression dropped, IWarningCollector warningCollector) {
+        if (warningCollector.shouldWarn()) {
+            warningCollector.warn(Warning.of(null, ErrorCode.ICEBERG_FILTER_NOT_PUSHED, dropped.toString()));
+        }
+    }
+
+    @Override
+    public void configure(IServiceContext ctx, Map<String, String> configuration, IWarningCollector warningCollector,
+            IExternalFilterEvaluatorFactory filterEvaluatorFactory) throws AlgebricksException, HyracksDataException {
+        this.originalConfiguration = new HashMap<>(configuration);
+        ICcApplicationContext appCtx = (ICcApplicationContext) ctx.getApplicationContext();
+        this.partitionConstraint = appCtx.getDataPartitioningProvider().getClusterLocations();
+
+        Catalog catalog = null;
+        Throwable throwable = null;
+        try {
+            String namespace = IcebergUtils.getNamespace(configuration);
+            String tableName = configuration.get(IcebergConstants.ICEBERG_TABLE_NAME_PROPERTY_KEY);
+
+            catalogProperties = IcebergUtils.filterCatalogProperties(configuration);
+            catalog = IcebergUtils.initializeCatalog(catalogProperties, namespace);
+            Namespace parsedNamespace = IcebergUtils.parseNamespace(namespace);
+            TableIdentifier tableIdentifier = TableIdentifier.of(parsedNamespace, tableName);
+            Table table = IcebergUtils.loadExistingTable(catalog, tableIdentifier, tableName);
+            TableScan scan = table.newScan();
+            scan = setAndPinScanSnapshot(originalConfiguration, table, scan);
+            long snapshotId = Long.parseLong(originalConfiguration.get(ICEBERG_SNAPSHOT_ID_PROPERTY_KEY));
+            schemaAtSnapshot = table.schemas().get(table.snapshot(snapshotId).schemaId());
+            fileIoDescriptor = IcebergFileIoDescriptor.capture(table.io());
+
+            projectedSchema = selectRequestedColumns(schemaAtSnapshot, configuration);
+            ensureTypesSupported(projectedSchema);
+            scan = scan.project(projectedSchema);
+            Expression filterExpression =
+                    ((IcebergTableFilterEvaluatorFactory) filterEvaluatorFactory).getFilterExpression();
+            Expression variantFilter = null;
+            if (filterExpression != null) {
+                // A configured timezone makes the read path shift every UTC-adjusted timestamp, so the value the
+                // engine compares is not the value the manifest holds. Convert the pushed literals back into the
+                // stored frame first — before any other rewrite — or Iceberg prunes on a comparison the engine never
+                // makes. Without this the error is the whole offset, not a rounding edge: every file is pruned.
+                TimeZone timeZone = ExternalDataUtils.resolveTimeZoneOrWarn(
+                        configuration.get(ExternalDataConstants.KEY_TIMEZONE), warningCollector::warn);
+                filterExpression = TimestampZonePredicateRewriter.rewrite(filterExpression, schemaAtSnapshot,
+                        timeZone == null ? null : timeZone.toZoneId(), isTimestampAsLong());
+                // Binding rounds a literal to a float or decimal column's type, while the engine compares against the
+                // literal as written, so a rounded literal can skip a file holding a matching row.
+                filterExpression = NumericLiteralPredicateRewriter.rewrite(filterExpression, schemaAtSnapshot);
+                // Predicates on a shredded VARIANT sub-field arrive as a dotted reference (variant_field.status),
+                // which cannot bind against the schema because a variant is one opaque VariantType. Rewrite those
+                // into Iceberg extract terms here — the first point where the Iceberg schema is known — so the
+                // manifest's per-subfield bounds can prune whole data files. Anything not rewritable is unchanged.
+                //
+                // Skipped when the flag is off, so that path does not depend on the rewriter at all: the guard below
+                // then strips every variant sub-field predicate and the scan keeps only the ordinary-column filter.
+                if (isVariantStatsPushdownEnabled()) {
+                    filterExpression = VariantPredicateRewriter.rewrite(filterExpression, schemaAtSnapshot,
+                            ((IcebergTableFilterEvaluatorFactory) filterEvaluatorFactory).getFilterPathSegments());
+                }
+                // TODO(iceberg-15384): remove this whole extract/non-extract split, the includeColumnStats call and
+                // the per-task evaluation loop below, and simply do scan.filter(filterExpression), once
+                // https://github.com/apache/iceberg/pull/15384 ships. It fixes both blockers: ExpressionUtil.describe
+                // throwing on extract terms (which makes planFiles() fail while logging the filter) and
+                // InclusiveMetricsEvaluator reading variant manifest bounds with the wrong byte order. Pushing the
+                // predicate properly also restores manifest-level short-circuiting, which this local loop cannot do
+                // because it only sees files that planning already listed.
+                if (VariantPredicateRewriter.containsExtractTerm(filterExpression)) {
+                    // Iceberg 1.11.0 cannot carry an extract term through TableScan: SnapshotScan unconditionally
+                    // logs the scan via ExpressionUtil.toSanitizedString, whose describe(Term) throws
+                    // "Unsupported term: extract(..)" (apache/iceberg PR #15384 fixes this upstream). Push only the
+                    // extract-free part — which is weaker, so it can only admit more files — and apply the full
+                    // expression per data file below with InclusiveMetricsEvaluator, which does support extract.
+                    variantFilter = filterExpression;
+                    filterExpression = VariantPredicateRewriter.withoutExtractTerms(filterExpression);
+                }
+                // Correctness guard, always applied. The rewrite declines some shapes on purpose (a sub-field IS NULL,
+                // a literal that would compare against the wrong bound type, a name dot notation cannot express) and
+                // each leaves a dotted variant reference behind. Iceberg cannot bind those, so pushing one fails
+                // planning rather than just skipping the optimization. Dropping them only admits more files; the
+                // engine still applies the predicate to the rows.
+                filterExpression =
+                        VariantPredicateRewriter.withoutVariantSubFieldPredicates(filterExpression, schemaAtSnapshot);
+                scan = scan.filter(bindableOrNoFilter(filterExpression, schemaAtSnapshot, warningCollector));
+            }
+            if (variantFilter != null) {
+                // TODO(iceberg-15384): remove — needed only because we evaluate the bounds ourselves.
+                // Planned data files drop their column statistics unless explicitly requested (BaseScan's
+                // shouldReturnColumnStats() defaults to false). Without the variant column's bounds the evaluator
+                // below can never prove a file cannot match, so it would keep every file. Ask only for the columns
+                // the extract terms reference, to avoid carrying stats for the whole table.
+                Set<String> statsColumns = VariantPredicateRewriter.extractTermColumns(variantFilter);
+                scan = statsColumns.isEmpty() ? scan.includeColumnStats() : scan.includeColumnStats(statsColumns);
+            }
+            // TODO(iceberg-15384): remove — Iceberg does this during planning once the fix ships.
+            // Compares each data file's manifest bounds for the requested variant sub-fields and returns false only
+            // when they prove no row can match, so dropping those tasks is safe. Iceberg's own
+            // InclusiveMetricsEvaluator cannot be used here: on 1.11.0 it throws reading variant bounds from a
+            // manifest (wrong byte order; apache/iceberg PR #15384).
+            VariantBoundsEvaluator variantEvaluator = variantFilter == null ? null
+                    : new VariantBoundsEvaluator(schemaAtSnapshot, variantFilter, warningCollector);
+            List<FileScanTask> plannedTasks = new ArrayList<>();
+            try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+                for (FileScanTask task : tasks) {
+                    if (variantEvaluator == null || variantEvaluator.mightMatch(task.file())) {
+                        plannedTasks.add(task);
+                    }
+                }
+            }
+            // Split after the bounds check, so each file's manifest bounds are evaluated once rather than once per
+            // split; the split tasks share their file's residual and deletes, so nothing is lost by splitting later.
+            fileScanTasks.addAll(planScanTasks(plannedTasks, scan.targetSplitSize(), originalConfiguration));
+            partitionWorkLoadsBasedOnSize.addAll(distributeWorkLoad(fileScanTasks, getPartitionsCount()));
+            LOGGER.info("iceberg scan of {}: {} data files planned into {} tasks over {} partitions, target split {}",
+                    tableName, plannedTasks.size(), fileScanTasks.size(), getPartitionsCount(), scan.targetSplitSize());
+        } catch (CompilationException ex) {
+            throwable = ex;
+            throw ex;
+        } catch (Exception ex) {
+            throwable = ex;
+            throw CompilationException.create(EXTERNAL_SOURCE_ERROR, ex, ex.getMessage());
+        } finally {
+            try {
+                IcebergUtils.closeAndCleanup(catalog, catalogProperties);
+            } catch (Exception ex) {
+                if (throwable != null) {
+                    throwable.addSuppressed(ex);
+                } else {
+                    throw CompilationException.create(EXTERNAL_SOURCE_ERROR, ex, ex.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether a data file may be split across scan tasks. Default on; the off switch exists because this ships in
+     * releases rather than patches, and because the off path is a useful oracle -- the same query must return the
+     * same rows from the same files, just one task per file.
+     * <p>
+     * Unlike the two variant pushdown flags this one cannot change which rows are returned: splitting only divides
+     * the same bytes differently across partitions. What it changes is how much of the cluster a scan can use.
+     */
+    /**
+     * The scan's tasks for {@code plannedTasks}: split at {@code targetSplitSize}, or Iceberg's own one-task-per-file
+     * planning when {@code splitScanTasks} is off.
+     * <p>
+     * The gate and the splitting live together here on purpose. Tested apart they pass independently while nothing
+     * checks that the flag reaches the decision, so dropping the gate would leave every test green.
+     *
+     * @param plannedTasks Iceberg's planned tasks, one per data file
+     * @param targetSplitSize {@link TableScan#targetSplitSize()}
+     * @param configuration the collection's configuration, read for the {@code splitScanTasks} flag
+     * @return the tasks to distribute across partitions
+     */
+    static List<FileScanTask> planScanTasks(List<FileScanTask> plannedTasks, long targetSplitSize,
+            Map<String, String> configuration) {
+        return isSplitScanTasksEnabled(configuration) ? splitTasks(plannedTasks, targetSplitSize) : plannedTasks;
+    }
+
+    static boolean isSplitScanTasksEnabled(Map<String, String> configuration) {
+        return Boolean.parseBoolean(configuration.getOrDefault(ExternalDataConstants.IcebergOptions.SPLIT_SCAN_TASKS,
+                Boolean.toString(ExternalDataConstants.IcebergOptions.DEFAULT_SPLIT_SCAN_TASKS)));
+    }
+
+    /**
+     * Splits each planned task at {@code targetSplitSize} so a large data file is read by several partitions instead
+     * of one. Without this the scan's wall-clock is floored at the largest single file however many partitions there
+     * are; distributing whole files differently cannot lower that floor, only splitting can.
+     * <p>
+     * Tasks carrying deletes are split like any other, as Iceberg core, Spark, Flink and Trino do. Each split then
+     * reads the file's delete files again, a cost {@link FileScanTask#sizeBytes()} includes and
+     * {@link #distributeWorkLoad} weighs by. A file at or under the target size comes back as one task covering all
+     * of it, so small-file tables see no change.
+     * <p>
+     * Split boundaries follow the data file's recorded split offsets, the row-group starts, when the manifest has
+     * them, and fall back to fixed byte ranges otherwise; in both cases the readers select row groups by midpoint, so
+     * every row group belongs to exactly one split. With offsets, Iceberg's {@code FileScanTask.split} yields one
+     * piece per row group and ignores the target, relying on its {@code planTasks} bin-packing to merge them back.
+     * That merge is done here instead, per file: adjacent pieces are coalesced while they fit the target, exactly as
+     * {@code planTasks} does through {@link TableScanUtil#mergeTasks}. Without it a file of many small row groups
+     * would become one task per row group, each opening the file and reading its footer. A single row group larger
+     * than the target stays its own split, since a row group cannot be divided.
+     *
+     * @param tasks the tasks planned for the scan, already filtered
+     * @param targetSplitSize {@link TableScan#targetSplitSize()}: the table's {@code read.split.target-size}, or the
+     *            Iceberg default of 128 MB
+     * @return the split tasks, in planning order
+     */
+    static List<FileScanTask> splitTasks(List<FileScanTask> tasks, long targetSplitSize) {
+        // The table's read.split.target-size reaches here through Long.parseLong with no range check, so the value
+        // is the user's to set, and a non-positive one is destructive: Iceberg's fixed-size split iterator advances
+        // by min(size, remaining), so zero never advances and builds empty tasks until the heap is gone, while a
+        // negative size yields one task of negative length that silently reads nothing. Files that record split
+        // offsets take the offsets-aware iterator and are unaffected, which is why this cannot be left to chance.
+        // TableScanUtil.splitFiles rejects the same values for the same reason.
+        if (targetSplitSize <= 0) {
+            throw new IllegalArgumentException("Split size must be > 0: " + targetSplitSize);
+        }
+        List<FileScanTask> splitTasks = new ArrayList<>();
+        for (FileScanTask task : tasks) {
+            List<FileScanTask> chunk = new ArrayList<>();
+            long chunkLength = 0;
+            for (FileScanTask piece : task.split(targetSplitSize)) {
+                if (!chunk.isEmpty() && chunkLength + piece.length() > targetSplitSize) {
+                    splitTasks.addAll(TableScanUtil.mergeTasks(chunk));
+                    chunk = new ArrayList<>();
+                    chunkLength = 0;
+                }
+                chunk.add(piece);
+                chunkLength += piece.length();
+            }
+            if (!chunk.isEmpty()) {
+                splitTasks.addAll(TableScanUtil.mergeTasks(chunk));
+            }
+        }
+        return splitTasks;
+    }
+
+    /**
+     * Least-loaded-first packing of tasks onto partitions.
+     * <p>
+     * The weight is {@link FileScanTask#sizeBytes()}, not {@link FileScanTask#length()}: it adds the size of the
+     * task's delete files, which every split of a file reads in full to build its delete index. Weighing by length
+     * alone would pack a split with a large deletion vector as if it were free. This is the same weight Iceberg's own
+     * {@code TableScanUtil.planTasks} uses.
+     */
+    static List<PartitionWorkLoadBasedOnSize> distributeWorkLoad(List<FileScanTask> fileScanTasks,
+            int partitionsCount) {
+        PriorityQueue<PartitionWorkLoadBasedOnSize> workloadQueue = new PriorityQueue<>(partitionsCount,
+                Comparator.comparingLong(PartitionWorkLoadBasedOnSize::getTotalSize));
+
+        // Prepare the workloads based on the number of partitions
+        for (int i = 0; i < partitionsCount; i++) {
+            workloadQueue.add(new PartitionWorkLoadBasedOnSize());
+        }
+
+        for (FileScanTask fileScanTask : fileScanTasks) {
+            PartitionWorkLoadBasedOnSize workload = workloadQueue.poll();
+            workload.addFileScanTask(fileScanTask, fileScanTask.sizeBytes());
+            workloadQueue.add(workload);
+        }
+        return new ArrayList<>(workloadQueue);
+    }
+
+    @Override
+    public Schema getProjectedSchema() {
+        return projectedSchema;
+    }
+
+    /**
+     * Sets the snapshot id (or timestamp) if present and pin it to be used by both compile and runtime phases. If no
+     * snapshot is provided, the latest snapshot is used and pinned.
+     *
+     * @param configurationCopy configurationCopy
+     * @param table table
+     * @param scan scan
+     * @return table scan
+     * @throws CompilationException CompilationException
+     */
+    private TableScan setAndPinScanSnapshot(Map<String, String> configurationCopy, Table table, TableScan scan)
+            throws CompilationException {
+        long snapshot;
+        Optional<Long> snapshotOptional = IcebergSnapshotUtils.getSnapshotId(configurationCopy, table);
+        if (snapshotOptional.isPresent()) {
+            snapshot = snapshotOptional.get();
+            if (!snapshotIdExists(table, snapshot)) {
+                throw CompilationException.create(ErrorCode.ICEBERG_SNAPSHOT_ID_NOT_FOUND, snapshot, table.name());
+            }
+        } else {
+            if (table.currentSnapshot() == null) {
+                throw CompilationException.create(EXTERNAL_SOURCE_ERROR, "table " + table.name() + " has no snapshots");
+            }
+            snapshot = table.currentSnapshot().snapshotId();
+        }
+
+        scan = scan.useSnapshot(snapshot);
+        pinSnapshotId(configurationCopy, table, snapshot);
+        return scan;
+    }
+
+    private void pinSnapshotId(Map<String, String> configurationCopy, Table table, long snapshotId) {
+        Snapshot snapshot = table.snapshot(snapshotId);
+        configurationCopy.put(ICEBERG_SNAPSHOT_ID_PROPERTY_KEY, String.valueOf(snapshot.snapshotId()));
+        configurationCopy.put(ICEBERG_SCHEMA_ID_PROPERTY_KEY, Integer.toString(snapshot.schemaId()));
+    }
+
+    public static class PartitionWorkLoadBasedOnSize implements Serializable {
+        private static final long serialVersionUID = 3L;
+        private final List<FileScanTask> fileScanTasks = new ArrayList<>();
+        private long totalSize = 0;
+
+        public PartitionWorkLoadBasedOnSize() {
+        }
+
+        public List<FileScanTask> getFileScanTasks() {
+            return fileScanTasks;
+        }
+
+        public void addFileScanTask(FileScanTask task, long size) {
+            this.fileScanTasks.add(task);
+            this.totalSize += size;
+        }
+
+        public long getTotalSize() {
+            return totalSize;
+        }
+
+        @Override
+        public String toString() {
+            return "PartitionWorkLoadBasedOnSize{" + "fileScanTasks=" + fileScanTasks + ", totalSize=" + totalSize
+                    + '}';
+        }
+    }
+}

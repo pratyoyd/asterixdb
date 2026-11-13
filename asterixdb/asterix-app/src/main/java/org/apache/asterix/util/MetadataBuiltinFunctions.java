@@ -25,12 +25,14 @@ import org.apache.asterix.app.function.DatasetRewriter;
 import org.apache.asterix.app.function.DumpIndexRewriter;
 import org.apache.asterix.app.function.FeedRewriter;
 import org.apache.asterix.app.function.JobSummariesRewriter;
+import org.apache.asterix.app.function.OpenRequestsRewriter;
 import org.apache.asterix.app.function.PingRewriter;
 import org.apache.asterix.app.function.QueryIndexRewriter;
 import org.apache.asterix.app.function.QueryPartitionRewriter;
 import org.apache.asterix.app.function.StorageComponentsRewriter;
 import org.apache.asterix.app.function.TPCDSAllTablesDataGeneratorRewriter;
 import org.apache.asterix.app.function.TPCDSSingleTableDataGeneratorRewriter;
+import org.apache.asterix.app.function.collectioncolumncount.CollectionEstimateColumnCountRewriter;
 import org.apache.asterix.app.function.collectionsize.StorageSizeRewriter;
 import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.typecomputer.impl.AInt64TypeComputer;
@@ -82,6 +84,12 @@ public class MetadataBuiltinFunctions {
         BuiltinFunctions.addUnnestFun(ActiveRequestsRewriter.ACTIVE_REQUESTS, true);
         BuiltinFunctions.addDatasourceFunction(ActiveRequestsRewriter.ACTIVE_REQUESTS, ActiveRequestsRewriter.INSTANCE,
                 BuiltinFunctions.DataSourceFunctionProperty.MIN_MEMORY_BUDGET);
+        // Async requests function
+        BuiltinFunctions.addFunction(OpenRequestsRewriter.OPEN_REQUESTS,
+                (expression, env, mp) -> RecordUtil.FULLY_OPEN_RECORD_TYPE, true);
+        BuiltinFunctions.addUnnestFun(OpenRequestsRewriter.OPEN_REQUESTS, true);
+        BuiltinFunctions.addDatasourceFunction(OpenRequestsRewriter.OPEN_REQUESTS, OpenRequestsRewriter.INSTANCE,
+                BuiltinFunctions.DataSourceFunctionProperty.MIN_MEMORY_BUDGET);
         // job-summaries function
         BuiltinFunctions.addPrivateFunction(JobSummariesRewriter.JOBSUMMARIES,
                 (expression, env, mp) -> RecordUtil.FULLY_OPEN_RECORD_TYPE, true);
@@ -112,6 +120,12 @@ public class MetadataBuiltinFunctions {
         BuiltinFunctions.addFunction(StorageSizeRewriter.STORAGE_SIZE, AInt64TypeComputer.INSTANCE, true);
         BuiltinFunctions.addUnnestFun(StorageSizeRewriter.STORAGE_SIZE, true);
         BuiltinFunctions.addDatasourceFunction(StorageSizeRewriter.STORAGE_SIZE, StorageSizeRewriter.INSTANCE);
+        // Estimate column count
+        BuiltinFunctions.addFunction(CollectionEstimateColumnCountRewriter.ESTIMATED_COLLECTION_COLUMN_COUNT,
+                (expression, env, metadataProvider) -> RecordUtil.FULLY_OPEN_RECORD_TYPE, true);
+        BuiltinFunctions.addUnnestFun(CollectionEstimateColumnCountRewriter.ESTIMATED_COLLECTION_COLUMN_COUNT, true);
+        BuiltinFunctions.addDatasourceFunction(CollectionEstimateColumnCountRewriter.ESTIMATED_COLLECTION_COLUMN_COUNT,
+                CollectionEstimateColumnCountRewriter.INSTANCE);
     }
 
     private MetadataBuiltinFunctions() {

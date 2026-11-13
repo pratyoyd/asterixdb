@@ -170,6 +170,17 @@ class SubplanSpecialFlatteningCheckVisitor implements IQueryOperatorVisitor<Bool
     }
 
     @Override
+    public Boolean visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+        return visitInputs(op);
+    }
+
+    @Override
+    public Boolean visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
+        // Flattening merges the per-outer-row evaluations into one, and CLUSTER BY has no correlation key to gain.
+        return false;
+    }
+
+    @Override
     public Boolean visitUnnestOperator(UnnestOperator op, Void arg) throws AlgebricksException {
         return visitInputs(op);
     }

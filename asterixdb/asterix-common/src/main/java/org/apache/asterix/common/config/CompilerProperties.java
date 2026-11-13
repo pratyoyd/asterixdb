@@ -24,10 +24,11 @@ import static org.apache.asterix.common.config.OptimizationConfUtil.MIN_FRAME_LI
 import static org.apache.asterix.common.config.OptimizationConfUtil.MIN_FRAME_LIMIT_FOR_WINDOW;
 import static org.apache.hyracks.control.common.config.OptionTypes.BOOLEAN;
 import static org.apache.hyracks.control.common.config.OptionTypes.INTEGER;
-import static org.apache.hyracks.control.common.config.OptionTypes.INTEGER_BYTE_UNIT;
 import static org.apache.hyracks.control.common.config.OptionTypes.LONG_BYTE_UNIT;
 import static org.apache.hyracks.control.common.config.OptionTypes.NONNEGATIVE_INTEGER;
 import static org.apache.hyracks.control.common.config.OptionTypes.POSITIVE_INTEGER;
+import static org.apache.hyracks.control.common.config.OptionTypes.POSITIVE_INTEGER_BYTE_UNIT;
+import static org.apache.hyracks.control.common.config.OptionTypes.POSITIVE_LONG_BYTE_UNIT;
 import static org.apache.hyracks.control.common.config.OptionTypes.STRING;
 import static org.apache.hyracks.control.common.config.OptionTypes.getRangedIntegerType;
 import static org.apache.hyracks.util.StorageUtil.StorageUnit.KILOBYTE;
@@ -43,31 +44,39 @@ public class CompilerProperties extends AbstractProperties {
 
     public enum Option implements IOption {
         COMPILER_SORTMEMORY(
-                LONG_BYTE_UNIT,
+                POSITIVE_LONG_BYTE_UNIT,
                 StorageUtil.getLongSizeInBytes(32L, MEGABYTE),
                 "The memory budget (in bytes) for a sort operator instance in a partition"),
         COMPILER_JOINMEMORY(
-                LONG_BYTE_UNIT,
+                POSITIVE_LONG_BYTE_UNIT,
                 StorageUtil.getLongSizeInBytes(32L, MEGABYTE),
                 "The memory budget (in bytes) for a join operator instance in a partition"),
         COMPILER_GROUPMEMORY(
-                LONG_BYTE_UNIT,
+                POSITIVE_LONG_BYTE_UNIT,
                 StorageUtil.getLongSizeInBytes(32L, MEGABYTE),
                 "The memory budget (in bytes) for a group by operator instance in a partition"),
         COMPILER_WINDOWMEMORY(
-                LONG_BYTE_UNIT,
+                POSITIVE_LONG_BYTE_UNIT,
                 StorageUtil.getLongSizeInBytes(32L, MEGABYTE),
                 "The memory budget (in bytes) for a window operator instance in a partition"),
         COMPILER_TEXTSEARCHMEMORY(
-                LONG_BYTE_UNIT,
+                POSITIVE_LONG_BYTE_UNIT,
                 StorageUtil.getLongSizeInBytes(32L, MEGABYTE),
                 "The memory budget (in bytes) for an inverted-index-search operator instance in a partition"),
+        COMPILER_CLUSTERBYMEMORY(
+                POSITIVE_LONG_BYTE_UNIT,
+                StorageUtil.getLongSizeInBytes(32L, MEGABYTE),
+                "The memory budget (in bytes) for a CLUSTER BY k-means operator instance in a partition"),
+        COMPILER_AGGREGATE_DISTINCT_HASH_MEMORY(
+                POSITIVE_LONG_BYTE_UNIT,
+                StorageUtil.getLongSizeInBytes(32L, MEGABYTE),
+                "The memory budget (in bytes) for a hash-based distinct aggregate instance in a partition"),
         COMPILER_EXTERNALSCANMEMORY(
-                INTEGER_BYTE_UNIT,
+                POSITIVE_INTEGER_BYTE_UNIT,
                 StorageUtil.getIntSizeInBytes(8, KILOBYTE),
                 "The memory budget (in bytes) for an external scan operator instance in a partition"),
         COMPILER_FRAMESIZE(
-                INTEGER_BYTE_UNIT,
+                POSITIVE_INTEGER_BYTE_UNIT,
                 StorageUtil.getIntSizeInBytes(1, KILOBYTE),
                 "The page size (in bytes) for computation"),
         COMPILER_MIN_SORTMEMORY(
@@ -102,7 +111,7 @@ public class CompilerProperties extends AbstractProperties {
                 POSITIVE_INTEGER,
                 AlgebricksConfig.SORT_SAMPLES_DEFAULT,
                 "The number of samples which parallel sorting should take from each partition"),
-        COMPILER_INDEXONLY(BOOLEAN, AlgebricksConfig.INDEX_ONLY_DEFAULT, "Enabling/disabling index-only plans"),
+        COMPILER_INDEX_COVERING(BOOLEAN, AlgebricksConfig.INDEX_ONLY_DEFAULT, "Enabling/disabling index-only plans"),
         COMPILER_INTERNAL_SANITYCHECK(
                 BOOLEAN,
                 AlgebricksConfig.SANITYCHECK_DEFAULT,
@@ -133,6 +142,10 @@ public class CompilerProperties extends AbstractProperties {
                 "Enable/disable batch point-lookups when running queries with secondary indexes"),
         COMPILER_CBO(BOOLEAN, AlgebricksConfig.CBO_DEFAULT, "Set the mode for cost based optimization"),
         COMPILER_CBOTEST(BOOLEAN, AlgebricksConfig.CBO_TEST_DEFAULT, "Set the mode for cost based optimization"),
+        COMPILER_CBO_MAXJOINS(
+                getRangedIntegerType(1, AlgebricksConfig.CBO_MAX_JOINS_UPPER_BOUND),
+                AlgebricksConfig.CBO_MAX_JOINS_DEFAULT,
+                "The maximum number of joins for which cost based optimization enumerates join orders"),
         COMPILER_FORCEJOINORDER(
                 BOOLEAN,
                 AlgebricksConfig.FORCE_JOIN_ORDER_DEFAULT,
@@ -157,7 +170,41 @@ public class CompilerProperties extends AbstractProperties {
                 getRangedIntegerType(0, Integer.MAX_VALUE),
                 128,
                 "Maximum occurrences of a variable allowed in an expression for inlining"),
-        COMPILER_ORDERFIELDS(BOOLEAN, AlgebricksConfig.ORDERED_FIELDS, "Enable/disable select order list"),
+        COMPILER_OPTIMIZE_EXPRESSION_MAX_ARGS(
+                getRangedIntegerType(1, Integer.MAX_VALUE),
+                AlgebricksConfig.MAX_EXPRESSION_TREE_SIZE_DEFAULT,
+                "Avoid costly O(N^2) expression optimization passes (e.g. constant folding, CSE) on large IN-list queries when the number of OR/AND function arguments >= the specified value"),
+        COMPILER_EXTRACT_COMMON_EXPRESSION_LIMIT(
+                getRangedIntegerType(1, Integer.MAX_VALUE),
+                AlgebricksConfig.COMMON_EXPRESSION_LIMIT_DEFAULT,
+                "The maximum number of common expressions to extract"),
+        COMPILER_ORDERED_FIELDS(BOOLEAN, AlgebricksConfig.ORDERED_FIELDS, "Enable/disable select order list"),
+        COMPILER_DELTALAKE_FILESPLITS(BOOLEAN, false, "Enable/disable delta lake file splits"),
+        COMPILER_DISJUNCTION_AS_JOIN(
+                BOOLEAN,
+                AlgebricksConfig.REWRITE_DISJUNCTION_DEFAULT,
+                "Rewrite disjunctions to joins in query plans"),
+        COMPILER_AGGREGATE_DISTINCT_HASH(
+                BOOLEAN,
+                AlgebricksConfig.AGGREGATE_DISTINCT_HASH_DEFAULT,
+                "When true, a hash-based approach is used to compute aggregate distinct operations"),
+        COMPILER_DISJUNCTION_HASH_THRESHOLD(
+                getRangedIntegerType(-1, Integer.MAX_VALUE),
+                AlgebricksConfig.HASH_BASED_OR_THRESHOLD_DEFAULT,
+                "The number of disjunctions after which a hash-based approach is used for evaluating OR operation (-1 disables using the hash-based approach)"),
+        COMPILER_PARQUET_FILESPLITS(BOOLEAN, false, "Enable/disable parquet file splits"),
+        COMPILER_HDFS_SPLIT_PARALLELISM(
+                INTEGER,
+                Runtime.getRuntime().availableProcessors(),
+                "Number of threads to use for generating file splits for HDFS files"),
+        COMPILER_QUERY_PLAN_CACHE(
+                BOOLEAN,
+                AlgebricksConfig.QUERY_PLAN_CACHE_DEFAULT,
+                "Enable/disable using the query plan cache."),
+        COMPILER_INDEX_VECTOR_MAX_NUM_CLUSTERS(
+                POSITIVE_INTEGER,
+                AlgebricksConfig.DEFAULT_VECTOR_INDEX_MAX_NUM_CLUSTERS,
+                "The maximum `num_clusters` a vector index may be created with."),
         COMPILER_INTERACTIVE_MODE(
                 BOOLEAN,
                 AlgebricksConfig.INTERACTIVE_MODE_DEFAULT,
@@ -206,13 +253,17 @@ public class CompilerProperties extends AbstractProperties {
 
         @Override
         public boolean hidden() {
-            return this == COMPILER_EXTERNALSCANMEMORY || this == COMPILER_CBOTEST;
+            return this == COMPILER_CBOTEST;
         }
     }
+
+    public static final String COMPILER_FRAMESIZE_KEY = Option.COMPILER_FRAMESIZE.ini();
 
     public static final String COMPILER_SORTMEMORY_KEY = Option.COMPILER_SORTMEMORY.ini();
 
     public static final String COMPILER_GROUPMEMORY_KEY = Option.COMPILER_GROUPMEMORY.ini();
+
+    public static final String COMPILER_CLUSTERBYMEMORY_KEY = Option.COMPILER_CLUSTERBYMEMORY.ini();
 
     public static final String COMPILER_JOINMEMORY_KEY = Option.COMPILER_JOINMEMORY.ini();
 
@@ -220,13 +271,22 @@ public class CompilerProperties extends AbstractProperties {
 
     public static final String COMPILER_TEXTSEARCHMEMORY_KEY = Option.COMPILER_TEXTSEARCHMEMORY.ini();
 
+    public static final String COMPILER_AGGREGATE_DISTINCT_HASH_MEMORY_KEY =
+            Option.COMPILER_AGGREGATE_DISTINCT_HASH_MEMORY.ini();
+
     public static final String COMPILER_PARALLELISM_KEY = Option.COMPILER_PARALLELISM.ini();
 
     public static final String COMPILER_SORT_PARALLEL_KEY = Option.COMPILER_SORT_PARALLEL.ini();
 
     public static final String COMPILER_SORT_SAMPLES_KEY = Option.COMPILER_SORT_SAMPLES.ini();
 
-    public static final String COMPILER_INDEXONLY_KEY = Option.COMPILER_INDEXONLY.ini();
+    public static final String COMPILER_INDEXONLY_KEY = Option.COMPILER_INDEX_COVERING.ini();
+
+    public static final String COMPILER_REWRITE_DISJUNCTION_KEY = Option.COMPILER_DISJUNCTION_AS_JOIN.ini();
+
+    public static final String COMPILER_AGGREGATE_DISTINCT_HASH_KEY = Option.COMPILER_AGGREGATE_DISTINCT_HASH.ini();
+
+    public static final String COMPILER_DISJUNCTION_HASH_THRESHOLD = Option.COMPILER_DISJUNCTION_HASH_THRESHOLD.ini();
 
     public static final String COMPILER_INTERNAL_SANITYCHECK_KEY = Option.COMPILER_INTERNAL_SANITYCHECK.ini();
 
@@ -248,6 +308,8 @@ public class CompilerProperties extends AbstractProperties {
 
     public static final String COMPILER_CBO_TEST_KEY = Option.COMPILER_CBOTEST.ini();
 
+    public static final String COMPILER_CBO_MAXJOINS_KEY = Option.COMPILER_CBO_MAXJOINS.ini();
+
     public static final String COMPILER_FORCE_JOIN_ORDER_KEY = Option.COMPILER_FORCEJOINORDER.ini();
 
     public static final String COMPILER_QUERY_PLAN_SHAPE_KEY = Option.COMPILER_QUERYPLANSHAPE.ini();
@@ -257,7 +319,15 @@ public class CompilerProperties extends AbstractProperties {
     public static final String COMPILER_MAX_VARIABLE_OCCURRENCES_INLINING_KEY =
             Option.COMPILER_MAX_VARIABLE_OCCURRENCES_INLINING.ini();
 
-    public static final String COMPILER_ORDERFIELDS_KEY = Option.COMPILER_ORDERFIELDS.ini();
+    public static final String COMPILER_OPTIMIZE_EXPRESSION_MAX_ARGS_KEY =
+            Option.COMPILER_OPTIMIZE_EXPRESSION_MAX_ARGS.ini();
+
+    public static final String COMPILER_EXTRACT_COMMON_EXPRESSION_LIMIT_KEY =
+            Option.COMPILER_EXTRACT_COMMON_EXPRESSION_LIMIT.ini();
+
+    public static final String COMPILER_ORDERED_FIELDS_KEY = Option.COMPILER_ORDERED_FIELDS.ini();
+
+    public static final String COMPILER_QUERY_PLAN_CACHE_KEY = Option.COMPILER_QUERY_PLAN_CACHE.ini();
 
     public static final String COMPILER_INTERACTIVE_MODE = Option.COMPILER_INTERACTIVE_MODE.ini();
     public static final String COMPILER_BLOCKING_MODE = Option.COMPILER_BLOCKING_MODE.ini();
@@ -271,6 +341,9 @@ public class CompilerProperties extends AbstractProperties {
             Option.COMPILER_PLAQUE_EAGER_BATCH_SIZE.ini();
 
     public static final int COMPILER_PARALLELISM_AS_STORAGE = 0;
+    public static final String COMPILER_DELTALAKE_FILESPLITS_KEY = Option.COMPILER_DELTALAKE_FILESPLITS.ini();
+    public static final String COMPILER_PARQUET_FILESPLITS_KEY = Option.COMPILER_PARQUET_FILESPLITS.ini();
+    public static final String COMPILER_HDFS_SPLIT_PARALLELISM_KEY = Option.COMPILER_HDFS_SPLIT_PARALLELISM.ini();
 
     public CompilerProperties(PropertiesAccessor accessor) {
         super(accessor);
@@ -288,12 +361,20 @@ public class CompilerProperties extends AbstractProperties {
         return accessor.getLong(Option.COMPILER_GROUPMEMORY);
     }
 
+    public long getClusterByMemorySize() {
+        return accessor.getLong(Option.COMPILER_CLUSTERBYMEMORY);
+    }
+
     public long getWindowMemorySize() {
         return accessor.getLong(Option.COMPILER_WINDOWMEMORY);
     }
 
     public long getTextSearchMemorySize() {
         return accessor.getLong(Option.COMPILER_TEXTSEARCHMEMORY);
+    }
+
+    public long getAggregateDistinctHashMemorySize() {
+        return accessor.getLong(Option.COMPILER_AGGREGATE_DISTINCT_HASH_MEMORY);
     }
 
     public int getMinSortMemoryFrames() {
@@ -333,7 +414,19 @@ public class CompilerProperties extends AbstractProperties {
     }
 
     public boolean isIndexOnly() {
-        return accessor.getBoolean(Option.COMPILER_INDEXONLY);
+        return accessor.getBoolean(Option.COMPILER_INDEX_COVERING);
+    }
+
+    public boolean rewriteDisjunctionToJoin() {
+        return accessor.getBoolean(Option.COMPILER_DISJUNCTION_AS_JOIN);
+    }
+
+    public boolean isAggregateDistinctHash() {
+        return accessor.getBoolean(Option.COMPILER_AGGREGATE_DISTINCT_HASH);
+    }
+
+    public int getHashBasedORThreshold() {
+        return accessor.getInt(Option.COMPILER_DISJUNCTION_HASH_THRESHOLD);
     }
 
     public boolean isSanityCheck() {
@@ -376,6 +469,10 @@ public class CompilerProperties extends AbstractProperties {
         return accessor.getBoolean(Option.COMPILER_CBOTEST);
     }
 
+    public int getCBOMaxJoins() {
+        return accessor.getInt(Option.COMPILER_CBO_MAXJOINS);
+    }
+
     public boolean getForceJoinOrderMode() {
         return accessor.getBoolean(Option.COMPILER_FORCEJOINORDER);
     }
@@ -399,7 +496,7 @@ public class CompilerProperties extends AbstractProperties {
     }
 
     public boolean isOrderedFields() {
-        return accessor.getBoolean(Option.COMPILER_ORDERFIELDS);
+        return accessor.getBoolean(Option.COMPILER_ORDERED_FIELDS);
     }
 
     public int getRuntimeMemoryOverheadPercentage() {
@@ -412,5 +509,29 @@ public class CompilerProperties extends AbstractProperties {
 
     public int getMaxVariableOccurrencesForInlining() {
         return accessor.getInt(Option.COMPILER_MAX_VARIABLE_OCCURRENCES_INLINING);
+    }
+
+    public int getMaxExpressionTreeSize() {
+        return accessor.getInt(Option.COMPILER_OPTIMIZE_EXPRESSION_MAX_ARGS);
+    }
+
+    public boolean isDeltaLakeFileSplitsEnabled() {
+        return accessor.getBoolean(Option.COMPILER_DELTALAKE_FILESPLITS);
+    }
+
+    public boolean isParquetFileSplitsEnabled() {
+        return accessor.getBoolean(Option.COMPILER_PARQUET_FILESPLITS);
+    }
+
+    public int getHdfsSplitParallelism() {
+        return accessor.getInt(Option.COMPILER_HDFS_SPLIT_PARALLELISM);
+    }
+
+    public boolean isQueryPlanCacheEnabled() {
+        return accessor.getBoolean(Option.COMPILER_QUERY_PLAN_CACHE);
+    }
+
+    public int getVectorIndexMaxNumClusters() {
+        return accessor.getInt(Option.COMPILER_INDEX_VECTOR_MAX_NUM_CLUSTERS);
     }
 }

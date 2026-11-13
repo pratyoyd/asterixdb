@@ -100,7 +100,7 @@ abstract class AbstractFilterBuilder {
         return argsEvalFactories;
     }
 
-    private IFunctionDescriptor resolveFunction(AbstractFunctionCallExpression funcExpr) throws AlgebricksException {
+    protected IFunctionDescriptor resolveFunction(AbstractFunctionCallExpression funcExpr) throws AlgebricksException {
         MetadataProvider metadataProvider = (MetadataProvider) context.getMetadataProvider();
         IFunctionManager functionManager = metadataProvider.getFunctionManager();
         FunctionIdentifier fnId = funcExpr.getFunctionIdentifier();
@@ -110,7 +110,7 @@ abstract class AbstractFilterBuilder {
         IFunctionTypeInferer fnTypeInfer = functionManager.lookupFunctionTypeInferer(fnId);
         if (fnTypeInfer != null) {
             CompilerProperties compilerProps = ((IApplicationContext) context.getAppContext()).getCompilerProperties();
-            fnTypeInfer.infer(funcExpr, fd, typeEnv, compilerProps);
+            fnTypeInfer.infer(funcExpr, fd, typeEnv, compilerProps, context.getMetadataProvider());
         }
         return fd;
     }

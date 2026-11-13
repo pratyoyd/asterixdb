@@ -18,6 +18,8 @@
  */
 package org.apache.hyracks.storage.am.common.build;
 
+import static org.apache.hyracks.api.exceptions.ErrorCode.RESOURCE_DOES_NOT_EXIST;
+
 import java.io.IOException;
 
 import org.apache.hyracks.api.application.INCServiceContext;
@@ -65,6 +67,17 @@ public class IndexBuilder implements IIndexBuilder {
         resourceRelPath = resourceRef.getRelativePath();
     }
 
+    /**
+     * Hook for subclasses to configure the freshly created {@link IResource} before it is wrapped in a
+     * {@link LocalResource} and persisted. The base implementation does nothing; index types with extra
+     * per-resource state (e.g. the vector index injecting quantization constants) override it. Keeping this
+     * seam here lets index-type-specific configuration live in the subclass rather than leaking into the
+     * shared builder.
+     */
+    protected void configureResource(IResource resource) throws HyracksDataException {
+        // no-op by default
+    }
+
     @Override
     public void build() throws HyracksDataException {
         IResourceLifecycleManager<IIndex> lcManager = storageManager.getLifecycleManager(ctx);
@@ -75,10 +88,12 @@ public class IndexBuilder implements IIndexBuilder {
         LocalResource lr = localResourceRepository.get(resourceRelPath);
         long resourceId = lr == null ? -1 : lr.getId();
         if (resourceId != -1) {
-            localResourceRepository.delete(resourceRelPath);
+            deleteLeftoverResource(localResourceRepository);
         }
         resourceId = resourceIdFactory.createId();
         IResource resource = localResourceFactory.createResource(resourceRef);
+        // Let subclasses inject index-type-specific state (e.g. vector-index quantization constants).
+        configureResource(resource);
         lr = new LocalResource(resourceId, ITreeIndexFrame.Constants.VERSION, durable, resource);
         IIndex index = lcManager.get(resourceRelPath);
         if (index != null) {
@@ -110,5 +125,23 @@ public class IndexBuilder implements IIndexBuilder {
             throw HyracksDataException.create(e);
         }
         lcManager.register(resourceRelPath, index);
+    }
+
+    /**
+     * Clears a leftover resource at {@link #resourceRelPath} so that the index about to be created starts from a
+     * clean slate. This is best-effort cleanup: the repository may report the resource as present from a cached
+     * view while it is already gone from the underlying storage (e.g. it was deleted by another node while this
+     * node did not own its storage partition), in which case there is nothing to clear and the create should
+     * proceed.
+     */
+    private void deleteLeftoverResource(ILocalResourceRepository localResourceRepository) throws HyracksDataException {
+        try {
+            localResourceRepository.delete(resourceRelPath);
+        } catch (HyracksDataException e) {
+            if (!e.matches(RESOURCE_DOES_NOT_EXIST)) {
+                throw e;
+            }
+            LOGGER.warn("Leftover resource {} is already gone on index create", resourceRelPath);
+        }
     }
 }

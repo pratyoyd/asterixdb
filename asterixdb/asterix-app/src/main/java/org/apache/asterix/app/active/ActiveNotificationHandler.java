@@ -31,8 +31,10 @@ import org.apache.asterix.active.EntityId;
 import org.apache.asterix.active.IActiveEntityEventsListener;
 import org.apache.asterix.active.IActiveNotificationHandler;
 import org.apache.asterix.active.message.ActivePartitionMessage;
+import org.apache.asterix.common.api.IClusterManagementWork.ClusterState;
 import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.common.exceptions.RuntimeDataException;
+import org.apache.asterix.common.utils.AsterixJobProperty;
 import org.apache.asterix.metadata.declared.MetadataProvider;
 import org.apache.asterix.metadata.entities.Dataset;
 import org.apache.commons.lang3.tuple.Pair;
@@ -43,6 +45,7 @@ import org.apache.hyracks.api.job.JobId;
 import org.apache.hyracks.api.job.JobSpecification;
 import org.apache.hyracks.api.job.JobStatus;
 import org.apache.hyracks.api.job.resource.IJobCapacityController;
+import org.apache.hyracks.api.util.ExceptionUtils;
 import org.apache.hyracks.api.util.SingleThreadEventProcessor;
 import org.apache.hyracks.util.ExitUtil;
 import org.apache.logging.log4j.Level;
@@ -54,7 +57,6 @@ public class ActiveNotificationHandler extends SingleThreadEventProcessor<Active
 
     private static final Logger LOGGER = LogManager.getLogger();
     private static final Level level = Level.DEBUG;
-    public static final String ACTIVE_ENTITY_PROPERTY_NAME = "ActiveJob";
     private final Map<EntityId, IActiveEntityEventsListener> entityEventListeners;
     private final Map<JobId, EntityId> jobId2EntityId;
     private boolean suspended = false;
@@ -97,10 +99,10 @@ public class ActiveNotificationHandler extends SingleThreadEventProcessor<Active
     @Override
     public void notifyJobCreation(JobId jobId, JobSpecification jobSpecification,
             IJobCapacityController.JobSubmissionStatus status) throws HyracksDataException {
-        Object property = jobSpecification.getProperty(ACTIVE_ENTITY_PROPERTY_NAME);
+        Object property = jobSpecification.getProperty(AsterixJobProperty.ACTIVE_ENTITY);
         if (!(property instanceof EntityId)) {
             if (property != null) {
-                LOGGER.debug("{} is not an ingestion job. job property={}", jobId, property);
+                LOGGER.debug("{} is not an ingestion job. found entity={}", jobId, property);
             }
             return;
         }
@@ -235,8 +237,19 @@ public class ActiveNotificationHandler extends SingleThreadEventProcessor<Active
         }
     }
 
+    /**
+     * Suspends the entity, halting if that fails -- an entity whose suspension failed is in an indeterminate state,
+     * and the DDL that requested the suspension cannot be allowed to proceed against it.
+     * <p>
+     * The exception is a failure caused by this JVM's own termination: the suspend is interrupted along with every
+     * other in-flight task, the listener has already restored its previous state, and nothing is going to run
+     * against the entity afterwards. Halting there buys no safety and forfeits the remainder of an orderly
+     * shutdown, so the failure is reported to the caller instead and the statement fails on its own terms.
+     *
+     * @throws HyracksDataException if the suspend was interrupted by this JVM terminating
+     */
     public void suspendForDdlOrHalt(IActiveEntityEventsListener listener, MetadataProvider metadataProvider,
-            Dataset targetDataset) {
+            Dataset targetDataset) throws HyracksDataException {
         try {
             EntityId entityId = listener.getEntityId();
             LOGGER.log(level, "Suspending {}", entityId);
@@ -246,6 +259,11 @@ public class ActiveNotificationHandler extends SingleThreadEventProcessor<Active
             ((ActiveEntityEventsListener) listener).suspend(metadataProvider);
             LOGGER.log(level, "{} suspended", entityId);
         } catch (Throwable th) { // NOSONAR must halt in case of any failure
+            if (ExceptionUtils.causedByInterrupt(th, true) && ExitUtil.isExiting()) {
+                // SHUTTING_DOWN is stated to report the error as retriable
+                LOGGER.info("Suspend of {} interrupted by shutdown", listener.getEntityId(), th);
+                throw new RuntimeDataException(ErrorCode.REJECT_BAD_CLUSTER_STATE, th, ClusterState.SHUTTING_DOWN);
+            }
             LOGGER.error("Suspend active failed", th);
             ExitUtil.halt(ExitUtil.EC_ACTIVE_SUSPEND_FAILURE);
         }

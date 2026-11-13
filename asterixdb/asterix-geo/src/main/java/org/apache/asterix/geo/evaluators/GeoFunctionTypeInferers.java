@@ -19,6 +19,8 @@
 package org.apache.asterix.geo.evaluators;
 
 import org.apache.asterix.common.config.CompilerProperties;
+import org.apache.asterix.common.exceptions.CompilationException;
+import org.apache.asterix.common.exceptions.ErrorCode;
 import org.apache.asterix.om.functions.IFunctionDescriptor;
 import org.apache.asterix.om.functions.IFunctionTypeInferer;
 import org.apache.asterix.om.types.ATypeTag;
@@ -29,6 +31,7 @@ import org.apache.hyracks.algebricks.common.exceptions.NotImplementedException;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.expressions.AbstractFunctionCallExpression;
 import org.apache.hyracks.algebricks.core.algebra.expressions.IVariableTypeEnvironment;
+import org.apache.hyracks.algebricks.core.algebra.metadata.IMetadataProvider;
 
 public class GeoFunctionTypeInferers {
     private GeoFunctionTypeInferers() {
@@ -37,7 +40,7 @@ public class GeoFunctionTypeInferers {
     public static final class GeometryConstructorTypeInferer implements IFunctionTypeInferer {
         @Override
         public void infer(ILogicalExpression expr, IFunctionDescriptor fd, IVariableTypeEnvironment context,
-                CompilerProperties compilerProps) throws AlgebricksException {
+                CompilerProperties compilerProps, IMetadataProvider<?, ?> mp) throws AlgebricksException {
             AbstractFunctionCallExpression fce = (AbstractFunctionCallExpression) expr;
             IAType t = (IAType) context.getType(fce.getArguments().get(0).getValue());
             ATypeTag typeTag = t.getTypeTag();
@@ -48,6 +51,20 @@ public class GeoFunctionTypeInferers {
             } else {
                 throw new NotImplementedException("parse-geojson for data of type " + t);
             }
+        }
+    }
+
+    public static final class STTransformTypeInferer implements IFunctionTypeInferer {
+        @Override
+        public void infer(ILogicalExpression expr, IFunctionDescriptor fd, IVariableTypeEnvironment context,
+                CompilerProperties compilerProps, IMetadataProvider<?, ?> mp) throws AlgebricksException {
+            AbstractFunctionCallExpression fce = (AbstractFunctionCallExpression) expr;
+            Object[] opaque = fce.getOpaqueParameters();
+            if (opaque == null || opaque.length < 2) {
+                throw new CompilationException(ErrorCode.COMPILATION_ERROR, expr.getSourceLocation(),
+                        "ST_Transform CRS resolution rule did not run");
+            }
+            fd.setImmutableStates(opaque[0], opaque[1]);
         }
     }
 

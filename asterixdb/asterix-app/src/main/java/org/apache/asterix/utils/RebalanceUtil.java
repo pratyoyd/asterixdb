@@ -39,6 +39,7 @@ import org.apache.asterix.app.active.ActiveNotificationHandler;
 import org.apache.asterix.common.api.IMetadataLockManager;
 import org.apache.asterix.common.dataflow.ICcApplicationContext;
 import org.apache.asterix.common.metadata.DataverseName;
+import org.apache.asterix.common.storage.IndexCompletionMode;
 import org.apache.asterix.common.transactions.TxnId;
 import org.apache.asterix.common.utils.JobUtils;
 import org.apache.asterix.dataflow.data.nontagged.MissingWriterFactory;
@@ -53,16 +54,18 @@ import org.apache.asterix.metadata.utils.IndexUtil;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.rebalance.IDatasetRebalanceCallback;
 import org.apache.asterix.runtime.job.listener.JobEventListenerFactory;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraint;
 import org.apache.hyracks.algebricks.common.constraints.AlgebricksPartitionConstraintHelper;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
-import org.apache.hyracks.algebricks.common.utils.Pair;
 import org.apache.hyracks.algebricks.runtime.base.IPushRuntimeFactory;
 import org.apache.hyracks.algebricks.runtime.operators.meta.AlgebricksMetaOperatorDescriptor;
 import org.apache.hyracks.api.client.IHyracksClientConnection;
 import org.apache.hyracks.api.dataflow.IConnectorDescriptor;
 import org.apache.hyracks.api.dataflow.IOperatorDescriptor;
 import org.apache.hyracks.api.dataflow.value.RecordDescriptor;
+import org.apache.hyracks.api.job.HyracksJobProperty;
+import org.apache.hyracks.api.job.JobKind;
 import org.apache.hyracks.api.job.JobSpecification;
 import org.apache.hyracks.dataflow.common.data.partition.FieldHashPartitionComputerFactory;
 import org.apache.hyracks.dataflow.std.connectors.MToNPartitioningConnectorDescriptor;
@@ -151,31 +154,42 @@ public class RebalanceUtil {
             throw e;
         }
 
-        if (targetNcNames.isEmpty()) {
-            // Nothing else to do since the dataset was dropped.
-            return true;
-        } else if (!success) {
+        if (!success) {
             LOGGER.info("Dataset {} rebalance was skipped, see above log for reason", datasetName);
             return false;
         }
-        // Up to this point, since the bulk part of a rebalance operation is done,
-        // the following two operations will retry after interrupt and finally rethrow InterruptedException,
-        // which means that they will always succeed and could possibly throw InterruptedException as the last step.
-        // TODO(yingyi): ASTERIXDB-1948, in case a crash happens, currently the system will either:
-        // 1. (crash before metadata switch) think the rebalance is not done, and the target data files are leaked until
-        // the next rebalance request.
-        // 2. (crash after metadata switch) think the rebalance is done, and the source data files are leaked;
-        runWithRetryAfterInterrupt(() -> {
-            // Executes the 2nd Metadata transaction for switching the metadata entity.
-            // It detaches the source dataset and attaches the target dataset to metadata's point of view.
-            runMetadataTransaction(metadataProvider,
-                    () -> rebalanceSwitch(sourceDataset, targetDataset, metadataProvider));
-            // Executes the 3rd Metadata transaction to drop the source dataset files and the node group for
-            // the source dataset.
-            runMetadataTransaction(metadataProvider, () -> dropSourceDataset(sourceDataset, metadataProvider, hcc));
-        });
-        LOGGER.info("Dataset {} rebalance completed successfully", datasetName);
-        return true;
+
+        try {
+            if (targetNcNames.isEmpty()) {
+                // Nothing else to do since the dataset was dropped.
+                return true;
+            }
+            // Up to this point, since the bulk part of a rebalance operation is done,
+            // the following two operations will retry after interrupt and finally rethrow InterruptedException,
+            // which means that they will always succeed and could possibly throw InterruptedException as the last step.
+            // TODO(yingyi): ASTERIXDB-1948, in case a crash happens, currently the system will either:
+            // 1. (crash before metadata switch) think the rebalance is not done, and the target data files are leaked
+            // until the next rebalance request.
+            // 2. (crash after metadata switch) think the rebalance is done, and the source data files are leaked;
+            runWithRetryAfterInterrupt(() -> {
+                // Executes the 2nd Metadata transaction for switching the metadata entity.
+                // It detaches the source dataset and attaches the target dataset to metadata's point of view.
+                runMetadataTransaction(metadataProvider,
+                        () -> rebalanceSwitch(sourceDataset, targetDataset, metadataProvider));
+                // Executes the 3rd Metadata transaction to drop the source dataset files and the node group for
+                // the source dataset.
+                runMetadataTransaction(metadataProvider, () -> dropSourceDataset(sourceDataset, metadataProvider, hcc));
+            });
+            LOGGER.info("Dataset {} rebalance completed successfully", datasetName);
+            return true;
+        } finally {
+            invalidatePlanCache(metadataProvider);
+        }
+    }
+
+    private static void invalidatePlanCache(MetadataProvider metadataProvider) {
+        ICcApplicationContext appCtx = metadataProvider.getApplicationContext();
+        appCtx.getQueryPlanCache().clear();
     }
 
     @FunctionalInterface
@@ -278,6 +292,7 @@ public class RebalanceUtil {
             MetadataManager.INSTANCE.commitTransaction(mdTxnCtx);
             LOGGER.info("dataset {} node group updated to {}", target.getDatasetName(), target.getNodeGroupName());
         } finally {
+            invalidatePlanCache(metadataProvider);
             lockManager.downgradeDatasetLockToExclusiveModify(metadataProvider.getLocks(), target.getDatabaseName(),
                     target.getDataverseName(), target.getDatasetName());
         }
@@ -348,6 +363,7 @@ public class RebalanceUtil {
         spec.connect(new OneToOneConnectorDescriptor(spec), upsertOp, 0, commitOp, 0);
 
         // Executes the job.
+        spec.setProperty(HyracksJobProperty.JOB_KIND, JobKind.DML);
         JobUtils.forceRunJob(hcc, spec, true);
     }
 
@@ -356,7 +372,7 @@ public class RebalanceUtil {
         ARecordType itemType = (ARecordType) metadataProvider.findType(source.getItemTypeDatabaseName(),
                 source.getItemTypeDataverseName(), source.getItemTypeName());
         ARecordType metaType = DatasetUtil.getMetaType(metadataProvider, source);
-        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, metaType, source);
+        itemType = (ARecordType) metadataProvider.findTypeForDatasetWithoutType(itemType, source);
         int numberOfPrimaryKeys = source.getPrimaryKeys().size();
 
         // The assembly cost of ALL_FIELDS_TYPE could be expensive if record structure is "complex"
@@ -374,9 +390,9 @@ public class RebalanceUtil {
                 DatasetUtil.createPrimaryIndexUpsertOp(spec, metadataProvider, target,
                         source.getPrimaryRecordDescriptor(metadataProvider), fieldPermutation,
                         MissingWriterFactory.INSTANCE);
-        IOperatorDescriptor upsertOp = upsertOpAndConstraints.first;
+        IOperatorDescriptor upsertOp = upsertOpAndConstraints.getLeft();
         AlgebricksPartitionConstraintHelper.setPartitionConstraintInJobSpec(spec, upsertOp,
-                upsertOpAndConstraints.second);
+                upsertOpAndConstraints.getRight());
         return upsertOp;
     }
 
@@ -425,8 +441,8 @@ public class RebalanceUtil {
             IHyracksClientConnection hcc, List<Index> indexes) throws Exception {
         for (Index index : indexes) {
             // Creates the secondary index.
-            JobSpecification indexCreationJobSpec =
-                    IndexUtil.buildSecondaryIndexCreationJobSpec(target, index, metadataProvider, null);
+            JobSpecification indexCreationJobSpec = IndexUtil.buildSecondaryIndexCreationJobSpec(target, index,
+                    metadataProvider, null, IndexCompletionMode.ON_LOAD);
             JobUtils.forceRunJob(hcc, indexCreationJobSpec, true);
 
             // Loads the secondary index.

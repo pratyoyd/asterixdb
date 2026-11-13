@@ -200,6 +200,18 @@ public class RequiredCapacityVisitor implements ILogicalOperatorVisitor<Void, Vo
     }
 
     @Override
+    public Void visitKMeansStageOperator(KMeansStageOperator op, Void arg) throws AlgebricksException {
+        visitInternal(op, true);
+        return null;
+    }
+
+    @Override
+    public Void visitClusterByOperator(ClusterByOperator op, Void arg) throws AlgebricksException {
+        visitInternal(op, true);
+        return null;
+    }
+
+    @Override
     public Void visitUnnestOperator(UnnestOperator op, Void arg) throws AlgebricksException {
         visitInternal(op, true);
         return null;

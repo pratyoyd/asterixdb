@@ -37,7 +37,7 @@ import org.apache.asterix.lang.sqlpp.clause.FromClause;
 import org.apache.asterix.lang.sqlpp.clause.SelectBlock;
 import org.apache.asterix.lang.sqlpp.clause.SelectClause;
 import org.apache.asterix.lang.sqlpp.visitor.base.AbstractSqlppSimpleExpressionVisitor;
-import org.apache.hyracks.algebricks.common.utils.Pair;
+import org.apache.commons.lang3.tuple.Pair;
 
 /**
  * Base class for visitors that extract expressions into LET clauses.
@@ -73,8 +73,11 @@ abstract class AbstractSqlppExpressionExtractionVisitor extends AbstractSqlppSim
         if (!letHavingListAfterGby.isEmpty()) {
             visitLetHavingClausesAfterGby(arg, stackElement.extractionList, letHavingListAfterGby, groupbyClause);
         }
+        // An expression lifted out of the SELECT clause lands after whatever groups the block, or it would be
+        // evaluated before the variables it reads exist. CLUSTER BY groups its block as GROUP BY does.
+        boolean grouped = selectBlock.hasGroupbyClause() || selectBlock.hasClusterbyClause();
         visitSelectClause(selectBlock.getSelectClause(), arg, stackElement.extractionList,
-                selectBlock.hasGroupbyClause() ? letHavingListAfterGby : letWhereList, groupbyClause);
+                grouped ? letHavingListAfterGby : letWhereList, groupbyClause);
 
         stack.pop();
         return null;
@@ -130,8 +133,8 @@ abstract class AbstractSqlppExpressionExtractionVisitor extends AbstractSqlppSim
     private void introduceLetClauses(List<Pair<Expression, VarIdentifier>> fromBindingList,
             List<AbstractClause> toLetWhereList) {
         for (Pair<Expression, VarIdentifier> p : fromBindingList) {
-            Expression bindExpr = p.first;
-            VarIdentifier var = p.second;
+            Expression bindExpr = p.getLeft();
+            VarIdentifier var = p.getRight();
             VariableExpr varExpr = new VariableExpr(var);
             varExpr.setSourceLocation(bindExpr.getSourceLocation());
             toLetWhereList.add(new LetClause(varExpr, bindExpr));
@@ -158,7 +161,7 @@ abstract class AbstractSqlppExpressionExtractionVisitor extends AbstractSqlppSim
 
         public VarIdentifier addPendingLetClause(Expression expression) {
             VarIdentifier letVar = context.newVariable();
-            extractionList.add(new Pair<>(expression, letVar));
+            extractionList.add(Pair.of(expression, letVar));
             return letVar;
         }
     }

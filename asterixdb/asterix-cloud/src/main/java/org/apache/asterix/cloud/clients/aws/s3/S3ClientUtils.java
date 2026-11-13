@@ -19,17 +19,17 @@
 package org.apache.asterix.cloud.clients.aws.s3;
 
 import java.io.File;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URLDecoder;
-import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Predicate;
+
+import org.apache.asterix.external.util.aws.s3.S3Utils;
 
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable;
 
 public class S3ClientUtils {
 
@@ -38,27 +38,16 @@ public class S3ClientUtils {
     }
 
     public static List<S3Object> listS3Objects(S3Client s3Client, String bucket, String path) {
-        String newMarker = null;
-        ListObjectsV2Response listObjectsResponse;
-        ListObjectsV2Request.Builder listObjectsBuilder = ListObjectsV2Request.builder().bucket(bucket);
-        listObjectsBuilder.prefix(toCloudPrefix(path));
+        ListObjectsV2Request listObjectsRequest =
+                ListObjectsV2Request.builder().bucket(bucket).prefix(toCloudPrefix(path)).build();
         List<S3Object> files = new ArrayList<>();
-        while (true) {
-            // List the objects from the start, or from the last marker in case of truncated result
-            if (newMarker == null) {
-                listObjectsResponse = s3Client.listObjectsV2(listObjectsBuilder.build());
-            } else {
-                listObjectsResponse = s3Client.listObjectsV2(listObjectsBuilder.continuationToken(newMarker).build());
-            }
 
-            files.addAll(listObjectsResponse.contents());
-
-            // Mark the flag as done if done, otherwise, get the marker of the previous response for the next request
-            if (Boolean.FALSE.equals(listObjectsResponse.isTruncated())) {
-                break;
-            } else {
-                newMarker = listObjectsResponse.nextContinuationToken();
-            }
+        // the iterable requests the next page with the previous page's continuation token until the result is complete
+        ListObjectsV2Iterable listObjectsIterable = s3Client.listObjectsV2Paginator(listObjectsRequest);
+        for (ListObjectsV2Response listObjectsResponse : listObjectsIterable) {
+            // ignore objects ending with "/" since we don't create such objects.
+            // S3 can return folders as objects with size 0 and key ending with "/"
+            listObjectsResponse.contents().stream().filter(Predicate.not(S3Utils::isDirectory)).forEach(files::add);
         }
         return files;
     }
@@ -69,21 +58,6 @@ public class S3ClientUtils {
         List<S3Object> files = s3Client.listObjectsV2(listObjectsBuilder.build()).contents();
 
         return isEmptyFolder(files, path);
-    }
-
-    public static String encodeURI(String path) {
-        if (path.isEmpty()) {
-            return path;
-        }
-        try {
-            return new URI("s3", "//", path).getRawFragment();
-        } catch (URISyntaxException e) {
-            throw new IllegalArgumentException(e);
-        }
-    }
-
-    public static String decodeURI(String path) {
-        return URLDecoder.decode(path, Charset.defaultCharset());
     }
 
     private static String toCloudPrefix(String path) {

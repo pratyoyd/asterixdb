@@ -28,22 +28,39 @@ import org.apache.hyracks.api.result.ResultSetId;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-class ResultSetMap implements IResultStateRecord, Serializable {
+public class ResultSetMap implements IResultStateRecord, Serializable {
     private static final long serialVersionUID = 1L;
 
     private static final Logger LOGGER = LogManager.getLogger();
 
     private final long timestamp;
+    private final long resultTtlInNanos;
     private final HashMap<ResultSetId, ResultState[]> resultStateMap;
+    private volatile long completeTimestamp;
 
-    ResultSetMap() {
+    ResultSetMap(long resultTtlInNanos) {
         timestamp = System.nanoTime();
+        this.resultTtlInNanos = resultTtlInNanos;
         resultStateMap = new HashMap<>();
     }
 
     @Override
-    public long getTimestamp() {
+    public long getTimestampNanos() {
         return timestamp;
+    }
+
+    @Override
+    public long getCompleteTimestampNanos() {
+        return completeTimestamp;
+    }
+
+    @Override
+    public long getResultTtlInNanos() {
+        return resultTtlInNanos;
+    }
+
+    public void recordCompleteTimestamp() {
+        completeTimestamp = System.nanoTime();
     }
 
     ResultState[] getResultStates(ResultSetId rsId) {
