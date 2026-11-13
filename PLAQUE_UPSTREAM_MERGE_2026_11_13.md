@@ -1,7 +1,7 @@
 # PLAQUE + SmartRabbit on upstream AsterixDB (Iceberg): the merge that worked
 
 **Date:** 2026-11-13
-**Branch:** `interactive-processing-v3` (pushed to `pratyoyd/asterixdb`, head `046a78a586`)
+**Branch:** `baleen` (named `interactive-processing-v3` until renamed the same day; pushed to `pratyoyd/asterixdb`, head `046a78a586`)
 **Tree:** `/scratch/asterixdb_eightynode/asterixdb_v3` on sensoria-2
 **Upstream merged:** apache/asterixdb `master` at `a4a85d80c6` (2026-11-12), which includes the Iceberg work
 
