@@ -2,13 +2,13 @@
 
 **Date:** 2026-11-15
 **Tree:** `/scratch/asterixdb_eightynode/asterixdb_v3`, branch `baleen` at `046a78a586`
-**Status:** research only. No code was changed.
+**Status:** research plus step 1 (environment) done and verified the same day. No AsterixDB code was changed.
 
 ## Short answer
 
-- **Tuple-level Baleen filters already work on external scans with no code change.** Verified today on a `localfs` external dataset: the plan contains `PLAQUE_FILTER` / `PLAQUE_AGGREGATE` (scalar MAX) and `PLAQUE_GROUP_FILTER` / `PLAQUE_GROUP_AGGREGATE` (GROUP BY), and results match with Baleen on and off. An Iceberg table is the same kind of scan (`DATASOURCE_SCAN` over an external dataset), so the same should hold there. That is not yet verified on an actual Iceberg table.
+- **Tuple-level Baleen filters already work on external scans with no code change.** Verified today on a `localfs` external dataset: the plan contains `PLAQUE_FILTER` / `PLAQUE_AGGREGATE` (scalar MAX) and `PLAQUE_GROUP_FILTER` / `PLAQUE_GROUP_AGGREGATE` (GROUP BY), and results match with Baleen on and off. The same now holds on a real Iceberg table (see "Step 1 result" below).
 - **Data skipping does not carry over.** The Baleen page filter only attaches to internal columnar datasets. On Iceberg the scan would read every file and every row group, and the filter would only drop tuples after they have been decoded. On the row store that pattern gave 1.02x for single-table MAX, so a convincing Iceberg demo needs a new, small piece: skipping Iceberg data files and Parquet row groups with the learned threshold.
-- **There is no Iceberg environment on sensoria yet**, and Docker is not usable from this account, so the upstream Iceberg test harness cannot run as-is.
+- **An Iceberg environment now runs on sensoria without Docker** (S3Mock and Nessie as plain Java processes). Docker is not usable from this account, so the upstream test harness itself cannot run as-is.
 
 So the demo has three parts: stand up an Iceberg environment, show the filters that work today, then add runtime file and row-group skipping and measure it.
 
@@ -27,7 +27,7 @@ The key point: **all file pruning is decided at compile time**, before any tuple
 
 | Baleen piece | Attaches to | On Iceberg |
 |---|---|---|
-| `PlaqueRewriteRule` (tuple filters: scalar MIN/MAX, GROUP BY, theta join, cross-table expression, Top-K) | A `SELECT` above any `DATASOURCESCAN` | Works. Verified on an external `localfs` scan; not yet on Iceberg. |
+| `PlaqueRewriteRule` (tuple filters: scalar MIN/MAX, GROUP BY, theta join, cross-table expression, Top-K) | A `SELECT` above any `DATASOURCESCAN` | Works. Verified on an external `localfs` scan and on an Iceberg table. |
 | `PlaquePageFilterRule` (zone-map page filter, physical page skip) | Only scans whose projection info is `ColumnDatasetProjectionFiltrationInfo` | Silently does nothing. External scans carry `ExternalDatasetProjectionFiltrationInfo`. |
 | Threshold state (`PlaqueThresholdRegistry`, keyed by job id and handle, with cross-NC broadcast) | Any operator with a task context | Reusable. The Iceberg reader is created with `IExternalDataRuntimeContext.getTaskContext()`, so it can look up the same state. |
 
@@ -40,7 +40,7 @@ Upstream's `IcebergTest` uses Docker containers (Adobe S3Mock and Nessie `0.107.
 - **Without Docker (recommended):** run an S3-compatible store as a plain binary (for example MinIO) and Nessie as its standalone Java runner, both as user processes. Then use `SOURCE NESSIE` with an `s3://` warehouse, `serviceEndpoint` pointing at the local store and `pathStyleAddressing=true`, exactly as the test DDL does.
 - **With Docker:** ask the sensoria admins for Docker access and reuse the test's two containers.
 
-Neither has been tried yet. This is the first thing to verify, because nothing else can be measured without it.
+Done without Docker; see "Step 1 result" below.
 
 ### 2. Load TPC-H into Iceberg tables
 
@@ -93,10 +93,51 @@ Each Iceberg configuration on both layouts (unsorted, clustered).
 
 ## Risks and unknowns
 
-- The Iceberg read path has never been run on the merged build; it only compiles.
-- Running Nessie and an S3 store without Docker on sensoria is untested.
+- The Iceberg read path has only been run on a 200,000-row table so far; SF10 is untested.
+- S3Mock is a test double, not a real object store. It is fine for correctness and for relative speedups, but absolute scan times will not reflect real S3 latency.
 - Parquet decode into ADM records probably dominates Iceberg scan time. If so, tuple filters alone will show little, and the demo depends on step 4.
 - On an unsorted table with large files, file-level bounds will be too wide to skip anything; row-group skipping and the clustered layout are what make the result visible. This should be stated in the demo, as the columnar results already do.
+
+## Step 1 result (2026-11-15)
+
+Everything lives in `/scratch/asterixdb_eightynode/iceberg/`. Start (or restart) both services with `start.sh`; it is safe to re-run.
+
+| Piece | What | Where |
+|---|---|---|
+| Object store | Adobe S3Mock `4.12.4` standalone jar (the version upstream's test uses) | `http://127.0.0.1:9090`, bucket `iceberg`, data in `s3-data/` |
+| Catalog | Nessie `0.107.5` runner jar, RocksDB store | `http://127.0.0.1:19120/api/v2`, data in `nessie-data/` |
+| Loader | `loader/SmokeLoader.java`, run with the AsterixDB classpath saved in `loader/classpath.txt` | writes `baleen.smoke` |
+| Logs | `logs/s3mock.log`, `logs/nessie.log` | |
+
+MinIO was the first choice but its binary downloads now return HTTP 410, so S3Mock is used instead.
+
+DDL that works:
+
+```sql
+CREATE CATALOG baleenCatalog TYPE Iceberg SOURCE NESSIE
+WITH { "uri": "http://127.0.0.1:19120/api/v2", "warehouse": "s3://iceberg/warehouse" };
+
+CREATE TYPE t AS open {};
+CREATE EXTERNAL COLLECTION smoke(t) USING S3 (
+  ("table-format"="iceberg"), ("namespace"="baleen"), ("tableName"="smoke"),
+  ("region"="us-west-2"), ("serviceEndpoint"="http://127.0.0.1:9090"), ("pathStyleAddressing"="true"),
+  ("accessKeyId"="dummyAccessKey"), ("secretAccessKey"="dummySecretKey"),
+  ("catalogName"="baleenCatalog"), ("format"="parquet"));
+```
+
+Checks on `baleen_ice.smoke` (4 Parquet files of 50,000 rows; file k holds `v` in [k*250000, (k+1)*250000)):
+
+| Check | Result |
+|---|---|
+| `COUNT(*)`, `MIN(v)`, `MAX(v)` | 200000, 1, 999997: the Iceberg read path works on the merged build |
+| `MAX(v)` with Baleen on | `PLAQUE_FILTER` and `PLAQUE_AGGREGATE` above the Iceberg scan; same result as off |
+| `MAX(v) GROUP BY g` with Baleen on | `PLAQUE_GROUP_FILTER` and `PLAQUE_GROUP_AGGREGATE` in the plan; same 7 rows as off |
+| Upstream static pruning, `WHERE v >= 900000` | 1 of 4 data files planned (server log), count 20144 |
+| Restart of S3Mock and Nessie | table still readable |
+
+The last-but-one row is the behaviour step 4 wants at run time: for `MAX(v)`, once the first file with the largest values is read, the other three files could be skipped by their upper bounds.
+
+Caveat: S3Mock's HTTP port 9090 listens on all interfaces and has no authentication (its HTTPS port and Nessie are bound to localhost). It holds only benchmark data.
 
 ## Evidence gathered today
 
