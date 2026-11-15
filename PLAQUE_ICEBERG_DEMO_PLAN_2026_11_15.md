@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-15
 **Tree:** `/scratch/asterixdb_eightynode/asterixdb_v3`, branch `baleen` at `046a78a586`
-**Status:** research plus step 1 (environment) done and verified the same day. No AsterixDB code was changed.
+**Status:** research, step 1 (environment) and step 2 (TPC-H SF10 load) done and verified the same day. No AsterixDB code was changed. Next is step 3.
 
 ## Short answer
 
@@ -138,6 +138,36 @@ Checks on `baleen_ice.smoke` (4 Parquet files of 50,000 rows; file k holds `v` i
 The last-but-one row is the behaviour step 4 wants at run time: for `MAX(v)`, once the first file with the largest values is read, the other three files could be skipped by their upper bounds.
 
 Caveat: S3Mock's HTTP port 9090 listens on all interfaces and has no authentication (its HTTPS port and Nessie are bound to localhost). It holds only benchmark data.
+
+## Step 2 result (2026-11-15)
+
+TPC-H SF10 from `/scratch/tpch_data/sf10/*.tbl`, loaded with `loader/TpchLoader.java` (usage in its header comment). Column names and types (int64, double, string) match the internal `*_10` tables, so no decimal or date conversion is involved. Data files hold 2,000,000 rows each; Parquet row groups are 16MB. Total size in the object store: 3.6GB.
+
+| Collection (`baleen_ice`) | Layout | Rows | Data files | Row groups per file | Load time |
+|---|---|---|---|---|---|
+| `lineitem` | dbgen order (sorted on `l_orderkey`) | 59,986,052 | 30 | 4 | 685s |
+| `lineitem_by_suppkey` | sorted on `l_suppkey` | 59,986,052 | 30 | 4 | 597s |
+| `orders` | dbgen order | 15,000,000 | 8 | 4 (last file 2) | 172s |
+| `partsupp` | dbgen order | 8,000,000 | 4 | 5 | 105s |
+
+Verification against the internal columnar tables: `COUNT(*)`, `MAX(l_suppkey)`, `SUM(l_orderkey)`, `MAX(l_extendedprice)`, `MIN`/`MAX(l_shipdate)` are identical for both lineitem collections; count, key sum and one aggregate are identical for `orders` and `partsupp`.
+
+What the two layouts give, using upstream's static pruning as a probe (`WHERE l_suppkey >= 99000`, 601,192 rows):
+
+| Collection | Data files planned | Time |
+|---|---|---|
+| `lineitem` | 30 of 30 | 17.8s |
+| `lineitem_by_suppkey` | 1 of 30 | 1.3s |
+
+So on the sorted table the file bounds are tight enough to skip 29 of 30 files once a threshold is known; on the unsorted table file-level skipping can do nothing for `l_suppkey`, and only tuple filters help.
+
+First timing impression, one run each and not a benchmark: a full-scan aggregate over lineitem took 49.8s on the internal columnar table, 65.9s on `lineitem` and 60.5s on `lineitem_by_suppkey`.
+
+Leftover: a 200,000-row trial table `baleen.ps_sample` exists in the catalog (no collection points at it).
+
+## Unrelated bug seen on the merged build
+
+`WHERE x NOT IN ["..."]` returns the right number of rows but empty or garbled string values (seen on `Metadata.Dataset`, reproduced on `Lineitem_10`). The same filter written with `!=` is correct. The plan uses a `SUBPLAN` operator. Not investigated: unknown whether the merge caused it or it predates it. The Baleen benchmark queries do not use `SUBPLAN`.
 
 ## Evidence gathered today
 
