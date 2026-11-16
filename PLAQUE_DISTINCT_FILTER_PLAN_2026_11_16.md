@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-16
 **Tree:** `/scratch/asterixdb_eightynode/asterixdb_v3`, branch `baleen`
-**Status:** plan only. No code is written. Section 9 lists the decisions that need your answer.
+**Status:** plan only. No code is written. Section 9 lists the decisions that need your answer. Updated the same day after commits `c051072179` (WHERE fix) and `118dea67e0` (plan guard, strict ties).
 **Source:** BALEEN keynote (slides 61, 71, 77, 82-88, 93, 100-109, 113, 116) and the discussion of 2026-11-16.
 
 ## 1. Summary
@@ -117,7 +117,7 @@ Reused as is:
 
 - `PlaqueThresholdRegistry` (job-scoped state looked up by handle).
 - The three configuration keys that carry handle and field name to the Iceberg reader.
-- The plan guard from the 2026-11-16 review (only ASSIGN, SELECT, PROJECT, EXCHANGE and inner joins between observer and scan).
+- The plan guard from the 2026-11-16 review, now committed in `118dea67e0` (only ASSIGN, SELECT, PROJECT, EXCHANGE and inner joins between observer and scan).
 - The CC update/broadcast message pattern of the GROUP BY filter.
 
 New:
@@ -135,7 +135,7 @@ New:
 
 | Step | Work | Measurement |
 |---|---|---|
-| 0 | Apply the fix for review item 8 (`StreamSelectPOperator` passes `null` as projection list). Queries with a WHERE on a column other than the output column fail without it, and every test query here has one. | The test queries run with Baleen off. |
+| 0 | Done. The fix for review item 8 is in commit `c051072179` (`StreamSelectPOperator` passes the pushed projection list). Checked on the running server on 2026-11-16: `MAX(l_suppkey) ... WHERE l_quantity < 3` returns 100000 with Baleen off (27.0 s) and on (4.0 s). | Baselines below. |
 | 1 | Rule, observer, tuple filter, seen-set A. | Three runs per query: Baleen off; observer only; observer plus tuple filter. |
 | 2 | Seen-sets B and C. | Row-level cost of A, B and C against each other. |
 | 3 | File skip by range (level 2) with B and C. | Files skipped per partition; time. |
@@ -153,6 +153,15 @@ Test queries (all on `baleen_ice`, SF10, lineitem as probe, orders as build with
 | Q2 | `l_suppkey` | 100,000 | long, dense 1 to 100,000 | Bitmaps; level 2 range skip |
 | Q3 | `l_partkey` | 2,000,000 | long | High cardinality; cost of the filter and the cap |
 | Q4 | `l_shipmode`, no join | 7 | string | The plain case; saves only exchange and sort |
+
+First baseline, Baleen off, build `118dea67e0`, one run each on `lineitem` (not a median):
+
+| Query | Rows returned | Time (s) |
+|---|---|---|
+| Q1 `l_shipmode`, join | 7 | 255.7 |
+| Q2 `l_suppkey`, join | 100,000 | 186.5 |
+
+For comparison, the join with `MAX(l_suppkey)` on the same two tables takes about 35 s with Baleen off. The extra time in the DISTINCT plans is the exchange and the full sort of every joined row, which is the work the observer and the filter remove.
 
 Layouts: `lineitem` (load order, values of `l_suppkey` and `l_shipmode` spread through every file) and `lineitem_by_suppkey` (sorted on `l_suppkey`).
 
@@ -174,7 +183,6 @@ A value that never survives the join stays unseen for the whole scan. Its rows k
 | 3 | Column types in the first version. | BIGINT for A, B, C and level 2; string for A and level 3. Single top-level column only, as in the GROUP BY path. |
 | 4 | Order of work. | Steps 0 to 4 as listed, propagation after the single-JVM numbers. |
 | 5 | Size cap for the seen-set. | 1,000,000 values for A; B only when the range is at most 16,000,000 values (2 MB); the `notIn` list sent to the reader at most 10,000 values. |
-| 6 | Step 0. | I apply the item 8 fix as part of this work. |
 
 ## 10. Not in this plan
 
