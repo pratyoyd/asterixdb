@@ -165,6 +165,29 @@ First timing impression, one run each and not a benchmark: a full-scan aggregate
 
 Leftover: a 200,000-row trial table `baleen.ps_sample` exists in the catalog (no collection points at it).
 
+## Step 3 result (2026-11-15): Baleen on/off on Iceberg, no code change
+
+Tuple filters work on Iceberg scans and give correct results, but the gain is much smaller than on internal columnar tables, because every file and row group is still read and decoded.
+
+TPC-H SF10, 4 NCs, one warm-up then three alternating off/on runs, median seconds:
+
+| Query | Baleen off | Baleen on | Speedup on Iceberg | Speedup on internal columnar (2026-11-13) | Results match |
+|---|---|---|---|---|---|
+| MAX(l_suppkey), `lineitem` | 18.9 | 18.0 | 1.05x | 11.52x | yes |
+| MAX(l_suppkey), `lineitem_by_suppkey` | 17.5 | 18.2 | 0.96x | 11.52x | yes |
+| Join MAX(l_suppkey), `lineitem` x `orders` | 36.8 | 33.4 | 1.10x | 4.12x | yes |
+| GROUP BY MAX(l_discount) BY l_shipmode, `lineitem` | 59.4 | 33.8 | 1.76x | 1.44x | yes |
+| Cross-table MAX(l_extendedprice - ps_supplycost), `lineitem` x `partsupp` | 57.3 | 45.1 | 1.27x | 6.84x | yes |
+
+Reading it:
+
+- Single-table MAX: no gain (within run-to-run noise). The scan is the whole cost and the tuple filter sits above it. On internal columnar tables the 11.5x came from page skipping, which does not exist for Iceberg yet. The sorted layout makes no difference either, for the same reason.
+- Join and cross-table MAX: small gains (1.10x, 1.27x) from fewer tuples reaching the join. The internal-table numbers (4.1x, 6.8x) again relied on page skipping.
+- GROUP BY MAX: 1.76x, as good as on internal tables, because here the saving is in the aggregation above the scan.
+- This gap is the case for step 4: the queries that lose most are exactly those where skipping files and row groups by the learned threshold would apply.
+
+Script: `/scratch/asterixdb_eightynode/build_logs/bench_plaque_iceberg.py`; output `bench_result_iceberg.md`, per-run times `bench_result_iceberg.runs`. Server log had 0 ERROR lines after the run.
+
 ## Unrelated bug seen on the merged build
 
 `WHERE x NOT IN ["..."]` returns the right number of rows but empty or garbled string values (seen on `Metadata.Dataset`, reproduced on `Lineitem_10`). The same filter written with `!=` is correct. The plan uses a `SUBPLAN` operator. Not investigated: unknown whether the merge caused it or it predates it. The Baleen benchmark queries do not use `SUBPLAN`.
