@@ -14,7 +14,16 @@ No wrong result was found, but the work is not finished. This file is the list o
 | 5 | Show the scan filter in the plan (`print()`), and include it in `equals()`. | Waits for go-ahead |
 | 6.2 | Restrict the rule to Iceberg scans; today it marks any external scan. | Waits for go-ahead |
 | 7 | Strict comparison: use `>` instead of `>=` (MAX) and `<` instead of `<=` (MIN) so ties are dropped, both in the file skip / row-group filter and, where valid, in the tuple filter. Pratyoy's suggestion, 2026-11-16. | Not started; needs a check that the tuple filter can be strict for each query shape |
-| 8 | `WHERE` predicate on the Iceberg tables fails at compile time with a NullPointerException, with Baleen off as well. | Time-boxed exploration by a subagent started 2026-11-16 |
+| 8 | `WHERE` predicate on the Iceberg tables fails at compile time with a NullPointerException, with Baleen off as well. | Root cause found 2026-11-16 (below); fix not applied |
+| 9 | After a failed query on the internal columnar dataset `smoke.L`, every scan of it fails with `Invalid pinCount`. Seen once, after the probe queries for item 8. | Not investigated; a server restart is expected to clear it (not verified) |
+
+## Item 8: root cause
+
+- It is a merge regression, not an Iceberg problem. It fails at run time on the first frame, on internal datasets too.
+- Upstream lets the optimizer push a projection into SELECT (commit `6befed4061`, ASTERIXDB-3531). The merge kept our older `StreamSelectPOperator.java`, which passes `null` as the projection list to `StreamSelectRuntimeFactory` (line 85). Upstream passes `select.isProjectPushed() ? JobGenHelper.projectVariables(inputSchemas[0], select.getProjectVariables()) : null`.
+- Effect: the plan says the select outputs one field, the runtime forwards the full tuple, and the operator above reads the wrong field. Here that gives a null type tag; in other query shapes a silent wrong result is conceivable (not observed).
+- Fails whenever the WHERE column differs from the output column and the record variable is dropped. The `NOT IN` failures seen earlier are very likely the same bug (their stack traces were not checked).
+- Proposed fix: pass upstream's expression instead of `null`. Open point: check that the dynamic-filter branch of `StreamSelectRuntime.nextFrame` also honours the projection list.
 
 Not scheduled: 6.1 (stats requested for all columns when a variant filter is present), 6.3 (log level of the per-reader summary), malformed JSON in the query service response (missing comma after `requestID`), `NOT IN` failure on the merged build.
 
