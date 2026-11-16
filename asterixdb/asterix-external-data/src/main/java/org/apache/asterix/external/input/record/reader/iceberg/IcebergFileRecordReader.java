@@ -54,6 +54,8 @@ import org.apache.iceberg.data.GenericDeleteFilter;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.data.parquet.GenericParquetReaders;
 import org.apache.iceberg.deletes.PositionDeleteIndex;
+import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
@@ -97,6 +99,10 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
     // is the only one of the variant pushdowns whose failure mode is a wrong answer rather than extra IO.
     private final boolean variantProjectionPushdownWithDeletes;
     private final IWarningCollector warningCollector;
+    // PLAQUE runtime data skipping; null when the query has none for this scan
+    private PlaqueIcebergScanFilter plaqueScanFilter;
+    private int plaqueFilesSkipped;
+    private int plaqueFilesFiltered;
 
     /**
      * @param schemaAtSnapshot the table schema at the pinned snapshot, and {@code fileIoDescriptor} the table's FileIO,
@@ -160,6 +166,10 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
         if (warningCollector != null && warningCollector.shouldWarn()) {
             warningCollector.warn(Warning.of(null, ErrorCode.ICEBERG_VARIANT_PROJECTION_NOT_PUSHED));
         }
+    }
+
+    void setPlaqueScanFilter(PlaqueIcebergScanFilter plaqueScanFilter) {
+        this.plaqueScanFilter = plaqueScanFilter;
     }
 
     private void initializeTable() throws CompilationException {
@@ -253,6 +263,10 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
 
     @Override
     public void close() throws IOException {
+        if (plaqueScanFilter != null) {
+            LOGGER.info("plaque iceberg scan: {} tasks, {} skipped by file bound, {} read with a row-group filter",
+                    fileScanTasks.size(), plaqueFilesSkipped, plaqueFilesFiltered);
+        }
         Throwable throwable = CleanupUtils.closeSilently(iterable, null);
         throwable = CleanupUtils.closeSilently(tableFileIo, throwable);
         try {
@@ -287,6 +301,20 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
 
     private void setNextRecordsIterator() {
         FileScanTask task = fileScanTasks.get(nextTaskIndex++);
+        Expression plaqueFilter = null;
+        if (plaqueScanFilter != null) {
+            Number threshold = plaqueScanFilter.threshold();
+            Number bound = threshold == null ? null : plaqueScanFilter.bound(task);
+            if (bound != null) {
+                if (plaqueScanFilter.cannotBeat(bound, threshold)) {
+                    plaqueFilesSkipped++;
+                    recordsIterator = null;
+                    return;
+                }
+                plaqueFilesFiltered++;
+                plaqueFilter = plaqueScanFilter.rowGroupFilter(threshold);
+            }
+        }
         // the manifest records the length, and not passing it costs a storage request per file to find it out
         InputFile inFile = readFileIo.newInputFile(task.file().location(), task.file().fileSizeInBytes());
 
@@ -307,7 +335,8 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
             warnProjectionNotPushed(e);
         }
 
-        iterable = openStandardRead(readFileIo, inFile, task, schemaAtSnapshot, projectedSchema, deleteCache);
+        iterable = openStandardRead(readFileIo, inFile, task, schemaAtSnapshot, projectedSchema, deleteCache,
+                plaqueFilter);
         recordsIterator = iterable.iterator();
     }
 
@@ -330,11 +359,17 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
 
     static CloseableIterable<Record> openStandardRead(FileIO io, InputFile inFile, FileScanTask task,
             Schema schemaAtSnapshot, Schema projectedSchema, IcebergDeleteCache deleteCache) {
+        return openStandardRead(io, inFile, task, schemaAtSnapshot, projectedSchema, deleteCache, null);
+    }
+
+    /** @param extraFilter ANDed with the task's residual as the Parquet row-group filter; {@code null} for none */
+    static CloseableIterable<Record> openStandardRead(FileIO io, InputFile inFile, FileScanTask task,
+            Schema schemaAtSnapshot, Schema projectedSchema, IcebergDeleteCache deleteCache, Expression extraFilter) {
+        Expression filter = extraFilter == null ? task.residual() : Expressions.and(task.residual(), extraFilter);
         int deletesCount = (task.deletes() == null) ? 0 : task.deletes().size();
         if (deletesCount == 0) {
             // No deletes: read only projected schema
-            return Parquet.read(inFile).project(projectedSchema).filter(task.residual())
-                    .split(task.start(), task.length())
+            return Parquet.read(inFile).project(projectedSchema).filter(filter).split(task.start(), task.length())
                     .createReaderFunc(fs -> GenericParquetReaders.buildReader(projectedSchema, fs)).build();
         }
 
@@ -343,7 +378,7 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
 
         Schema requiredSchema = deleteFilter.requiredSchema();
         CloseableIterable<Record> rows =
-                Parquet.read(inFile).project(requiredSchema).filter(task.residual()).split(task.start(), task.length())
+                Parquet.read(inFile).project(requiredSchema).filter(filter).split(task.start(), task.length())
                         .createReaderFunc(fs -> GenericParquetReaders.buildReader(requiredSchema, fs)).build();
         return deleteFilter.filter(rows);
     }

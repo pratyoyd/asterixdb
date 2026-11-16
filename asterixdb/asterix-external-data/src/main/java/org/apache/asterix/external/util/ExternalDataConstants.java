@@ -445,6 +445,11 @@ public class ExternalDataConstants {
         private IcebergOptions() {
         }
 
+        // PLAQUE runtime scan filter: threshold handle, direction and column, set by the compiler per query
+        public static final String PLAQUE_SCAN_HANDLE = "plaqueScanHandle";
+        public static final String PLAQUE_SCAN_IS_MAX = "plaqueScanIsMax";
+        public static final String PLAQUE_SCAN_FIELD = "plaqueScanField";
+
         public static final String DECIMAL_TO_DOUBLE = "decimal-to-double";
         public static final String TIMESTAMP_AS_LONG = "timestamp-to-long";
         public static final String TIME_AS_INT = "time-to-int";

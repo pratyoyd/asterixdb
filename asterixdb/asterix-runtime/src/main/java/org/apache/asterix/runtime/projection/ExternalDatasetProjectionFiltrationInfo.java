@@ -46,6 +46,11 @@ public class ExternalDatasetProjectionFiltrationInfo implements IProjectionFiltr
     protected final boolean embedFilterValues;
     protected final Map<ILogicalExpression, ARecordType> filterPaths;
 
+    // PLAQUE runtime scan filter for external (Iceberg) scans (set by PlaquePageFilterRule, nullable)
+    private String plaqueScanHandle;
+    private boolean plaqueScanIsMax;
+    private String plaqueScanField;
+
     public ExternalDatasetProjectionFiltrationInfo(ARecordType projectedType,
             Map<String, FunctionCallInformation> sourceInformationMap, Map<ILogicalExpression, ARecordType> filterPaths,
             ILogicalExpression filterExpression, boolean embedFilterValues) {
@@ -68,6 +73,29 @@ public class ExternalDatasetProjectionFiltrationInfo implements IProjectionFiltr
         filterExpression = cloneExpression(other.filterExpression);
         filterPaths = clonePaths(other.filterPaths);
         embedFilterValues = other.embedFilterValues;
+        copyPlaqueScanFilter(other);
+    }
+
+    public void setPlaqueScanFilter(String handle, boolean isMax, String field) {
+        plaqueScanHandle = handle;
+        plaqueScanIsMax = isMax;
+        plaqueScanField = field;
+    }
+
+    protected void copyPlaqueScanFilter(ExternalDatasetProjectionFiltrationInfo other) {
+        setPlaqueScanFilter(other.plaqueScanHandle, other.plaqueScanIsMax, other.plaqueScanField);
+    }
+
+    public String getPlaqueScanHandle() {
+        return plaqueScanHandle;
+    }
+
+    public boolean isPlaqueScanIsMax() {
+        return plaqueScanIsMax;
+    }
+
+    public String getPlaqueScanField() {
+        return plaqueScanField;
     }
 
     @Override

@@ -43,6 +43,7 @@ public class ParquetExternalDatasetProjectionFiltrationInfo extends ExternalData
         super(other.projectedType, other.functionCallInfoMap, other.filterPaths, other.filterExpression,
                 other.embedFilterValues);
         this.parquetRowGroupFilterExpression = other.parquetRowGroupFilterExpression;
+        copyPlaqueScanFilter(other);
     }
 
     public ILogicalExpression getParquetRowGroupFilterExpression() {

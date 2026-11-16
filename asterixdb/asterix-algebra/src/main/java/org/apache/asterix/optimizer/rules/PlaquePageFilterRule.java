@@ -4,16 +4,20 @@ import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.BuiltinType;
 import org.apache.asterix.om.types.IAType;
+import org.apache.asterix.om.utils.ConstantExpressionUtil;
 import org.apache.asterix.runtime.projection.ColumnDatasetProjectionFiltrationInfo;
+import org.apache.asterix.runtime.projection.ExternalDatasetProjectionFiltrationInfo;
 import org.apache.commons.lang3.mutable.Mutable;
 import org.apache.hyracks.algebricks.common.exceptions.AlgebricksException;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalExpression;
 import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
+import org.apache.hyracks.algebricks.core.algebra.base.LogicalExpressionTag;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalOperatorTag;
 import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
 import org.apache.hyracks.algebricks.core.algebra.expressions.AbstractFunctionCallExpression;
 import org.apache.hyracks.algebricks.core.algebra.expressions.ConstantExpression;
+import org.apache.hyracks.algebricks.core.algebra.expressions.VariableReferenceExpression;
 import org.apache.hyracks.algebricks.core.algebra.metadata.IProjectionFiltrationInfo;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AbstractLogicalOperator;
 import org.apache.hyracks.algebricks.core.algebra.operators.logical.AggregateOperator;
@@ -293,6 +297,9 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
 
     private boolean attachPageFilter(AbstractLogicalOperator annotatedOp, Mutable<ILogicalOperator> walkRef,
             String handle, boolean isMax, LogicalVariable filteredVar) throws AlgebricksException {
+        if (attachExternalScanFilter(annotatedOp, walkRef.getValue(), handle, isMax, filteredVar)) {
+            return true;
+        }
         String fieldName = findFieldName(walkRef, filteredVar);
         System.out.println("PLAQUE_PAGE_FILTER: handle=" + handle + " isMax=" + isMax + " filteredVar=" + filteredVar
                 + " fieldName=" + fieldName);
@@ -321,6 +328,63 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
 
         annotatedOp.getAnnotations().put("plaque-page-filter-set", true);
         return true;
+    }
+
+    /**
+     * External (Iceberg) scans: if filteredVar is a top-level field of an external scan's record
+     * (scanVar.getField("name")), records handle, direction and field name on that scan so its reader
+     * can skip files and row groups that cannot beat the threshold.
+     */
+    private boolean attachExternalScanFilter(AbstractLogicalOperator annotatedOp, ILogicalOperator root, String handle,
+            boolean isMax, LogicalVariable filteredVar) {
+        AssignOperator assignOp = findDefiningAssign(root, filteredVar);
+        if (assignOp == null) {
+            return false;
+        }
+        ILogicalExpression expr =
+                assignOp.getExpressions().get(assignOp.getVariables().indexOf(filteredVar)).getValue();
+        if (!(expr instanceof AbstractFunctionCallExpression)) {
+            return false;
+        }
+        AbstractFunctionCallExpression funcExpr = (AbstractFunctionCallExpression) expr;
+        if (!funcExpr.getFunctionIdentifier().equals(BuiltinFunctions.FIELD_ACCESS_BY_NAME)) {
+            return false;
+        }
+        ILogicalExpression recordExpr = funcExpr.getArguments().get(0).getValue();
+        String fieldName = ConstantExpressionUtil.getStringArgument(funcExpr, 1);
+        if (recordExpr.getExpressionTag() != LogicalExpressionTag.VARIABLE || fieldName == null) {
+            return false;
+        }
+        ILogicalOperator current = assignOp;
+        while (current.getOperatorTag() != LogicalOperatorTag.DATASOURCESCAN) {
+            if (current.getInputs().size() != 1) {
+                return false;
+            }
+            current = current.getInputs().get(0).getValue();
+        }
+        DataSourceScanOperator scanOp = (DataSourceScanOperator) current;
+        IProjectionFiltrationInfo info = scanOp.getProjectionFiltrationInfo();
+        if (!scanOp.getVariables().contains(((VariableReferenceExpression) recordExpr).getVariableReference())
+                || !(info instanceof ExternalDatasetProjectionFiltrationInfo)
+                || info instanceof ColumnDatasetProjectionFiltrationInfo) {
+            return false;
+        }
+        ((ExternalDatasetProjectionFiltrationInfo) info).setPlaqueScanFilter(handle, isMax, fieldName);
+        annotatedOp.getAnnotations().put("plaque-page-filter-set", true);
+        return true;
+    }
+
+    private AssignOperator findDefiningAssign(ILogicalOperator op, LogicalVariable var) {
+        if (op.getOperatorTag() == LogicalOperatorTag.ASSIGN && ((AssignOperator) op).getVariables().contains(var)) {
+            return (AssignOperator) op;
+        }
+        for (Mutable<ILogicalOperator> input : op.getInputs()) {
+            AssignOperator found = findDefiningAssign(input.getValue(), var);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     /**

@@ -1185,6 +1185,13 @@ public class ExternalDataUtils {
                 serializeExpectedTypeToString(projectionInfo.getProjectedType()));
         properties.put(ExternalDataConstants.KEY_HADOOP_ASTERIX_FUNCTION_CALL_INFORMATION,
                 serializeFunctionCallInfoToString(projectionInfo.getFunctionCallInfoMap()));
+        if (projectionInfo.getPlaqueScanHandle() != null) {
+            properties.put(ExternalDataConstants.IcebergOptions.PLAQUE_SCAN_HANDLE,
+                    projectionInfo.getPlaqueScanHandle());
+            properties.put(ExternalDataConstants.IcebergOptions.PLAQUE_SCAN_IS_MAX,
+                    String.valueOf(projectionInfo.isPlaqueScanIsMax()));
+            properties.put(ExternalDataConstants.IcebergOptions.PLAQUE_SCAN_FIELD, projectionInfo.getPlaqueScanField());
+        }
     }
 
     /**

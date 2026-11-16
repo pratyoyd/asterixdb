@@ -147,9 +147,15 @@ public class IcebergParquetRecordReaderFactory implements IIcebergRecordReaderFa
     public IRecordReader<Record> createRecordReader(IExternalDataRuntimeContext context) throws HyracksDataException {
         try {
             int partition = context.getPartition();
-            return new IcebergFileRecordReader(partitionWorkLoadsBasedOnSize.get(partition).getFileScanTasks(),
-                    projectedSchema, schemaAtSnapshot, fileIoDescriptor, deleteCache(),
-                    new HashMap<>(originalConfiguration), context.getTaskContext().getWarningCollector());
+            List<FileScanTask> tasks = partitionWorkLoadsBasedOnSize.get(partition).getFileScanTasks();
+            PlaqueIcebergScanFilter plaqueScanFilter =
+                    PlaqueIcebergScanFilter.create(originalConfiguration, schemaAtSnapshot, context.getTaskContext());
+            IcebergFileRecordReader reader =
+                    new IcebergFileRecordReader(plaqueScanFilter == null ? tasks : plaqueScanFilter.ordered(tasks),
+                            projectedSchema, schemaAtSnapshot, fileIoDescriptor, deleteCache(),
+                            new HashMap<>(originalConfiguration), context.getTaskContext().getWarningCollector());
+            reader.setPlaqueScanFilter(plaqueScanFilter);
+            return reader;
         } catch (Exception e) {
             throw HyracksDataException.create(e);
         }
@@ -349,6 +355,12 @@ public class IcebergParquetRecordReaderFactory implements IIcebergRecordReaderFa
                 // the extract terms reference, to avoid carrying stats for the whole table.
                 Set<String> statsColumns = VariantPredicateRewriter.extractTermColumns(variantFilter);
                 scan = statsColumns.isEmpty() ? scan.includeColumnStats() : scan.includeColumnStats(statsColumns);
+            }
+            // PLAQUE runtime data skipping needs each file's bounds for its column at the readers.
+            String plaqueScanField = configuration.get(ExternalDataConstants.IcebergOptions.PLAQUE_SCAN_FIELD);
+            if (PlaqueIcebergScanFilter.supportedField(schemaAtSnapshot, plaqueScanField) != null) {
+                scan = variantFilter == null ? scan.includeColumnStats(Set.of(plaqueScanField))
+                        : scan.includeColumnStats();
             }
             // TODO(iceberg-15384): remove — Iceberg does this during planning once the fix ships.
             // Compares each data file's manifest bounds for the requested variant sub-fields and returns false only
