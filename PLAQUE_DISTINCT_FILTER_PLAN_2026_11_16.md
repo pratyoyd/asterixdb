@@ -160,7 +160,7 @@ First baseline, Baleen off, build `118dea67e0`, one run each on `lineitem` (not 
 |---|---|---|
 | Q1 `l_shipmode`, join | 7 | 255.7 |
 | Q2 `l_suppkey`, join | 100,000 | 186.5 |
-| Q4 `l_shipmode`, no join | not received | more than 280 (client timeout; the exact time is not measured) |
+| Q4 `l_shipmode`, no join | 7 | 411.7 (run alone on an idle server) |
 
 For comparison, the join with `MAX(l_suppkey)` on the same two tables takes about 35 s with Baleen off. The extra time in the DISTINCT plans is the exchange and the full sort of every joined row, which is the work the observer and the filter remove.
 
