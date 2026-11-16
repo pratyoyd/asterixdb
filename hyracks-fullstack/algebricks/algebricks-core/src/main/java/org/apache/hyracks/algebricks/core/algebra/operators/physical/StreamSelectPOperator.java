@@ -81,10 +81,12 @@ public class StreamSelectPOperator extends AbstractPhysicalOperator {
             if ((Boolean) op.getAnnotations().get("Is_Dynamic_Filter") == true)
                 isDynamicFilter = true;
         }
+        int[] projectionList = select.isProjectPushed()
+                ? JobGenHelper.projectVariables(inputSchemas[0], select.getProjectVariables()) : null;
         StreamSelectRuntimeFactory runtime =
-                new StreamSelectRuntimeFactory(cond, null, context.getBinaryBooleanInspectorFactory(), retainMissing,
-                        inputSchemas[0].findVariable(select.getMissingPlaceholderVariable()), missingWriterFactory,
-                        isDynamicFilter);
+                new StreamSelectRuntimeFactory(cond, projectionList, context.getBinaryBooleanInspectorFactory(),
+                        retainMissing, inputSchemas[0].findVariable(select.getMissingPlaceholderVariable()),
+                        missingWriterFactory, isDynamicFilter);
 
         runtime.setSourceLocation(select.getSourceLocation());
         // contribute one Asterix framewriter
