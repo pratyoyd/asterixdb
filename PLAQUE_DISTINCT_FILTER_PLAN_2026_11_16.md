@@ -19,7 +19,7 @@
 
 ```sql
 SELECT DISTINCT l.l_suppkey
-FROM orders o, lineitem l
+FROM lineitem l, orders o
 WHERE l.l_orderkey = o.o_orderkey AND o.o_orderstatus = 'F';
 ```
 
@@ -30,11 +30,11 @@ distinct        PRE_SORTED_DISTINCT_BY
   order         STABLE_SORT on l_suppkey
     exchange    HASH_PARTITION_EXCHANGE on l_suppkey
       join      HYBRID_HASH_JOIN
-        input 0 (probe):  scan lineitem
-        input 1 (build):  scan orders, select o_orderstatus
+        probe (streamed):  scan lineitem
+        build:             scan orders, select o_orderstatus
 ```
 
-- In `OptimizedHybridHashJoinOperatorDescriptor` input 1 is the build and input 0 is the probe. With `FROM orders o, lineitem l` lineitem is the probe; with `FROM lineitem l, orders o` it is the build. Every test query is checked with EXPLAIN for this.
+- **Corrected 2026-11-16 after running it.** With `FROM lineitem l, orders o` lineitem is the probe: join results appear while it is being scanned. With `FROM orders o, lineitem l` lineitem is the build, and no join result exists until its scan is over. The first version of this plan had the two orders the wrong way round; EXPLAIN alone does not show which input is streamed, the filter counters do.
 - There is no local duplicate removal before the exchange. Every joined row is hash-partitioned and fully sorted before the DISTINCT sees it.
 
 Pipelines:
@@ -88,7 +88,7 @@ Bitmap decisions:
 - **Min and max come from Iceberg.** Each data file's manifest entry has a lower and upper bound per column. `IcebergParquetRecordReaderFactory.configure` already requests them for the Baleen column (`scan.includeColumnStats`). The range of the scan is the min of the lower bounds and the max of the upper bounds.
 - **When bounds are missing** (table written without column metrics), B is not used and C or A is.
 - **Roaring is not thread-safe.** The state owns a private Roaring bitmap behind a lock and publishes an immutable snapshot to readers after every N inserts.
-- **Library.** `org.roaringbitmap:RoaringBitmap:0.9.22` already ships with the server (it is in the `asterix-server` license list). `asterix-runtime` needs an explicit dependency on it.
+- **Library.** The server already runs with `org.roaringbitmap:RoaringBitmap:1.6.23` on its classpath (a runtime dependency of `iceberg-core` 1.12.0; the 0.9.22 in the `asterix-server` license list is stale). `asterix-runtime` gets an explicit dependency on 1.6.23.
 
 ## 6. Where the test is applied
 
@@ -154,7 +154,7 @@ Test queries (all on `baleen_ice`, SF10, lineitem as probe, orders as build with
 | Q3 | `l_partkey` | 2,000,000 | long | High cardinality; cost of the filter and the cap |
 | Q4 | `l_shipmode`, no join | 7 | string | The plain case; saves only exchange and sort |
 
-First baseline, Baleen off, build `118dea67e0`, one run each on `lineitem` (not a median):
+First baseline, Baleen off, build `118dea67e0`, one run each on `lineitem` (not a median). Q1 and Q2 here were run with `FROM orders o, lineitem l`, that is with lineitem as the build; the baselines with lineitem as the probe are in `PLAQUE_DISTINCT_FILTER_RESULTS_2026_11_16.md`:
 
 | Query | Rows returned | Time (s) |
 |---|---|---|
