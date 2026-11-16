@@ -1,5 +1,7 @@
 package org.apache.asterix.optimizer.rules;
 
+import org.apache.asterix.metadata.declared.DatasetDataSource;
+import org.apache.asterix.metadata.utils.DatasetUtil;
 import org.apache.asterix.om.functions.BuiltinFunctions;
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.BuiltinType;
@@ -355,9 +357,9 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
         if (recordExpr.getExpressionTag() != LogicalExpressionTag.VARIABLE || fieldName == null) {
             return false;
         }
-        ILogicalOperator current = assignOp;
+        ILogicalOperator current = assignOp.getInputs().get(0).getValue();
         while (current.getOperatorTag() != LogicalOperatorTag.DATASOURCESCAN) {
-            if (current.getInputs().size() != 1) {
+            if (!isRowWise(current.getOperatorTag())) {
                 return false;
             }
             current = current.getInputs().get(0).getValue();
@@ -366,7 +368,8 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
         IProjectionFiltrationInfo info = scanOp.getProjectionFiltrationInfo();
         if (!scanOp.getVariables().contains(((VariableReferenceExpression) recordExpr).getVariableReference())
                 || !(info instanceof ExternalDatasetProjectionFiltrationInfo)
-                || info instanceof ColumnDatasetProjectionFiltrationInfo) {
+                || !(scanOp.getDataSource() instanceof DatasetDataSource)
+                || !DatasetUtil.isIcebergTable(((DatasetDataSource) scanOp.getDataSource()).getDataset())) {
             return false;
         }
         ((ExternalDatasetProjectionFiltrationInfo) info).setPlaqueScanFilter(handle, isMax, fieldName);
@@ -374,9 +377,18 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
         return true;
     }
 
+    /**
+     * Finds the ASSIGN defining var, descending only through operators for which removing a row below them is the
+     * same as removing it above them. Anything else (ORDER, LIMIT, outer join, group-by, ...) may need rows that the
+     * operator learning the threshold does not, so the search stops there.
+     */
     private AssignOperator findDefiningAssign(ILogicalOperator op, LogicalVariable var) {
-        if (op.getOperatorTag() == LogicalOperatorTag.ASSIGN && ((AssignOperator) op).getVariables().contains(var)) {
+        LogicalOperatorTag tag = op.getOperatorTag();
+        if (tag == LogicalOperatorTag.ASSIGN && ((AssignOperator) op).getVariables().contains(var)) {
             return (AssignOperator) op;
+        }
+        if (!isRowWise(tag) && tag != LogicalOperatorTag.INNERJOIN) {
+            return null;
         }
         for (Mutable<ILogicalOperator> input : op.getInputs()) {
             AssignOperator found = findDefiningAssign(input.getValue(), var);
@@ -385,6 +397,11 @@ public class PlaquePageFilterRule implements IAlgebraicRewriteRule {
             }
         }
         return null;
+    }
+
+    private static boolean isRowWise(LogicalOperatorTag tag) {
+        return tag == LogicalOperatorTag.ASSIGN || tag == LogicalOperatorTag.SELECT || tag == LogicalOperatorTag.PROJECT
+                || tag == LogicalOperatorTag.EXCHANGE;
     }
 
     /**

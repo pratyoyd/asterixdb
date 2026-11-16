@@ -110,7 +110,7 @@ public class PlaqueFilterRuntimeFactory implements IPushRuntimeFactory {
                     thresholdUninitializedTuples++;
                 }
 
-                if (thresholdState.passes(data, start, len, threadLocalComparator)) {
+                if (thresholdState.passes(data, start, len, threadLocalComparator, strictComparison)) {
                     passedTuples++;
                     appendTupleToFrame(t);
                 } else {

@@ -172,7 +172,8 @@ public class PlaqueRewriteRule implements IAlgebraicRewriteRule {
         filter.setExecutionMode(((AbstractLogicalOperator) insertionRef.getValue()).getExecutionMode());
         filter.getAnnotations().put(PLAQUE_FILTER, true);
         filter.getAnnotations().put(PLAQUE_HANDLE, handle);
-        filter.setPhysicalOperator(new PlaqueFilterPOperator(filteredVar, isMax, handle, requiresPartitioning));
+        // strict: a value equal to the best MAX/MIN seen so far cannot change the aggregate
+        filter.setPhysicalOperator(new PlaqueFilterPOperator(filteredVar, isMax, handle, requiresPartitioning, true));
         return filter;
     }
 

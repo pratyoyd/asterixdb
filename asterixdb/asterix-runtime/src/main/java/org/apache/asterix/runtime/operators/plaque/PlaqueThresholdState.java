@@ -51,6 +51,15 @@ public class PlaqueThresholdState {
 
     public boolean passes(byte[] data, int start, int len, IBinaryComparator threadLocalComparator)
             throws HyracksDataException {
+        return passes(data, start, len, threadLocalComparator, strictComparison);
+    }
+
+    /**
+     * @param strictComparison whether a value equal to the threshold is dropped. Taken from the caller because the
+     *        state's own flag is that of whichever operator created the state first.
+     */
+    public boolean passes(byte[] data, int start, int len, IBinaryComparator threadLocalComparator,
+            boolean strictComparison) throws HyracksDataException {
         if (!initialized) {
             return true;
         }

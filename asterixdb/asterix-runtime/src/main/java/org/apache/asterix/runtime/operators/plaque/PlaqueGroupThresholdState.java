@@ -143,7 +143,8 @@ public class PlaqueGroupThresholdState {
             return true;
         }
         int cmp = threadLocalComparator.compare(aggValue, aStart, aLen, threshold, 0, thresholdLen);
-        return isMax ? cmp >= 0 : cmp <= 0;
+        // a value equal to the threshold of its group cannot change the MAX/MIN of that group
+        return isMax ? cmp > 0 : cmp < 0;
     }
 
     /**

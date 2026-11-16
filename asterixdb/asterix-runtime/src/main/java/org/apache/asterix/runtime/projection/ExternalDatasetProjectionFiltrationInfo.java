@@ -26,6 +26,7 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 import org.apache.asterix.om.types.ARecordType;
 import org.apache.asterix.om.types.visitor.SimpleStringBuilderForIATypeVisitor;
@@ -150,7 +151,10 @@ public class ExternalDatasetProjectionFiltrationInfo implements IProjectionFiltr
         }
         ExternalDatasetProjectionFiltrationInfo otherInfo = (ExternalDatasetProjectionFiltrationInfo) o;
         return projectedType.deepEqual(otherInfo.projectedType)
-                && filterExpressionEquals(filterExpression, otherInfo.filterExpression);
+                && filterExpressionEquals(filterExpression, otherInfo.filterExpression)
+                && Objects.equals(plaqueScanHandle, otherInfo.plaqueScanHandle)
+                && plaqueScanIsMax == otherInfo.plaqueScanIsMax
+                && Objects.equals(plaqueScanField, otherInfo.plaqueScanField);
     }
 
     @Override
@@ -174,6 +178,11 @@ public class ExternalDatasetProjectionFiltrationInfo implements IProjectionFiltr
             writer.append(" embed-filter-value: ");
             writer.append(String.valueOf(true));
         }
+
+        if (plaqueScanHandle != null) {
+            writer.append(" plaque-scan-filter: ");
+            writer.append(plaqueScanFilterString());
+        }
     }
 
     @Override
@@ -194,6 +203,14 @@ public class ExternalDatasetProjectionFiltrationInfo implements IProjectionFiltr
         if (embedFilterValues) {
             generator.writeBooleanField("embed-filter-value", true);
         }
+
+        if (plaqueScanHandle != null) {
+            generator.writeStringField("plaque-scan-filter", plaqueScanFilterString());
+        }
+    }
+
+    private String plaqueScanFilterString() {
+        return (plaqueScanIsMax ? "MAX(" : "MIN(") + plaqueScanField + "), " + plaqueScanHandle;
     }
 
     protected static ILogicalExpression cloneExpression(ILogicalExpression expression) {

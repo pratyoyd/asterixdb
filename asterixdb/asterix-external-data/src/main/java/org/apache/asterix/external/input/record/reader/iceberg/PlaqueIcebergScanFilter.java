@@ -42,8 +42,9 @@ import org.apache.iceberg.types.Types;
  * PLAQUE runtime data skipping for an Iceberg scan. The compiler names a column and the handle of a threshold that
  * the query learns while it runs (the best MAX/MIN seen so far). Before a data file is opened, its manifest bound for
  * that column is compared with the current threshold: a file that cannot beat it is not read at all, and any other
- * file is read with {@code column >= threshold} (MAX) or {@code column <= threshold} (MIN) as a Parquet row-group
- * filter. Rows equal to the threshold are kept, as the PLAQUE tuple filter above the scan keeps them.
+ * file is read with {@code column > threshold} (MAX) or {@code column < threshold} (MIN) as a Parquet row-group
+ * filter. Rows equal to the threshold are dropped: the threshold is a value some operator has already taken into
+ * account, so an equal value cannot change the result.
  * <p>
  * Only top-level long and double columns are supported; anything else, a missing bound, or a double column whose file
  * may hold NaN (which the bounds do not cover) reads the file as if this class were not there.
@@ -129,15 +130,14 @@ final class PlaqueIcebergScanFilter {
         return Conversions.fromByteBuffer(field.type(), b);
     }
 
-    /** Whether no row of a file with this bound can reach the threshold. */
+    /** Whether no row of a file with this bound can be better than the threshold. */
     boolean cannotBeat(Number bound, Number threshold) {
         int cmp = isDouble ? Double.compare(bound.doubleValue(), threshold.doubleValue())
                 : Long.compare(bound.longValue(), threshold.longValue());
-        return isMax ? cmp < 0 : cmp > 0;
+        return isMax ? cmp <= 0 : cmp >= 0;
     }
 
     Expression rowGroupFilter(Number threshold) {
-        return isMax ? Expressions.greaterThanOrEqual(field.name(), threshold)
-                : Expressions.lessThanOrEqual(field.name(), threshold);
+        return isMax ? Expressions.greaterThan(field.name(), threshold) : Expressions.lessThan(field.name(), threshold);
     }
 }

@@ -321,7 +321,7 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
         CloseableIterable<Record> prunedRead = null;
         try {
             prunedRead = openPrunedReadIfEligible(readFileIo, inFile, task, schemaAtSnapshot, projectedSchema,
-                    variantProjectionPlan, variantProjectionPushdownWithDeletes, deleteCache);
+                    variantProjectionPlan, variantProjectionPushdownWithDeletes, deleteCache, plaqueFilter);
             if (prunedRead != null) {
                 iterable = prunedRead;
                 recordsIterator = prunedRead.iterator();
@@ -362,10 +362,14 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
         return openStandardRead(io, inFile, task, schemaAtSnapshot, projectedSchema, deleteCache, null);
     }
 
+    private static Expression rowGroupFilter(FileScanTask task, Expression extraFilter) {
+        return extraFilter == null ? task.residual() : Expressions.and(task.residual(), extraFilter);
+    }
+
     /** @param extraFilter ANDed with the task's residual as the Parquet row-group filter; {@code null} for none */
     static CloseableIterable<Record> openStandardRead(FileIO io, InputFile inFile, FileScanTask task,
             Schema schemaAtSnapshot, Schema projectedSchema, IcebergDeleteCache deleteCache, Expression extraFilter) {
-        Expression filter = extraFilter == null ? task.residual() : Expressions.and(task.residual(), extraFilter);
+        Expression filter = rowGroupFilter(task, extraFilter);
         int deletesCount = (task.deletes() == null) ? 0 : task.deletes().size();
         if (deletesCount == 0) {
             // No deletes: read only projected schema
@@ -433,15 +437,24 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
     static CloseableIterable<Record> openPrunedReadIfEligible(FileIO io, InputFile inFile, FileScanTask task,
             Schema tableSchema, Schema projectedSchema, VariantProjectionPlan plan, boolean pushdownWithDeletes,
             IcebergDeleteCache deleteCache) throws IOException {
+        return openPrunedReadIfEligible(io, inFile, task, tableSchema, projectedSchema, plan, pushdownWithDeletes,
+                deleteCache, null);
+    }
+
+    /** @param extraFilter ANDed with the task's residual as the row-group filter; {@code null} for none */
+    static CloseableIterable<Record> openPrunedReadIfEligible(FileIO io, InputFile inFile, FileScanTask task,
+            Schema tableSchema, Schema projectedSchema, VariantProjectionPlan plan, boolean pushdownWithDeletes,
+            IcebergDeleteCache deleteCache, Expression extraFilter) throws IOException {
         if (!shouldTryPrunedVariantRead(plan, task.deletes(), pushdownWithDeletes)) {
             return null;
         }
+        Expression filter = rowGroupFilter(task, extraFilter);
         boolean hasDeletes = task.deletes() != null && !task.deletes().isEmpty();
         if (hasDeletes) {
-            return openPrunedDeleteAwareRead(io, inFile, task, tableSchema, projectedSchema, plan, deleteCache);
+            return openPrunedDeleteAwareRead(io, inFile, task, tableSchema, projectedSchema, plan, deleteCache, filter);
         }
-        VariantProjectedParquetReader prunedReader = VariantProjectedParquetReader.open(inFile, projectedSchema,
-                task.residual(), task.start(), task.length(), true, plan);
+        VariantProjectedParquetReader prunedReader = VariantProjectedParquetReader.open(inFile, projectedSchema, filter,
+                task.start(), task.length(), true, plan);
         if (!prunedReader.canPrune()) {
             // Nothing to gain on this file; prefer the standard path over the replicated read logic.
             prunedReader.close();
@@ -469,6 +482,13 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
     static CloseableIterable<Record> openPrunedDeleteAwareRead(FileIO io, InputFile inFile, FileScanTask task,
             Schema tableSchema, Schema projectedSchema, VariantProjectionPlan plan, IcebergDeleteCache deleteCache)
             throws IOException {
+        return openPrunedDeleteAwareRead(io, inFile, task, tableSchema, projectedSchema, plan, deleteCache,
+                task.residual());
+    }
+
+    private static CloseableIterable<Record> openPrunedDeleteAwareRead(FileIO io, InputFile inFile, FileScanTask task,
+            Schema tableSchema, Schema projectedSchema, VariantProjectionPlan plan, IcebergDeleteCache deleteCache,
+            Expression filter) throws IOException {
         PositionlessGenericDeleteFilter deleteFilter =
                 new PositionlessGenericDeleteFilter(io, task, tableSchema, projectedSchema, deleteCache);
 
@@ -476,7 +496,7 @@ public class IcebergFileRecordReader implements IRecordReader<Record> {
         // open time, and either sends this task to the standard delete path, which loads its own copy of every
         // delete file. Loading here before knowing would pay that IO twice on exactly the files that gain nothing.
         VariantProjectedParquetReader prunedReader =
-                VariantProjectedParquetReader.open(inFile, deleteFilter.requiredSchema(), task.residual(), task.start(),
+                VariantProjectedParquetReader.open(inFile, deleteFilter.requiredSchema(), filter, task.start(),
                         task.length(), true, plan, deleteFilter.hasPosDeletes());
         if (!prunedReader.canPrune()) {
             // Nothing to gain on this file, or row positions are unavailable for a position-delete file.
