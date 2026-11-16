@@ -58,7 +58,27 @@ To see where the time goes, I measured a query that only reads the same two colu
 - **It needed no Iceberg-specific code.** The same operators that run on internal tables ran unchanged on an external open-format table.
 - **Baleen on Iceberg is faster than the internal columnar table without Baleen.** 32.2s on Iceberg with Baleen, against 54.5s (off) and 37.8s (on) for the internal columnar table measured on 2026-11-13. Those are runs from a different day, so treat the comparison as indicative.
 
-The speedup ratio is higher on Iceberg (1.71x to 1.76x) than on internal columnar (1.44x). I have not investigated why.
+### Why: profiler breakdown
+
+The query was run with `profile=timings`, Baleen off and on (saved as `/scratch/asterixdb_eightynode/build_logs/profiles/groupby_ice_off.json` and `groupby_ice_on.json`). Per partition, four in parallel:
+
+| Operator | Baleen off | Baleen on |
+|---|---|---|
+| Iceberg scan | 15-18s | 15-18s |
+| Assign (extract `l_discount`, `l_shipmode`) | 5.5-6.3s | 5.5-6.5s |
+| `PLAQUE_GROUP_FILTER` | not in plan | 2.9-3.5s |
+| Sort (run generation) inside `SORT_GROUP_BY` | about 26-28s | about 2.5s |
+| Query total | 53.1s | 30.9s |
+
+- The group-by is sort-based. Without Baleen each partition sorts its 14 to 16 million tuples by `l_shipmode` to produce 7 groups, and that sort is half the query.
+- The filter passes 5,600,488 of 59,986,052 tuples (9.3%). 5,452,061 rows have `l_discount = 0.10`, so nearly everything that passes is a tie with the group maximum.
+- The sort then handles a tenth of the input and drops from about 27s to 2.5s per partition. The filter itself costs about 3s. Scan and assign are unchanged.
+
+Consequences:
+
+- The size of the gain depends on the baseline using a sort-based group-by. With a hash group-by the baseline would likely be cheaper and the gain smaller. I tried to measure that with the `/*+ hash */` hint, but the plan stayed `SORT_GROUP_BY` (53.6s off, 31.0s on), so this is untested.
+- Ties with the maximum still pass the filter and cannot change the answer. Dropping them (a strict comparison once a group holds its maximum) would remove most of the remaining sort. Not tried.
+- The bare scan of these two columns takes 33-34s on the internal columnar table against 27.5s on Iceberg, which is why Iceberg with Baleen (32s) beats internal columnar with Baleen (38s). Why the internal scan is slower is not investigated.
 
 ## Part 2: runtime data skipping (new code)
 
