@@ -3,7 +3,7 @@
 **Date:** 2026-11-15
 **Tree:** `/scratch/asterixdb_eightynode/asterixdb_v3`, branch `baleen`, base commit `046a78a586` plus uncommitted changes described below
 **Data:** TPC-H SF10 in Iceberg (Nessie catalog, S3Mock object store), 4 NCs in one JVM
-**Background and setup:** `PLAQUE_ICEBERG_DEMO_PLAN_2026_11_15.md` (research, environment, data load)
+**Background and setup:** `2026_11_15_PLAQUE_ICEBERG_DEMO_PLAN.md` (research, environment, data load)
 
 ## Outcome
 
@@ -110,7 +110,7 @@ Each of the four partitions has to read one file before it can skip, because all
 
 On the unordered layout every file and every row group contains the maximum `l_suppkey`, so neither level can exclude anything.
 
-> **Update 2026-11-16 (ties dropped).** The paragraph above and the "Not ordered" row describe the first version, which kept ties (`>=`). The filters now use a strict comparison (`>` for MAX, `<` for MIN), so a file whose bound only equals the threshold is skipped. On unordered `lineitem` every file's upper bound for `l_suppkey` is 100000; once one reader has seen 100000, every remaining file ties and is skipped. Measured: `MAX(l_suppkey)` on unordered `lineitem` 20.4 s off, 2.7 s on, **7.68x** (was 1.05x); the join with `orders` 34.7 s off, 11.2 s on, **3.10x** (was 1.10x). Counters: 3 or 4 of each reader's 7 or 8 files skipped by file bound, the next 3 read with a row-group filter. This works on unordered data when the extreme value appears in many files (here a low-cardinality key); an unordered column whose maximum sits in one file with other files' bounds just below it would still read most files. Full tables: `PLAQUE_ICEBERG_REVIEW_TODO_2026_11_16.md`. The row-group filter costs nothing measurable there (19.1s against 18.5s, inside the run-to-run spread).
+> **Update 2026-11-16 (ties dropped).** The paragraph above and the "Not ordered" row describe the first version, which kept ties (`>=`). The filters now use a strict comparison (`>` for MAX, `<` for MIN), so a file whose bound only equals the threshold is skipped. On unordered `lineitem` every file's upper bound for `l_suppkey` is 100000; once one reader has seen 100000, every remaining file ties and is skipped. Measured: `MAX(l_suppkey)` on unordered `lineitem` 20.4 s off, 2.7 s on, **7.68x** (was 1.05x); the join with `orders` 34.7 s off, 11.2 s on, **3.10x** (was 1.10x). Counters: 3 or 4 of each reader's 7 or 8 files skipped by file bound, the next 3 read with a row-group filter. This works on unordered data when the extreme value appears in many files (here a low-cardinality key); an unordered column whose maximum sits in one file with other files' bounds just below it would still read most files. Full tables: `2026_11_16_PLAQUE_ICEBERG_REVIEW_TODO.md`. The row-group filter costs nothing measurable there (19.1s against 18.5s, inside the run-to-run spread).
 
 `MAX(l_orderkey)` on the plain `lineitem` table shows the feature needs no special layout: dbgen writes lineitem in `l_orderkey` order, and data that arrives in time or key order is common in practice.
 

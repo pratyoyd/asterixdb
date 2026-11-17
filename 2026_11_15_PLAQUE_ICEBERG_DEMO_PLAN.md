@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-15
 **Tree:** `/scratch/asterixdb_eightynode/asterixdb_v3`, branch `baleen` at `046a78a586`
-**Status:** research, step 1 (environment), step 2 (TPC-H SF10 load), step 3 (tuple filters, no code change) and step 4 for scalar MAX/MIN (runtime data skipping, new code) all done the same day. Results and the code description for steps 3 and 4 are in `PLAQUE_ICEBERG_DATA_SKIPPING_2026_11_15.md`.
+**Status:** research, step 1 (environment), step 2 (TPC-H SF10 load), step 3 (tuple filters, no code change) and step 4 for scalar MAX/MIN (runtime data skipping, new code) all done the same day. Results and the code description for steps 3 and 4 are in `2026_11_15_PLAQUE_ICEBERG_DATA_SKIPPING.md`.
 
 ## Short answer
 
@@ -183,7 +183,7 @@ Reading it:
 
 - Single-table MAX: no gain (within run-to-run noise). The scan is the whole cost and the tuple filter sits above it. On internal columnar tables the 11.5x came from page skipping, which does not exist for Iceberg yet. The sorted layout makes no difference either, for the same reason.
 - Join and cross-table MAX: small gains (1.10x, 1.27x) from fewer tuples reaching the join. The internal-table numbers (4.1x, 6.8x) again relied on page skipping.
-- GROUP BY MAX: 1.76x, the strongest result of this run. A bare scan of the same two columns takes 27.5s, so Baleen cuts the work above the scan from about 27.5s to under 5s, with no ordering in the data and no Iceberg-specific code. Full reading in `PLAQUE_ICEBERG_DATA_SKIPPING_2026_11_15.md`.
+- GROUP BY MAX: 1.76x, the strongest result of this run. A bare scan of the same two columns takes 27.5s, so Baleen cuts the work above the scan from about 27.5s to under 5s, with no ordering in the data and no Iceberg-specific code. Full reading in `2026_11_15_PLAQUE_ICEBERG_DATA_SKIPPING.md`.
 - This gap is the case for step 4: the queries that lose most are exactly those where skipping files and row groups by the learned threshold would apply.
 
 Script: `/scratch/asterixdb_eightynode/build_logs/bench_plaque_iceberg.py`; output `bench_result_iceberg.md`, per-run times `bench_result_iceberg.runs`. Server log had 0 ERROR lines after the run.
