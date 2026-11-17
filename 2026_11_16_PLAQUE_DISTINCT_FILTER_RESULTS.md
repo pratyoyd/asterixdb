@@ -235,6 +235,12 @@ until the lineitem scan is over), only the observer helps: Q1 255.7 s to 46.8 s,
   uniform benchmark; afterwards only the 27 configurations whose plan changes are rerun (join queries,
   levels 1 to 3, all three seen-sets).
 
+- **Parquet encodings checked** (footers of all 30 lineitem files, 120 row groups of about 556,000 rows):
+  `l_shipmode` is dictionary-encoded in every row group; `l_suppkey` and `l_partkey` are plain-encoded with
+  no dictionary page in any row group. Level 3 tests the row group's dictionary, so on these files it can
+  only work on `l_shipmode`, whatever the NOT IN cap. For `l_suppkey` and `l_partkey` the only scan skipping
+  available is level 2.
+
 Limits built into the current code, all of which affect the numbers:
 
 | Limit | Value |
