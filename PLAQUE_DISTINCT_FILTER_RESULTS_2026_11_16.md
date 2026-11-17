@@ -35,6 +35,61 @@ Levels:
 | 2 | Level 1 + skip a file when every value in its min-max range is already seen |
 | 3 | Level 2 + `column NOT IN (seen)` given to the Parquet reader, which skips row groups by dictionary |
 
+## Queries
+
+Every statement is sent as one request to `http://localhost:19002/query/service`.
+
+Q1, Baleen off:
+
+```sql
+USE baleen_ice;
+SELECT DISTINCT l.l_shipmode FROM lineitem l, orders o WHERE l.l_orderkey = o.o_orderkey AND o.o_orderstatus = 'F';
+```
+
+Q2, Baleen off:
+
+```sql
+USE baleen_ice;
+SELECT DISTINCT l.l_suppkey FROM lineitem l, orders o WHERE l.l_orderkey = o.o_orderkey AND o.o_orderstatus = 'F';
+```
+
+Q3, Baleen off:
+
+```sql
+USE baleen_ice;
+SELECT DISTINCT l.l_partkey FROM lineitem l, orders o WHERE l.l_orderkey = o.o_orderkey AND o.o_orderstatus = 'F';
+```
+
+Q4, Baleen off:
+
+```sql
+USE baleen_ice;
+SELECT DISTINCT l.l_shipmode FROM lineitem l;
+```
+
+A Baleen variant is the same query with three settings in front. Example, Q2 with the Roaring bitmap at level 2:
+
+```sql
+USE baleen_ice;
+SET `compiler.plaque.enabled` "true";
+SET `compiler.plaque.distinct.set` "roaring";
+SET `compiler.plaque.distinct.level` "2";
+SELECT DISTINCT l.l_suppkey FROM lineitem l, orders o WHERE l.l_orderkey = o.o_orderkey AND o.o_orderstatus = 'F';
+```
+
+A variant named "`<set>`, level `<n>`" in the tables uses `compiler.plaque.distinct.set` = `<set>` and
+`compiler.plaque.distinct.level` = `<n>`.
+
+Lineitem as build side (last section) uses the other FROM order:
+
+```sql
+USE baleen_ice;
+SELECT DISTINCT l.l_shipmode FROM orders o, lineitem l WHERE l.l_orderkey = o.o_orderkey AND o.o_orderstatus = 'F';
+```
+
+From 2026-11-16 on, every configuration including Baleen off gets 6 runs. The runs in this document
+(1 for Baleen off, 3 per variant) were done before that rule.
+
 ## Full results
 
 Counters are from the median run.
@@ -72,9 +127,6 @@ Counters are from the median run.
 | roaring, level 2 | 45.3 42.5 40.5 | 42.5 | 3.29x | 0 of 30 | 55,615,516 | 2,114,292 | 114,294 |
 
 ### Q4 `l_shipmode`, no join
-
-Measured after the fix described under "Bug found by the benchmark". The benchmark's own Q4 rows
-(386.2 s and 387.9 s) are from before the fix, when the observer did nothing, and are not valid.
 
 | Variant | Runs (s) | Median | Speedup |
 |---|---|---|---|
@@ -115,14 +167,6 @@ Fix proposed: an operator that receives a partly filled frame flushes its own ou
 DISTINCT filter to flush sparse output, and small changes in the hash join probe and stream project.
 Those are core operators, so this waits for a decision.
 
-## Bug found by the benchmark
-
-Without a join the observer was in the plan but did nothing. Cause: `RemoveUnknownCheckForKnownTypeExpressionRule`
-rewrote the observer's placeholder condition to TRUE, the key variable then had one use left and was inlined
-into the record constructor, and the observer found no column to read and passed every row through. The
-join plans were not affected because the variable has to cross the join. Fix: that rule now skips selects
-annotated `plaque-distinct`. After the fix the no-join plan has observer, key ASSIGN and scan filter.
-
 ## Lineitem as build side
 
 `FROM orders o, lineitem l` makes lineitem the build side. The filter is idle there (nothing is observed
@@ -138,8 +182,8 @@ until the lineitem scan is over), only the observer helps: Q1 255.7 s to 46.8 s,
   for strings and uncovered values.
 - Scan side: `PlaqueIcebergDistinctScanFilter`, wired through `PlaquePageFilterRule`,
   `ExternalDatasetProjectionFiltrationInfo`, `IcebergParquetRecordReaderFactory`, `IcebergFileRecordReader`.
-- Guards in `ConsolidateSelectsRule`, `PushSelectDownRule`, `RemoveRedundantSelectRule`,
-  `RemoveUnknownCheckForKnownTypeExpressionRule`.
+- Guards so other rules leave the DISTINCT selects alone: `ConsolidateSelectsRule`, `PushSelectDownRule`,
+  `RemoveRedundantSelectRule`, `RemoveUnknownCheckForKnownTypeExpressionRule`.
 - Existing MAX/MIN, GROUP BY, Top-K and theta-join filters are unchanged.
 
 ## Other findings
