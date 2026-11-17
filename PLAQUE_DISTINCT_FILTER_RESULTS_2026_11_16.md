@@ -213,6 +213,38 @@ until the lineitem scan is over), only the observer helps: Q1 255.7 s to 46.8 s,
   helper structure.
 - Baleen-off baselines are single runs.
 
+## Later on 2026-11-16: decisions and next steps
+
+- **Benchmarks get 6 runs per configuration from now on**, Baleen off included. The tables above (1 run
+  for Baleen off, 3 per variant) predate this.
+- **The matrix above is not uniform** (some set/level combinations were left out). A uniform benchmark is
+  running: 4 queries × 3 seen-sets (hash, flat, roaring) × 4 levels (0 to 3), 6 runs each, 6 Baleen-off runs
+  per query. Raw output: `/scratch/asterixdb_eightynode/build_logs/bench_result_distinct_full.md`.
+- **Change made before the uniform benchmark:** the seen-set now gets the column's range from the scan at
+  every level. Before, the flat bitmap only got it at levels 2 and 3 and silently used its hash fallback
+  at levels 0 and 1, so the `flat, level 1` rows above repeat `hash, level 1`.
+- **File bounds checked:** all 30 lineitem files have `l_suppkey` bounds 1 to 100,000 (29 files of
+  2,000,000 rows, one of 1,986,052).
+- **Correction to "Open problem: frame stall":** Q3 `l_partkey` skipping 0 files is not caused by the frame
+  stall. The level 2 test needs every integer between a file's lower and upper bound to be seen. The answer
+  has 1,999,998 values in a range of 2,000,000, so the test can never pass.
+- **Level 2 and level 3 cover different cases.** Level 3 works well for few values (`l_shipmode`) and is
+  switched off by its 10,000-value NOT IN cap on `l_suppkey` and `l_partkey`. Level 2 is the only scan
+  skipping for those and is unreliable (`l_suppkey`) or impossible (`l_partkey`).
+- **Frame-stall fix approved.** Plan: `PLAQUE_DISTINCT_FLUSH_PLAN_2026_11_16.md`. To be done after the
+  uniform benchmark; afterwards only the 27 configurations whose plan changes are rerun (join queries,
+  levels 1 to 3, all three seen-sets).
+
+Limits built into the current code, all of which affect the numbers:
+
+| Limit | Value |
+|---|---|
+| Hash set stops recording | 1,000,000 values |
+| Flat bitmap used only if the column's range is at most | 16,000,000 |
+| NOT IN list sent to the Parquet reader (level 3) | at most 10,000 values |
+| Level 2 column types | integer (BIGINT) |
+| Level 3 column types | integer (BIGINT), string |
+
 ## Files
 
 - Benchmark script: `/scratch/asterixdb_eightynode/build_logs/bench_distinct.py`
