@@ -443,6 +443,25 @@ Rows out of scan and the tuple-filter column are zero where no tuple filter is i
 - Flat at levels 0 and 1 is now a real bitmap. Q3 flat level 1 went from 113.6 s to 42.2 s, Q2 flat level 1 from 42.0 s to 34.7 s.
 - Q4 works at every level (first run: observer did nothing before the fix).
 
+## Why `l_suppkey` and `l_partkey` have no dictionary (checked later on 2026-11-17)
+
+The loader (`/scratch/asterixdb_eightynode/iceberg/loader/TpchLoader.java`) uses Iceberg's Parquet writer and sets only the row-group size (16 MB). Everything else is Iceberg 1.12.0's default: page row limit 20,000, page size 1 MB, dictionary size 2 MB (read from `TableProperties` in the jar).
+
+Reproduced with the same writer on 2,000,000 random longs (`/scratch/asterixdb_eightynode/iceberg/loader/DictTest.java`):
+
+| Value range | Writer settings | Encodings | Dictionary page | Column bytes |
+|---|---|---|---|---|
+| 1 to 100,000 | loader's settings | BIT_PACKED, PLAIN | no | 5,896,848 |
+| 1 to 100,000 | page row limit 1,000,000 | PLAIN_DICTIONARY, BIT_PACKED | yes | 4,546,588 |
+| 1 to 100,000 | page row limit 1,000,000, page size 8 MB | PLAIN_DICTIONARY, BIT_PACKED | yes | 4,545,884 |
+| 1 to 2,000,000 | page row limit 10,000,000, page size 32 MB, dictionary size 32 MB, row group 128 MB | PLAIN_DICTIONARY, BIT_PACKED | yes | 9,524,800 |
+
+The dictionary is dropped because of the 20,000-row page limit, not because the values do not fit a dictionary. With 20,000 rows drawn from 100,000 values, almost every value in the first page is new, so the dictionary saves nothing on that page and the writer switches the column to plain for the rest of the row group.
+
+Consequence: any Iceberg table written with default settings will have no dictionary on a column like this, so level 3 cannot work on it whatever the NOT IN cap is. Raising the cap can only be tested on a table rewritten with a larger page row limit (and a larger dictionary size for `l_partkey`).
+
+Not verified: the exact rule the writer applies after the first page (described from knowledge of parquet-mr, the source was not read). The table above shows the behaviour only.
+
 ## Decisions I made without asking
 
 - Put this run in a new note dated 2026-11-17 instead of extending the 2026-11-16 results note.
