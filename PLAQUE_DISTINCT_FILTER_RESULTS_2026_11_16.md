@@ -128,6 +128,9 @@ Counters are from the median run.
 
 ### Q4 `l_shipmode`, no join
 
+Measured after the fix described under "Bug found by the benchmark". The benchmark's own Q4 rows
+(386.2 s and 387.9 s) are from before the fix, when the observer did nothing, and are not valid.
+
 | Variant | Runs (s) | Median | Speedup |
 |---|---|---|---|
 | Baleen off | 388.7 | 388.7 | 1.00x |
@@ -166,6 +169,14 @@ filled frames (filter output, exchange, join output, project) until the scan end
 Fix proposed: an operator that receives a partly filled frame flushes its own output. This needs the
 DISTINCT filter to flush sparse output, and small changes in the hash join probe and stream project.
 Those are core operators, so this waits for a decision.
+
+## Bug found by the benchmark
+
+Without a join the observer was in the plan but did nothing. Cause: `RemoveUnknownCheckForKnownTypeExpressionRule`
+rewrote the observer's placeholder condition to TRUE, the key variable then had one use left and was inlined
+into the record constructor, and the observer found no column to read and passed every row through. The
+join plans were not affected because the variable has to cross the join. Fix: that rule now skips selects
+annotated `plaque-distinct`. After the fix the no-join plan has observer, key ASSIGN and scan filter.
 
 ## Lineitem as build side
 
