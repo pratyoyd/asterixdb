@@ -155,6 +155,19 @@ Predictions written down before the results (flat and roaring; hash in brackets)
 - Helper structure (deferred from the start).
 - All DISTINCT code on branch `baleen` is uncommitted.
 
+## 10. Decisions by the user in the afternoon (about 14:30)
+
+- The cap test is abandoned. Level 3 is used only where Parquet writes a dictionary with default settings; writer
+  settings are not changed to force one. The tables `lineitem_dict` and `lineitem_dict_1rg` and the setting
+  `compiler.plaque.distinct.notinmax` (default 10,000) exist but are not benchmarked. Nothing was deleted.
+- The ablation is to be completed; it is what the choice of the flush default rests on.
+- Next priority: the DISTINCT seen-set must travel between nodes with the same NC to CC to NC messages the MAX/MIN
+  and GROUP BY filters use. Today it lives only in the per-JVM registry, which is shared by the 4 NCs of the test
+  server because they run in one JVM.
+
+Ablation status at 14:12: Q1 and Q2 finished (230 of 342 runs, all results equal to Baleen off). On Q2 only `"fj"`
+and `"fjo"` skip 26 of 30 files in all 6 runs, for flat and for roaring; `"f"` or `"j"` alone stay erratic.
+
 ## Decisions I made without asking
 
 - Loaded the two extra tables and registered them as collections.
