@@ -154,7 +154,7 @@ Test queries (all on `baleen_ice`, SF10, lineitem as probe, orders as build with
 | Q3 | `l_partkey` | 2,000,000 | long | High cardinality; cost of the filter and the cap |
 | Q4 | `l_shipmode`, no join | 7 | string | The plain case; saves only exchange and sort |
 
-First baseline, Baleen off, build `118dea67e0`, one run each on `lineitem` (not a median). Q1 and Q2 here were run with `FROM orders o, lineitem l`, that is with lineitem as the build; the baselines with lineitem as the probe are in `PLAQUE_DISTINCT_FILTER_RESULTS_2026_11_16.md`:
+First baseline, Baleen off, build `118dea67e0`, one run each on `lineitem` (not a median). Q1 and Q2 here were run with `FROM orders o, lineitem l`, that is with lineitem as the build; the baselines with lineitem as the probe are in `2026_11_16_PLAQUE_DISTINCT_FILTER_RESULTS.md`:
 
 | Query | Rows returned | Time (s) |
 |---|---|---|

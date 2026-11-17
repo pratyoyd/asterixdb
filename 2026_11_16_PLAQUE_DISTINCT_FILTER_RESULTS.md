@@ -231,7 +231,7 @@ until the lineitem scan is over), only the observer helps: Q1 255.7 s to 46.8 s,
 - **Level 2 and level 3 cover different cases.** Level 3 works well for few values (`l_shipmode`) and is
   switched off by its 10,000-value NOT IN cap on `l_suppkey` and `l_partkey`. Level 2 is the only scan
   skipping for those and is unreliable (`l_suppkey`) or impossible (`l_partkey`).
-- **Frame-stall fix approved.** Plan: `PLAQUE_DISTINCT_FLUSH_PLAN_2026_11_16.md`. To be done after the
+- **Frame-stall fix approved.** Plan: `2026_11_16_PLAQUE_DISTINCT_FLUSH_PLAN.md`. To be done after the
   uniform benchmark; afterwards only the 27 configurations whose plan changes are rerun (join queries,
   levels 1 to 3, all three seen-sets).
 
