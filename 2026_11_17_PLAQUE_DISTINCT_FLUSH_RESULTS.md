@@ -296,3 +296,54 @@ Q2 roaring level 2 14.2 s and 13.2 s with 26 of 30 files skipped. Whether this r
 
 - That the observer forwarding flushes is the cause of the Q3 slowdown. Three single runs after the fix are not enough.
 - Whether the join spills probe rows to disk at 2 GB.
+
+## Added later the same day: frame counters and a switch per flush point
+
+Purpose: stop guessing where the early send costs time. No default behaviour changed.
+
+**New setting** `compiler.plaque.distinct.flush`, a string of letters, default `"fj"` (what the code did before):
+
+| Letter | Flush point |
+|---|---|
+| `f` | tuple filter sends what it kept after every input frame |
+| `j` | hash join sends its buffered results after every probe frame |
+| `o` | observer passes an early send on to the operators above it |
+
+**New counters** (server log, one line per task):
+
+- `PLAQUE_DISTINCT_FILTER_STATS` and `PLAQUE_DISTINCT_OBSERVER_STATS` now also print `framesIn`, `flushesIn`,
+  `framesOut`, `earlySends` (frames sent partly filled) and `flush` (the switch).
+- `PLAQUE_JOIN_PROBE_STATS [job, partition] framesIn, flush`: frames arriving at the probe side of a hybrid hash
+  join under a DISTINCT filter. The in-memory hash join has the flush but not this counter.
+
+**Check that the counters work: one run each, roaring, level 2, table `lineitem`. Not a measurement.**
+
+Query text, `<F>` being the flush setting:
+
+```
+USE baleen_ice;
+SET `compiler.plaque.enabled` "true"; SET `compiler.plaque.distinct.set` "roaring";
+SET `compiler.plaque.distinct.level` "2"; SET `compiler.plaque.distinct.flush` "<F>";
+SELECT DISTINCT l.l_suppkey FROM lineitem l, orders o WHERE l.l_orderkey = o.o_orderkey AND o.o_orderstatus = 'F';
+SELECT DISTINCT l.l_partkey FROM lineitem l, orders o WHERE l.l_orderkey = o.o_orderkey AND o.o_orderstatus = 'F';
+```
+
+Frames are summed over the 4 partitions.
+
+| Query | Flush | Time (s) | Files skipped | Rows scanned | Filter frames out | Join probe frames in | Observer frames in | Observer frames out |
+|---|---|---|---|---|---|---|---|---|
+| Q2 l_suppkey | `""` | 17.2 | 22 / 30 | 16,000,000 | 329 | 339 | 92 | 51 |
+| Q2 l_suppkey | `"fj"` | 19.5 | 26 / 30 | 8,000,000 | 1,453 | 5,812 | 4,207 | 49 |
+| Q2 l_suppkey | `"fjo"` | 13.0 | 26 / 30 | 8,000,000 | 1,452 | 5,808 | 4,200 | 4,200 |
+| Q3 l_partkey | `""` | 41.3 | 0 / 30 | 59,986,052 | 4,017 | 4,026 | 1,103 | 1,035 |
+| Q3 l_partkey | `"fj"` | 46.3 | 0 / 30 | 59,986,052 | 28,568 | 114,272 | 82,461 | 1,036 |
+| Q3 l_partkey | `"fjo"` | 48.9 | 0 / 30 | 59,986,052 | 28,607 | 114,428 | 82,466 | 82,466 |
+
+What the counters show (the times are single runs and show nothing):
+
+- With `f`, every join partition receives exactly as many probe frames as the 4 filter tasks send in total
+  (1,453 each on Q2, 28,568 each on Q3). One early send by the filter becomes one frame to each of the 4 join
+  partitions at the hash exchange.
+- On Q3 the join receives 114,272 probe frames instead of 4,026, about 28 times as many, for the same rows.
+- With `o` off the observer sends about as many frames as with no early sends at all (1,036 against 1,035).
+- No early send reaches the observer unless `j` is on (`flushesIn` is 0 with `""`).
