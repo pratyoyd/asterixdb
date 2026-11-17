@@ -108,7 +108,9 @@ Each reader logs one line at close (`plaque iceberg scan: N tasks, S skipped by 
 
 Each of the four partitions has to read one file before it can skip, because all four start at the same time. That is why the time drops by about 7x and not 30x.
 
-On the unordered layout every file and every row group contains the maximum `l_suppkey`, so neither level can exclude anything. The row-group filter costs nothing measurable there (19.1s against 18.5s, inside the run-to-run spread).
+On the unordered layout every file and every row group contains the maximum `l_suppkey`, so neither level can exclude anything.
+
+> **Update 2026-11-16 (ties dropped).** The paragraph above and the "Not ordered" row describe the first version, which kept ties (`>=`). The filters now use a strict comparison (`>` for MAX, `<` for MIN), so a file whose bound only equals the threshold is skipped. On unordered `lineitem` every file's upper bound for `l_suppkey` is 100000; once one reader has seen 100000, every remaining file ties and is skipped. Measured: `MAX(l_suppkey)` on unordered `lineitem` 20.4 s off, 2.7 s on, **7.68x** (was 1.05x); the join with `orders` 34.7 s off, 11.2 s on, **3.10x** (was 1.10x). Counters: 3 or 4 of each reader's 7 or 8 files skipped by file bound, the next 3 read with a row-group filter. This works on unordered data when the extreme value appears in many files (here a low-cardinality key); an unordered column whose maximum sits in one file with other files' bounds just below it would still read most files. Full tables: `PLAQUE_ICEBERG_REVIEW_TODO_2026_11_16.md`. The row-group filter costs nothing measurable there (19.1s against 18.5s, inside the run-to-run spread).
 
 `MAX(l_orderkey)` on the plain `lineitem` table shows the feature needs no special layout: dbgen writes lineitem in `l_orderkey` order, and data that arrives in time or key order is common in practice.
 
@@ -154,6 +156,7 @@ The join query is 1s slower with Baleen on than on 2026-11-13 (9.0s against 8.0s
 
 ## Limits and what is not done
 
+- **Cross-table skipping is possible, just not wired up for Iceberg** (note added 2026-11-16). `MAX(a - b)` across a join gives a bound on the single probe column (`a` must beat threshold + min(b)); the internal columnar path already skips pages with it (`attachCrossExprPageFilter`, 7.43x). That method only accepts an internal columnar scan, so on Iceberg the same bound is never handed to the file reader.
 - **Scalar MAX/MIN only.** GROUP BY (per-group thresholds), the cross-table expression and Top-K do not skip data on Iceberg yet. The cross-table query is the largest remaining gap: 1.26x on Iceberg against 6.84x on internal columnar.
 - **Internal tables are unchanged in this respect:** on Iceberg the skip is attached to whichever scan produces the aggregated column, on either side of a join. The existing columnar code follows the first join input only; I left it as it is.
 - **Granularity.** The threshold is checked once per task, which here is one file of 2,000,000 rows. A threshold that improves while a file is being read takes effect at the next file.

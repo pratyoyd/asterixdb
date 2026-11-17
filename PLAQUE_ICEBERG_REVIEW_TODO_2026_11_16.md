@@ -46,7 +46,7 @@ A row equal to the current threshold cannot change a MAX or MIN, so three filter
 - GROUP BY filter (`PlaqueGroupThresholdState.passes`);
 - Iceberg file skip (`bound <= threshold` is skipped for MAX) and row-group filter (`>` / `<`).
 
-Top-K and the cross-table filter are unchanged.
+Top-K and the cross-table filter are unchanged. Cross-table file skipping on Iceberg is not ruled out by design: the internal path derives a bound on the probe column and skips pages with it (`attachCrossExprPageFilter`), but that method accepts only an internal columnar scan, so the Iceberg reader never receives the bound. Open item.
 
 Iceberg, SF10, median of 3, seconds. The machine was slower during this run (scan-only baseline 36.1 s against 27.7 s earlier), so compare speedups, not absolute times.
 
