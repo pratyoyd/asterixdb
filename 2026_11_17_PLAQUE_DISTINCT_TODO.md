@@ -12,7 +12,7 @@ Scope, as set by the user: DISTINCT with the observer and filter on the probe si
 
 ## State of the code at the time of writing
 
-Changed and built, but the server has NOT been restarted and nothing below has been run yet:
+Changed, built, and loaded on 2026-11-18 10:38. Verified on Q1 to Q4 the same day (168 runs, all results equal to Baleen off), see `2026_11_18_PLAQUE_DISTINCT_PERNODE_VERIFICATION.md`:
 
 - `AlgebricksConfig.PLAQUE_DISTINCT_SET_DEFAULT` is now `roaring` (was `hash`).
 - One seen-set per node: `PlaqueThresholdRegistry` keys the DISTINCT state by job, handle and node id. Before, the 4 NCs of the test server shared one seen-set because they run in one JVM.
@@ -24,11 +24,11 @@ The 126-run propagation on/off benchmark was stopped after 3 runs: with one seen
 
 ## To do, in order
 
-1. Restart the server on the new build and verify DISTINCT: Q1, Q2, Q3 (join on `lineitem`) and Q4 (`SELECT DISTINCT l.l_shipmode FROM lineitem l;`, no join), results equal to Baleen off, files skipped, deltas sent and merged. Q2's 26 of 30 skipped files now depend on propagation, so this has to be measured again (6 runs per configuration, matrix to be agreed first).
+1. DONE 2026-11-18 (Q2 now skips 21 to 26 of 30 files, median 16.0 s with the defaults). Restart the server on the new build and verify DISTINCT: Q1, Q2, Q3 (join on `lineitem`) and Q4 (`SELECT DISTINCT l.l_shipmode FROM lineitem l;`, no join), results equal to Baleen off, files skipped, deltas sent and merged. Q2's 26 of 30 skipped files now depend on propagation, so this has to be measured again (6 runs per configuration, matrix to be agreed first).
 2. Verify the CC cleanup: no entries left on the CC after a job ends.
 3. Coexistence: rerun the MAX/MIN, GROUP BY, Top-K and theta queries (`build_logs/bench_plaque.py`, `build_logs/bench_plaque_iceberg.py`) and compare results and plans with before today's changes to the join, the rule and the registry.
 4. SELECT DISTINCT with more than one expression. Today the rule returns early unless there is exactly one expression (`PlaqueRewriteRule.handleDistinct`). Read the existing design first, state the plan, then build.
-5. Check that level 3 still falls back to level 2 behaviour where the column has no dictionary.
+5. Check that level 3 still falls back to level 2 behaviour where the column has no dictionary. Partly covered 2026-11-18: at level 3, Q2 and Q3 behave as at level 2 with correct results; whether that is the missing dictionary or the `notinmax` limit was not separated.
 6. Regression tests for DISTINCT in the test suite (there are none).
 7. Commit the DISTINCT code on `baleen` (all of it is uncommitted; ask first).
 
@@ -52,4 +52,4 @@ Every DISTINCT benchmark and check uses all four queries, Q1 to Q4. Q4 was left 
 - The tuple filter and file skip are placed only when the path from the observer to the column goes through ASSIGN, PROJECT, EXCHANGE, SELECT and inner joins. Read from the rule's code, not tested.
 - A delta that reaches the CC after the job has ended creates an entry that is never cleared. Not observed, read from the code.
 - Hash seen-set cap 1,000,000; flat range 16,000,000; file skip needs BIGINT with null count 0.
-- Left in place, unused: the `notinmax` setting, the tables `lineitem_dict` and `lineitem_dict_1rg`.
+- Left in place: the `notinmax` setting. The tables `lineitem_dict` and `lineitem_dict_1rg` were dropped on 2026-11-18 (AsterixDB collections only; the Iceberg files were not deleted).
