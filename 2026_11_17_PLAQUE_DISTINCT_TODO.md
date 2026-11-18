@@ -32,6 +32,17 @@ The 126-run propagation on/off benchmark was stopped after 3 runs: with one seen
 6. Regression tests for DISTINCT in the test suite (there are none).
 7. Commit the DISTINCT code on `baleen` (all of it is uncommitted; ask first).
 
+## Regression tests (state on 2026-11-17, 19:40)
+
+Added and passing (run with JUnit directly; the Maven test runner is not in the offline repository):
+
+- `asterix-runtime/src/test/java/org/apache/asterix/runtime/operators/plaque/PlaqueDistinctStateTest.java`: 15 tests, each run for hash, flat and roaring (45 runs, all pass). New once then duplicate; nothing reported seen that was not added (200,000 values); extreme BIGINTs with each one as the first value; range check for file skip; values outside the announced range; range too wide for the flat bitmap; value listing with limit; strings and other types; own values handed out once and received values never; a delta reaching a second set; 4 threads adding the same 100,000 values report each new exactly once; hash cap at 1,000,000.
+- `asterix-external-data/src/test/java/org/apache/asterix/external/input/record/reader/iceberg/PlaqueIcebergDistinctScanFilterTest.java`: 8 tests, all pass, and the 10 existing MAX/MIN scan filter tests still pass. Supported column types; file skipped only when every value between its bounds is seen; hash skips only single-value files; files with nulls or without statistics are read; no skip below level 2 or on a string column; NOT IN only at level 3, only for a non-empty set within the limit; strings in NOT IN.
+
+Not added yet: query tests (result equal to Baleen off) and plan tests. Blocker: `asterix-app/src/test/resources/cc.conf` points the test cluster at `/scratch/AsterixDBDatasets/nc1..nc4`, the storage of the benchmark server. The standard test harness cleans its storage when it starts, so running it in this checkout would wipe the benchmark data. These tests need a test configuration with its own storage directory first.
+
+Not done: no check that the tests fail when the code is broken on purpose.
+
 ## Query set
 
 Every DISTINCT benchmark and check uses all four queries, Q1 to Q4. Q4 was left out of the flush benchmark, the flush ablation and the propagation check of 2026-11-17, on the expectation that the flush switches have nothing to act on without a join. That expectation was never measured. Q4 goes back into every matrix from now on; no query is dropped because it is expected to show nothing.
