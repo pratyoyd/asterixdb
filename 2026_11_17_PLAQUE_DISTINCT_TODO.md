@@ -32,6 +32,12 @@ The 126-run propagation on/off benchmark was stopped after 3 runs: with one seen
 6. Regression tests for DISTINCT in the test suite (there are none).
 7. Commit the DISTINCT code on `baleen` (all of it is uncommitted; ask first).
 
+## Added 2026-11-20
+
+- Level 4 (rows dropped inside the Parquet reader by dictionary entry) is implemented for string columns and loaded on the server; unit tests pass (`PlaqueDistinctDictionaryReaderTest`, 10 tests). Single runs: Q1 8.7 and 11.4 s at level 4 against 15.3 and 19.7 s at level 3; Q4 0.5 and 0.6 s against 2.7 and 2.8 s. The 6-run benchmark on Q1 and Q4 is still to be run. Default level is still 3.
+- After the level 4 results (user, 2026-11-20): implement DISTINCT for native columnar collections.
+- Then (user, 2026-11-20): think about the design for DISTINCT with more than one expression.
+
 ## Regression tests (state on 2026-11-17, 19:40)
 
 Added and passing (run with JUnit directly; the Maven test runner is not in the offline repository):
