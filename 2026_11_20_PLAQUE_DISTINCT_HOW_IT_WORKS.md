@@ -35,7 +35,7 @@ Each level keeps everything of the levels below it and adds one place.
 | 1 | Tuple filter, above the scan | "Is this row's value seen?" | Drops the row before the join |
 | 2 | File skip, before a file is opened | "Are all values between this file's lowest and highest seen?" | The file is not read. BIGINT columns only |
 | 3 | List of seen values given to the Parquet reader | (the reader compares the list with each row group's dictionary) | A row group holding only seen values is not read. Needs a Parquet dictionary; list at most 10,000 values |
-| 4 (not built) | Code bitmap inside a row group | "Which dictionary entries are seen?" | Rows with a seen value are dropped before they are decoded |
+| 4 | Drop by dictionary entry inside a row group | "Is this dictionary entry seen?" (once per entry, asked again every 1,024 rows while not seen) | Rows with a seen value are dropped inside the Parquet reader, before they are decoded. String columns only. See `2026_11_20_PLAQUE_DISTINCT_LEVEL4.md` |
 
 With the defaults (roaring, level 3) the observer, the tuple filter, the file skip and the list for the
 Parquet reader are all on, and all of them read the same roaring seen-set.
