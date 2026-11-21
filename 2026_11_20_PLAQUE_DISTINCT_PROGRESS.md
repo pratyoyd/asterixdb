@@ -83,10 +83,14 @@ Single runs on `Lineitem_column_10` / `Orders_column_10`, roaring (not a benchma
    18:22, detached from the session. Results go to `build_logs/bench_result_distinct_native.md`.
 9. Explanation of level 4 as row-level skipping, its relation to page skipping and to known techniques, and
    whether it applies to MAX, MIN, Top-K and GROUP BY: `2026_11_20_PLAQUE_ROW_LEVEL_SKIPPING.md`.
+10. The native benchmark finished at 22:21: 240 runs, all correct. Medians with the defaults (roaring,
+    level 4) against Baleen off: Q1 155.0 to 14.5 s (10.72x), Q2 125.0 to 9.5 s (13.17x), Q3 108.1 to 21.7 s
+    (4.98x), Q4 295.5 to 8.9 s (33.38x). Hash and flat gain nothing on Q3 and skip no leaf on Q2. Raw tables
+    in `2026_11_20_PLAQUE_DISTINCT_NATIVE_BENCHMARK.md`.
 
 ## Next, as set by the user
 
-1. DISTINCT for native columnar collections: implemented; 6-run benchmark running.
+1. DISTINCT for native columnar collections: implemented and benchmarked (item 10).
 2. Design for DISTINCT with more than one expression.
 
 ## Bugs

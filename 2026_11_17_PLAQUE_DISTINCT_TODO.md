@@ -40,6 +40,10 @@ The 126-run propagation on/off benchmark was stopped after 3 runs: with one seen
 - Open idea, not scheduled (raised by the user 2026-11-20): row-level skipping inside the scan for the earlier filters (MAX, MIN, Top-K, GROUP BY). See `2026_11_20_PLAQUE_ROW_LEVEL_SKIPPING.md`, section 9.
 - Open, offered 2026-11-20: a related-work search on row-level runtime filtering inside scans, for the paper.
 
+- Native 6-run benchmark done on 2026-11-20 (240 runs, all correct): `2026_11_20_PLAQUE_DISTINCT_NATIVE_BENCHMARK.md`.
+  Open from it, not scheduled: why hash and flat stop gaining on Q3 on native (flat gets no value range there);
+  why one Q2 run at level 4 skipped no leaf.
+
 ## Regression tests (state on 2026-11-17, 19:40)
 
 Added and passing (run with JUnit directly; the Maven test runner is not in the offline repository):
