@@ -37,6 +37,8 @@ The 126-run propagation on/off benchmark was stopped after 3 runs: with one seen
 - Level 4 (rows dropped inside the Parquet reader by dictionary entry) is implemented for string columns and loaded on the server; unit tests pass (`PlaqueDistinctDictionaryReaderTest`, 10 tests). Single runs: Q1 8.7 and 11.4 s at level 4 against 15.3 and 19.7 s at level 3; Q4 0.5 and 0.6 s against 2.7 and 2.8 s. 6-run benchmark on Q1 and Q4 done 2026-11-20, see `2026_11_20_PLAQUE_DISTINCT_LEVEL4.md`: Q1 9.4 s against 13.1 s at level 3, Q4 0.4 s against 2.9 s (roaring). Default level is still 3; whether to make 4 the default is open.
 - After the level 4 results (user, 2026-11-20): implement DISTINCT for native columnar collections. Implemented and checked with single runs on 2026-11-20, see `2026_11_20_PLAQUE_DISTINCT_NATIVE_COLUMNAR.md`; level 4 is the default since the same day. The 6-run benchmark (240 runs) waits for the user's OK.
 - Then (user, 2026-11-20): think about the design for DISTINCT with more than one expression.
+- Open idea, not scheduled (raised by the user 2026-11-20): row-level skipping inside the scan for the earlier filters (MAX, MIN, Top-K, GROUP BY). See `2026_11_20_PLAQUE_ROW_LEVEL_SKIPPING.md`, section 9.
+- Open, offered 2026-11-20: a related-work search on row-level runtime filtering inside scans, for the paper.
 
 ## Regression tests (state on 2026-11-17, 19:40)
 

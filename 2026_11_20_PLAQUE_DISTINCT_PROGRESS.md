@@ -59,9 +59,34 @@ SELECT DISTINCT l.l_partkey FROM lineitem l, orders o WHERE l.l_orderkey = o.o_o
 SELECT DISTINCT l.l_shipmode FROM lineitem l;
 ```
 
+## Later the same day
+
+6. DISTINCT on native columnar collections implemented: leaf skip by min and max (BIGINT, level 2 and up) and
+   row drop inside the columnar reader (BIGINT and strings, level 4 and up). 4 unit tests pass. Details and the
+   single-run check: `2026_11_20_PLAQUE_DISTINCT_NATIVE_COLUMNAR.md`.
+
+Single runs on `Lineitem_column_10` / `Orders_column_10`, roaring (not a benchmark):
+
+| Query | Baleen off | Level 1 | Level 2 | Level 3 | Level 4 | Level 4 over Baleen off |
+|---|---|---|---|---|---|---|
+| Q1 `l_shipmode`, join | 179.1 s | 41.3 s | 35.9 s | 35.0 s | 15.4 s | 11.6x |
+| Q2 `l_suppkey`, join | 119.3 s | 33.3 s | 14.8 s | 14.3 s | 9.6 s | 12.4x |
+| Q3 `l_partkey`, join | 110.7 s | 41.7 s | 42.4 s | 41.7 s | 21.7 s | 5.1x |
+| Q4 `l_shipmode`, no join | 282.7 s | 26.5 s | 27.4 s | 27.5 s | 8.6 s | 32.9x |
+
+7. A wrong result found and fixed on the way: Q2 on native at level 2 returned 100,004 rows, because a leaf
+   skipped on a scan without a row filter comes out as empty records. A row filter is now always attached with
+   the leaf skip.
+8. The 240-run native benchmark (Q1 to Q4; Baleen off and hash, flat, roaring at levels 1, 2, 4; 6 runs) was
+   approved and started. The first start was cut off at 18:19 after the first round of Q1 when the session
+   ended (kept as `build_logs/bench_result_distinct_native_per_run_cutoff_1819.md`); it was started again at
+   18:22, detached from the session. Results go to `build_logs/bench_result_distinct_native.md`.
+9. Explanation of level 4 as row-level skipping, its relation to page skipping and to known techniques, and
+   whether it applies to MAX, MIN, Top-K and GROUP BY: `2026_11_20_PLAQUE_ROW_LEVEL_SKIPPING.md`.
+
 ## Next, as set by the user
 
-1. DISTINCT for native columnar collections.
+1. DISTINCT for native columnar collections: implemented; 6-run benchmark running.
 2. Design for DISTINCT with more than one expression.
 
 ## Bugs
