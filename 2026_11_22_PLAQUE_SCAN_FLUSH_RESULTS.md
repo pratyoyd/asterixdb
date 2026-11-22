@@ -129,7 +129,7 @@ Rows dropped in the scan by DISTINCT (native): H1 43.8 M-45.5 M with either flus
 | F5 | **Measured harm: H2, 24.1 → 26.2 s (+9 %), ranges do not overlap.** 28 K early sends per run; DISTINCT drops the same rows either way (55.67 M vs 55.71 M), so the flush buys nothing and costs the sends. Still 4.3x faster than Baleen off. | Explained in part: no benefit is shown by the counter; that the cost is the small frames through the hash exchange is a **guess** |
 | F6 | H1: 16 K early sends, no measurable cost (19.0 vs 19.2 s). Same query without the join. | Supports the exchange being where the cost is (F5), not checked |
 | F7 | H3: 7-11 early sends, no measurable difference; spread of the flush-off runs (16.1-23.0) is larger. | Expected: a MIN converges fast, few sends |
-| F8 | H4, H5 (Iceberg DISTINCT level 4): the reader dropped **0 rows by dictionary entry** in every run of both "row test on" configurations, so level 4 did nothing; the flush still sends before each of 26 file tasks. No measurable cost (+1.5 s and +0.6 s in median, ranges overlap). | 0 rows dropped: measured. Why: **guess**, `l_partkey` pages not dictionary-encoded in these files (too many distinct values), not checked |
+| F8 | H4, H5 (Iceberg DISTINCT level 4): the reader dropped **0 rows by dictionary entry** in every run of both "row test on" configurations, so level 4 did nothing; the flush still sends before each of 26 file tasks. No measurable cost (+1.5 s and +0.6 s in median, ranges overlap). | Explained: `l_partkey` has about 2 M distinct values, far more than fits in a Parquet dictionary page (writer default 1 MB), so the writer falls back to plain encoding and level 4, which drops rows by dictionary entry, has nothing to work with. The flush fires anyway because its compile-time check is only "level >= 4" |
 | F9 | N6 Baleen off re-check 264.7 s, 5 % above the morning's slowest run. | Not explained |
 | F10 | The mistaken first draw (I5, flush on, 9.9 s) matches the later 6 flush-on runs (9.8-10.5). | Consistent |
 
@@ -144,9 +144,9 @@ Rows dropped in the scan by DISTINCT (native): H1 43.8 M-45.5 M with either flus
      adds a threshold);
   2. leave as is: the measured worst case is +9 % on one query, against 4x-8x gains on the MAX/MIN queries.
   My recommendation: 2 for now, and revisit if a second query shows the H2 pattern.
-- **To check (cheap, read-only):** whether the Iceberg `l_partkey` column chunks are dictionary-encoded
-  (`parquet-tools meta` on one file) - this decides whether F8 is about the flush or about level 4 on
-  high-cardinality columns.
+- **F8 is about level 4, not the flush:** on Iceberg, level 4 cannot drop rows from a column that is not
+  dictionary-encoded, which is the normal case for a high-cardinality column. The flush cost there is not
+  measurable (26 sends per run), so no change is proposed for it.
 
 ## Bugs and problems on the way
 
@@ -166,7 +166,6 @@ Rows dropped in the scan by DISTINCT (native): H1 43.8 M-45.5 M with either flus
 ## Stated but not verified
 
 - That H2's extra 2 s are the small frames through the hash exchange (F5).
-- That level 4 drops nothing on H4/H5 because of the column encoding (F8).
 - Why N6 Baleen off was 5 % slower than in the morning (F9).
 - The worst case named in the morning (a nullable column, where the row test keeps nulls) was not run: it
   needs a data load.
