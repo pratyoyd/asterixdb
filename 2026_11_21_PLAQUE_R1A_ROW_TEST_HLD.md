@@ -112,6 +112,18 @@ existing shared state. Between the scan and the aggregate the only buffering is 
 already sends rows up after every frame (early send), so the scan sees an improving value while it runs. Across
 nodes the existing propagation is used.
 
+**Corrected 2026-11-22 after running it.** The paragraph above was wrong in one place. The *scan* also holds
+rows in a frame and sent it only when full. With the row test dropping about 399 of 400 rows, a frame filled
+only near the end of a partition's scan, so the best value stayed at what the first frame had brought, and page
+skip, file skip and the row test all used that old value. Measured: with the row test on, rows past page skip
+on N1 rose from about 40 K to 1.9 M-9.1 M, and I1 skipped 1-22 of 30 files instead of 26, making MAX/MIN
+queries slower than page skip alone (`2026_11_22_PLAQUE_R1A_RESULTS.md`). Fix agreed with the user the same
+day: a scan whose row filter drops rows sends what it kept before each leaf (native) or file task (Iceberg),
+setting `compiler.plaque.scanflush`, default on (LLD section 10). After the fix the row test matches or beats
+page skip on every MAX/MIN query measured; measured cost at most +9 % (H2, DISTINCT on a high-cardinality
+column with a join) (`2026_11_22_PLAQUE_SCAN_FLUSH_RESULTS.md`). The general lesson: a filter inside the scan
+can slow down its own feedback, because it removes the rows that would improve the value it reads.
+
 ## 6. What exists and what is new
 
 | Piece | Status |
@@ -138,7 +150,7 @@ changed; the Baleen rule only adds to what it left.
 | D4 | Iceberg column types | Basic types / all comparable types | Basic types first: long, int, double, float | Decided by user 2026-11-21 |
 | D5 | DISTINCT | Fix the WHERE case only / also lift its other limits | WHERE case only | Decided by user 2026-11-21 |
 | D6 | Switch for measurement | New on/off setting / levels like DISTINCT | On/off setting, default on | Decided by user 2026-11-21 |
-| D8 | Overhead when the row test drops little | Measure first, with a worst-case query in the benchmark / build a self switch-off now (stop testing for a while on a page that drops almost nothing, like the DISTINCT reader) | Measure first; the switch-off saves only the comparison on native, not the second column read, unless the reader is changed further | Decided by user 2026-11-21: measure first |
+| D8 | Overhead when the row test drops little | Measure first, with a worst-case query in the benchmark / build a self switch-off now (stop testing for a while on a page that drops almost nothing, like the DISTINCT reader) | Measure first; the switch-off saves only the comparison on native, not the second column read, unless the reader is changed further | Decided by user 2026-11-21: measure first. Measured 2026-11-22: N4 (WHERE leaves few rows) and I4 (sorted) show no clear cost; the slowdowns found had a different cause (section 5 correction). No switch-off needed so far |
 | D7 | Shape of the combined test | A list of Baleen tests / one test only | A list, so later row tests (R1b to R1d) plug in | Decided by user 2026-11-21 |
 
 ## 8. Expected effect and how it will be tested
@@ -199,7 +211,7 @@ level 4); how a declined case shows up in the plan and log; the unit tests.
 
 | # | Question | Answer |
 |---|---|---|
-| 1 | When does the information arrive where it is used? | Section 5: page skip once per page, row test once per row with the latest value; only the frame buffers between scan and aggregate, flushed per frame |
+| 1 | When does the information arrive where it is used? | Section 5: page skip once per page, row test once per row with the latest value; only the frame buffers between scan and aggregate, flushed per frame. **Wrong for the scan's own frame; corrected 2026-11-22, see section 5** |
 | 2 | Is the plan what we think? | Both plans taken from the running server on 2026-11-21 (section 2) |
 | 3 | What else rewrites this part of the plan? | WHERE pushdown runs before the Baleen page-filter rule and is not changed. Whether any later rule (for example one that clones the plan) strips the scan's Baleen fields was not checked: listed below as not verified |
 | 4 | On which data does it help? | Unsorted on `x`: helps. Sorted: page skip already does the work (section 8) |

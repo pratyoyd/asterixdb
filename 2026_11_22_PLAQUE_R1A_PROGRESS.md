@@ -1,8 +1,66 @@
-# R1a row test: implementation and review (2026-11-22)
+# R1a row test and scan flush: progress and day summary (2026-11-22)
 
-Status: built, unit-tested, running on the benchmark server (restarted 2026-11-22 after the user said "you do
-what needs to be done"; storage kept). Nothing committed on `baleen`.
-Design: `2026_11_21_PLAQUE_R1A_ROW_TEST_HLD.md`, `2026_11_21_PLAQUE_R1A_ROW_TEST_LLD.md`.
+Status (end of 2026-11-22): built, unit-tested, benchmarked, with the scan flush added the same day.
+**Committed on `baleen` as `e933aabef6`** (user: "just commit everything"), not pushed. The scan-flush code
+was **not** reviewed by the code-reviewer agent.
+Design: `2026_11_21_PLAQUE_R1A_ROW_TEST_HLD.md` (corrected 2026-11-22, section 5),
+`2026_11_21_PLAQUE_R1A_ROW_TEST_LLD.md` (amendment section 10).
+
+## The day in order (2026-11-22)
+
+| Step | Outcome | Where |
+|---|---|---|
+| Implementation and review of R1a | Built; reviewer findings B1-B6, D-b; fixes listed below | this note |
+| DISTINCT with a WHERE | Found never to compile (`ConsolidateSelectsRule` loop); fixed | this note |
+| Correctness check, 24 runs | All equal to Baleen off | this note |
+| Benchmark, 228 runs | Row test a clear win on N3, N6, I6; **slower than page skip on N1, N2, I1, I2** | `2026_11_22_PLAQUE_R1A_RESULTS.md` |
+| Interpretation | Cause: the scan's own frame held kept rows, so the best value was stale | same, O4/O5 |
+| Scan flush (agreed with the user) | Built, unit-tested, correctness check 24 runs | LLD section 10 |
+| Delta benchmark, 212 runs | Row test now matches or beats page skip on every MAX/MIN query; worst cost +9 % (H2) | `2026_11_22_PLAQUE_SCAN_FLUSH_RESULTS.md` |
+| Review of the skills and agent, LLD skill format | Given in chat, recorded | `2026_11_22_PLAQUE_SKILLS_REVIEW.md` |
+| Commit | `e933aabef6` on `baleen` (64 files) | - |
+
+## Headline numbers (median of 6 runs, seconds)
+
+| Query | Baleen off | Page skip only | Row test, no flush | Row test + flush |
+|---|---|---|---|---|
+| N1 MAX, no WHERE | 23.5 | 0.11 | 0.61 | 0.10 |
+| N2 MAX, WHERE | 15.8 | 0.17 | 2.82 | 0.12 |
+| N3 MIN string, WHERE | 31.7 | 35.1 | 12.3 | 11.9 |
+| N6 DISTINCT, WHERE | 245.4 | 31.7 | 11.3 | 10.4 |
+| I1 MAX, no WHERE | 19.1 | 2.77 | 3.08 | 0.59 |
+| I2 MAX, WHERE | 30.3 | 4.12 | 5.05 | 1.08 |
+| I5 MAX over a join | 38.7 | 13.5 | 12.0 | 9.9 |
+| I6 DISTINCT, WHERE | 336.2 | 4.75 | 0.70 | 0.69 |
+
+All 12 queries and H1-H5 are in the two results notes.
+
+## Scan flush (added 2026-11-22)
+
+- **What:** a scan whose row filter drops rows (MAX/MIN row test, or DISTINCT level 4) sends the rows it kept
+  so far before deciding on the next leaf (native: `QueryColumnTupleReference.startNewPage`, via
+  `ITupleProjector.setEarlyFlush` from `IndexSearchOperatorNodePushable`) or file task (Iceberg:
+  `IcebergFileRecordReader`, via `IRecordReader.setEarlyFlush` from `RecordDataFlowController`).
+- **Setting:** `compiler.plaque.scanflush`, default true.
+- **Visible:** log line `plaque scan early sends: <n>` per scan that sent early.
+- **Tests:** `PlaqueScanFlushProjectorTest` (asterix-column, 3), `PlaqueIcebergScanFlushTest`
+  (asterix-external-data, 4); pass.
+- **Where it fires without gain:** DISTINCT on a high-cardinality column (H1, H2: 16 K-31 K sends, same rows
+  dropped; H2 +9 %); Iceberg DISTINCT level 4 on a column that is not dictionary-encoded (H4, H5: level 4 drops
+  nothing, so the flush has nothing to send early that matters; no measurable cost).
+
+## Open items
+
+| Item | Waiting for |
+|---|---|
+| H2 cost: leave the flush as is, or send early only when few rows were kept | User decision (my recommendation: leave) |
+| Code-reviewer on the scan-flush code | Not run; user chose to commit |
+| Nullable-column worst case | Needs a data load |
+| Left outer joins crossed on both sides | User confirmation |
+| Per-row `LongAdder` / Iceberg `getField(name)` overhead (reviewer "Opt") | User decision |
+| N6 Baleen off re-check 5 % above the morning's range | Not explained |
+| Iceberg DISTINCT level 4 does nothing on high-cardinality columns | Known consequence of dictionary-only drop; not in scope |
+| Skill edits proposed | User decision; no skill edited |
 
 ## What was built
 
@@ -100,5 +158,6 @@ The Iceberg services (S3Mock, Nessie) were not running; started with `iceberg/st
 
 ## Stated but not verified
 
-- Nothing has run on the server: plans, results and counters are unchecked.
+- (Superseded 2026-11-22: everything has since run on the server; see the results notes.)
+- The scan-flush change has not been reviewed by the code-reviewer agent.
 - Reviewer N1 to N3 (index join, access above a join, key fields) are read from the code, not run.
