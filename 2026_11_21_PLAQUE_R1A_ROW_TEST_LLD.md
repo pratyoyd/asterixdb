@@ -47,8 +47,8 @@ ASSIGN down to the scan. Allowed on the way:
 |---|---|---|
 | ASSIGN, SELECT, PROJECT, EXCHANGE | Yes | Row by row; they keep or drop rows, never combine them |
 | Inner join, either input | Yes | A join output row carries the same `x`; it cannot beat the best value either |
-| Left outer join, input 0 (outer side) only | Yes | Removing an outer row removes only output rows with that same `x` |
-| Left outer join, input 1 (inner side) | No | Not needed now; would turn rows into null-extended ones (safe for MAX, but not checked) |
+| Left outer join, input 0 (outer side) | Yes | Removing an outer row removes only output rows with that same `x` |
+| Left outer join, input 1 (inner side) | Yes | Removing an inner row can only turn an outer row into one with `x` missing, which MAX/MIN ignore, or remove output rows with that same `x` |
 | Anything else (GROUP BY, ORDER, LIMIT, UNNEST, REPLICATE, window, union, ...) | No: not attached | Other operators may need the row |
 
 The ASSIGN expression must be a field access on the scan's record variable:
@@ -56,8 +56,10 @@ The ASSIGN expression must be a field access on the scan's record variable:
 - `FIELD_ACCESS_BY_NAME` (undeclared field, and every Iceberg field).
 Nested access is not attached (D2: later).
 
-The walk is new code, kept separate from `findDefiningAssign`, which DISTINCT also uses and where crossing a
-left outer join would be wrong (a null-extended row would add a null to the DISTINCT answer).
+The walk is new code, kept separate from `findDefiningAssign`, which DISTINCT also uses and where crossing the
+inner side of a left outer join would be wrong (a null-extended row would add a null to the DISTINCT answer).
+(Amended 2026-11-21 while implementing: the first version crossed only the outer side of a left outer join;
+the implement skill's check showed the inner side is equally safe for MAX/MIN, so both are crossed.)
 
 Where it lands:
 - native scan (`ColumnDatasetProjectionFiltrationInfo`): `setPlaqueRowTest(handle, isMax, path)`;
@@ -143,7 +145,7 @@ The old class is removed; its unit test moves to the new class.
 | Case | Where decided | What happens | How it is seen |
 |---|---|---|---|
 | Setting off | Rule | No row test | Plan has no `plaque-row-test` |
-| Path to the scan crosses a non-row-wise operator, or the inner side of a left outer join | Rule | Not attached; tuple filter still works | Plan has no `plaque-row-test` |
+| Path to the scan crosses a non-row-wise operator | Rule | Not attached; tuple filter still works | Plan has no `plaque-row-test` |
 | Not a top-level field access on the scan record | Rule | Not attached | Same |
 | Native: component has none of the filter's columns | `PlaqueRowFilterEvaluatorFactory` | Every row kept | Rows tested counter does not grow |
 | Native: field holds arrays, or no task context | `PlaqueMinMaxRowTest` | Keeps every row | Decline counter in `PLAQUE_FILTER_STATS` |
@@ -153,9 +155,11 @@ The old class is removed; its unit test moves to the new class.
 ## 7. Counters
 
 `PlaqueThresholdState` gets `LongAdder scanRowsTested, scanRowsDropped, scanRowTestDeclines` (native).
-`PLAQUE_FILTER_STATS` (tuple filter, one line per partition at close) adds them. Because the state is shared by
-every scan of the job on the node (here: one process for all four nodes), the counters are job totals so far;
-the largest value over the lines of a job is the total. Iceberg counts per reader in `close()`.
+`PLAQUE_FILTER_STATS` (tuple filter, one line per partition at close) adds them. The state is shared by every
+scan of the job in the process (here: one process for all four nodes), so each line reports and resets what has
+built up since the previous line (`sumThenReset`); the lines of a job add up to its total. (Amended 2026-11-22
+while preparing the benchmark: the first version printed running totals, which a sum over lines would
+overcount.) Iceberg counts per reader and logs them in `close()`.
 
 ## 8. Tests (JUnit, run directly with `JUnitCore`; no runtimets / optimizerts harness)
 
@@ -183,8 +187,7 @@ The rule and the reader wiring cannot be unit tested without the harness; they a
 ## Decisions made without asking
 
 - Separate row-test fields on the scan info, instead of reusing the page / file skip fields.
-- Left outer join crossed on the outer side only, for MAX/MIN (the general case for this shape); the inner side
-  left out.
+- Left outer join crossed on both sides for MAX/MIN.
 - With a WHERE at DISTINCT levels 2 and 3 the always-true DISTINCT test is still added.
 - Counters as job totals on the shared state, printed by the tuple filter.
 - File and class names.
