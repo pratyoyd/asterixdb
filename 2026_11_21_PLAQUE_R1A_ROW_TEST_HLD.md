@@ -1,6 +1,6 @@
 # R1a: row test inside the scan for MAX / MIN, and DISTINCT with a WHERE (HLD, 2026-11-21)
 
-Status: for review, nothing built. Code tree `/scratch/asterixdb_eightynode/asterixdb_v3`, branch `baleen`.
+Status: accepted by the user 2026-11-21 ("yes do D8 and LLD and everything"), nothing built yet. Code tree `/scratch/asterixdb_eightynode/asterixdb_v3`, branch `baleen`.
 Plan item R1a in `2026_11_21_PLAQUE_LONG_TERM_FILTER_PLAN.md`. Builds on `2026_11_20_PLAQUE_ROW_LEVEL_SKIPPING.md`
 (section 9) and `2026_11_20_PLAQUE_DISTINCT_NATIVE_COLUMNAR.md`.
 
@@ -138,7 +138,7 @@ changed; the Baleen rule only adds to what it left.
 | D4 | Iceberg column types | Basic types / all comparable types | Basic types first: long, int, double, float | Decided by user 2026-11-21 |
 | D5 | DISTINCT | Fix the WHERE case only / also lift its other limits | WHERE case only | Decided by user 2026-11-21 |
 | D6 | Switch for measurement | New on/off setting / levels like DISTINCT | On/off setting, default on | Decided by user 2026-11-21 |
-| D8 | Overhead when the row test drops little | Measure first, with a worst-case query in the benchmark / build a self switch-off now (stop testing for a while on a page that drops almost nothing, like the DISTINCT reader) | Measure first; the switch-off saves only the comparison on native, not the second column read, unless the reader is changed further | Open, proposed by me |
+| D8 | Overhead when the row test drops little | Measure first, with a worst-case query in the benchmark / build a self switch-off now (stop testing for a while on a page that drops almost nothing, like the DISTINCT reader) | Measure first; the switch-off saves only the comparison on native, not the second column read, unless the reader is changed further | Decided by user 2026-11-21: measure first |
 | D7 | Shape of the combined test | A list of Baleen tests / one test only | A list, so later row tests (R1b to R1d) plug in | Decided by user 2026-11-21 |
 
 ## 8. Expected effect and how it will be tested
