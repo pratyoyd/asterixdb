@@ -68,8 +68,8 @@ Known limits carried over from the DISTINCT implementation: native needs the col
 nullable; the row drop is not attached when the query has its own filter pushed into the same scan; a leaf
 skip must always come with a row filter (wrong result found and fixed on 2026-11-20).
 
-Proposed position (not confirmed): R1a first, before G1, because plain Top-K reuses the scalar bound and its
-scan filter and would get the row test for free; R1b with G3; R1c and R1d after I2.
+Position: R1a first, before G1 (confirmed by the user 2026-11-21). Still proposed, not confirmed: R1b with G3; R1c and R1d after I2. Reason for R1a first: because plain Top-K reuses the scalar bound and its
+scan filter and would get the row test for free.
 
 Not ordered yet:
 
