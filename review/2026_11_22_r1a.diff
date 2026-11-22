@@ -1,0 +1,1877 @@
+--- a/asterixdb/asterix-algebra/src/main/java/org/apache/asterix/compiler/provider/SqlppCompilationProvider.java
++++ b/asterixdb/asterix-algebra/src/main/java/org/apache/asterix/compiler/provider/SqlppCompilationProvider.java
+@@ -113,6 +113,7 @@
+                 CompilerProperties.COMPILER_PLAQUE_ENABLED_KEY, CompilerProperties.COMPILER_PLAQUE_PROPAGATION_KEY,
+                 CompilerProperties.COMPILER_PLAQUE_PROPAGATION_INTERVAL_KEY,
+                 CompilerProperties.COMPILER_PLAQUE_PUSH_THROUGH_JOIN_KEY,
++                CompilerProperties.COMPILER_PLAQUE_ROW_FILTER_KEY,
+                 CompilerProperties.COMPILER_PLAQUE_EAGER_BATCH_SIZE_KEY,
+                 CompilerProperties.COMPILER_PLAQUE_DISTINCT_SET_KEY,
+                 CompilerProperties.COMPILER_PLAQUE_DISTINCT_LEVEL_KEY,
+--- a/asterixdb/asterix-algebra/src/main/java/org/apache/asterix/optimizer/rules/PlaquePageFilterRule.java
++++ b/asterixdb/asterix-algebra/src/main/java/org/apache/asterix/optimizer/rules/PlaquePageFilterRule.java
+@@ -134,7 +134,102 @@
+                     ((Enum<?>) combineOpObj).name(), ((Enum<?>) filterDirObj).name());
+         }
+ 
+-        return attachPageFilter(aggOp, aggOp.getInputs().get(0), handle, isMax, filteredVar);
++        boolean attached = attachPageFilter(aggOp, aggOp.getInputs().get(0), handle, isMax, filteredVar);
++        if (context.getPhysicalOptimizationConfig().getPlaqueRowFilter()
++                && attachRowTest(aggOp.getInputs().get(0).getValue(), handle, isMax, filteredVar)) {
++            aggOp.getAnnotations().put("plaque-page-filter-set", true);
++            attached = true;
++        }
++        return attached;
++    }
++
++    /**
++     * Scalar MAX/MIN: tells the scan that defines filteredVar as a top-level field of its record to drop, row by row,
++     * the rows whose value cannot beat the best value so far (native columnar: inside the columnar reader, combined
++     * with the query's own pushed-down WHERE; Iceberg: inside the reader). Kept apart from the page / file skip,
++     * which has its own conditions.
++     */
++    private boolean attachRowTest(ILogicalOperator root, String handle, boolean isMax, LogicalVariable filteredVar) {
++        AssignOperator assignOp = findAssignForRowTest(root, filteredVar);
++        if (assignOp == null) {
++            return false;
++        }
++        ILogicalExpression expr =
++                assignOp.getExpressions().get(assignOp.getVariables().indexOf(filteredVar)).getValue();
++        if (!(expr instanceof AbstractFunctionCallExpression)
++                || ((AbstractFunctionCallExpression) expr).getArguments().size() != 2) {
++            return false;
++        }
++        AbstractFunctionCallExpression funcExpr = (AbstractFunctionCallExpression) expr;
++        boolean byIndex = funcExpr.getFunctionIdentifier().equals(BuiltinFunctions.FIELD_ACCESS_BY_INDEX);
++        boolean byName = funcExpr.getFunctionIdentifier().equals(BuiltinFunctions.FIELD_ACCESS_BY_NAME);
++        ILogicalExpression recordExpr = funcExpr.getArguments().get(0).getValue();
++        if (!(byIndex || byName) || recordExpr.getExpressionTag() != LogicalExpressionTag.VARIABLE) {
++            return false;
++        }
++        ILogicalOperator current = assignOp.getInputs().get(0).getValue();
++        while (current.getOperatorTag() != LogicalOperatorTag.DATASOURCESCAN) {
++            if (!isRowWise(current.getOperatorTag())) {
++                return false;
++            }
++            current = current.getInputs().get(0).getValue();
++        }
++        DataSourceScanOperator scanOp = (DataSourceScanOperator) current;
++        IProjectionFiltrationInfo info = scanOp.getProjectionFiltrationInfo();
++        // the field must be one of the record's, not of a meta part: the scan's row filter reads the record only
++        if (!(scanOp.getDataSource() instanceof DatasetDataSource)
++                || !((VariableReferenceExpression) recordExpr).getVariableReference().equals(
++                        ((DatasetDataSource) scanOp.getDataSource()).getDataRecordVariable(scanOp.getVariables()))) {
++            return false;
++        }
++        DatasetDataSource ds = (DatasetDataSource) scanOp.getDataSource();
++        String fieldName = byName ? ConstantExpressionUtil.getStringArgument(funcExpr, 1) : null;
++        if (byIndex) {
++            Integer fieldIndex = ConstantExpressionUtil.getIntArgument(funcExpr, 1);
++            IAType itemType = ds.getItemType();
++            if (fieldIndex == null || !(itemType instanceof ARecordType) || fieldIndex < 0
++                    || fieldIndex >= ((ARecordType) itemType).getFieldNames().length) {
++                return false;
++            }
++            fieldName = ((ARecordType) itemType).getFieldNames()[fieldIndex];
++        }
++        if (fieldName == null) {
++            return false;
++        }
++        if (info instanceof ColumnDatasetProjectionFiltrationInfo) {
++            ((ColumnDatasetProjectionFiltrationInfo) info).setPlaqueRowTest(handle, isMax, new ARecordType(
++                    "plaque_row_test_path", new String[] { fieldName }, new IAType[] { BuiltinType.ANY }, false));
++            return true;
++        }
++        if (info instanceof ExternalDatasetProjectionFiltrationInfo && byName
++                && DatasetUtil.isIcebergTable(ds.getDataset())) {
++            ((ExternalDatasetProjectionFiltrationInfo) info).setPlaqueScanRowTest(handle, isMax, fieldName);
++            return true;
++        }
++        return false;
++    }
++
++    /**
++     * Finds the ASSIGN defining var for the MAX/MIN row test, descending through row-by-row operators and through
++     * both inputs of inner and left outer joins. Dropping a row whose value cannot beat the best value is safe across
++     * all of them: a join output row carries the same value, and a row of a left outer join's inner side that is
++     * dropped can only leave an outer row without the value, which MAX and MIN ignore. Anything else stops the search.
++     */
++    private AssignOperator findAssignForRowTest(ILogicalOperator op, LogicalVariable var) {
++        LogicalOperatorTag tag = op.getOperatorTag();
++        if (tag == LogicalOperatorTag.ASSIGN && ((AssignOperator) op).getVariables().contains(var)) {
++            return (AssignOperator) op;
++        }
++        if (!isRowWise(tag) && tag != LogicalOperatorTag.INNERJOIN && tag != LogicalOperatorTag.LEFTOUTERJOIN) {
++            return null;
++        }
++        for (Mutable<ILogicalOperator> input : op.getInputs()) {
++            AssignOperator found = findAssignForRowTest(input.getValue(), var);
++            if (found != null) {
++                return found;
++            }
++        }
++        return null;
+     }
+ 
+     private boolean handleThetaJoin(Mutable<ILogicalOperator> opRef, IOptimizationContext context)
+--- a/asterixdb/asterix-column/src/main/java/org/apache/asterix/column/filter/FilterAccessorProvider.java
++++ b/asterixdb/asterix-column/src/main/java/org/apache/asterix/column/filter/FilterAccessorProvider.java
+@@ -133,6 +133,11 @@
+         return new UnionColumnFilterValueAccessorEvaluator(unionReaders, valueGetters);
+     }
+ 
++    /** The filter column readers of path, created and registered on first use; empty if no component column has it. */
++    public List<IColumnValuesReader> getOrCreateColumnReaders(ARecordType path) throws HyracksDataException {
++        return createReaders(path);
++    }
++
+     public void initializeFilterReaders() {
+         // This primary key level reader will help us avoid skipping filter values when an anti-matter is encountered
+         IColumnValuesReader primaryKeyLevelReader = readerFactory.createValueReader(ATypeTag.MISSING, 0, 1, true);
+--- a/asterixdb/asterix-column/src/main/java/org/apache/asterix/column/filter/iterable/evaluator/ColumnIterableFilterEvaluatorFactory.java
++++ b/asterixdb/asterix-column/src/main/java/org/apache/asterix/column/filter/iterable/evaluator/ColumnIterableFilterEvaluatorFactory.java
+@@ -37,6 +37,10 @@
+         this.evaluatorFactory = evaluatorFactory;
+     }
+ 
++    public IScalarEvaluatorFactory getEvaluatorFactory() {
++        return evaluatorFactory;
++    }
++
+     @Override
+     public IColumnIterableFilterEvaluator create(ColumnFilterEvaluatorContext context) throws HyracksDataException {
+         IScalarEvaluator evaluator = evaluatorFactory.createScalarEvaluator(context);
+--- a/asterixdb/asterix-column/src/main/java/org/apache/asterix/column/filter/iterable/evaluator/PlaqueDistinctIterableFilterEvaluatorFactory.java
++++ /dev/null
+@@ -1,105 +0,0 @@
+-/*
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *   http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing,
+- * software distributed under the License is distributed on an
+- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+- * KIND, either express or implied.  See the License for the
+- * specific language governing permissions and limitations
+- * under the License.
+- */
+-package org.apache.asterix.column.filter.iterable.evaluator;
+-
+-import java.util.List;
+-
+-import org.apache.asterix.column.filter.FilterAccessorProvider;
+-import org.apache.asterix.column.filter.TrueColumnFilterEvaluator;
+-import org.apache.asterix.column.filter.iterable.ColumnFilterEvaluatorContext;
+-import org.apache.asterix.column.filter.iterable.IColumnIterableFilterEvaluator;
+-import org.apache.asterix.column.filter.iterable.IColumnIterableFilterEvaluatorFactory;
+-import org.apache.asterix.column.values.IColumnValuesReader;
+-import org.apache.asterix.om.types.ARecordType;
+-import org.apache.asterix.om.types.ATypeTag;
+-import org.apache.asterix.runtime.operators.plaque.PlaqueDistinctState;
+-import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdRegistry;
+-import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
+-import org.apache.hyracks.api.context.IHyracksTaskContext;
+-import org.apache.hyracks.api.exceptions.HyracksDataException;
+-import org.apache.hyracks.data.std.api.IPointable;
+-import org.apache.hyracks.data.std.primitive.VoidPointable;
+-
+-/**
+- * PLAQUE DISTINCT filter on a native columnar scan: a row whose DISTINCT value is already in the query's answer is
+- * dropped inside the columnar reader, before its other columns are assembled. Null and missing values are kept.
+- * <p>
+- * With {@code dropSeen} off it keeps every row. It is still needed then, next to the leaf skip of
+- * {@code PlaqueDistinctColumnFilterEvaluatorFactory}: a scan without a row filter returns the rows of a leaf it did
+- * not read as empty records, and only a scan with a row filter leaves them out.
+- * <p>
+- * The compiler attaches this only to a column declared as a non-nullable BIGINT or string, so the column is neither
+- * repeated nor of mixed type.
+- */
+-public class PlaqueDistinctIterableFilterEvaluatorFactory implements IColumnIterableFilterEvaluatorFactory {
+-    private static final long serialVersionUID = 1L;
+-    private static final byte[] TRUE = { ATypeTag.SERIALIZED_BOOLEAN_TYPE_TAG, 1 };
+-    private static final byte[] FALSE = { ATypeTag.SERIALIZED_BOOLEAN_TYPE_TAG, 0 };
+-    private final String handle;
+-    private final String kind;
+-    private final ARecordType columnPath;
+-    private final boolean dropSeen;
+-
+-    public PlaqueDistinctIterableFilterEvaluatorFactory(String handle, String kind, ARecordType columnPath,
+-            boolean dropSeen) {
+-        this.handle = handle;
+-        this.kind = kind;
+-        this.columnPath = columnPath;
+-        this.dropSeen = dropSeen;
+-    }
+-
+-    @Override
+-    public IColumnIterableFilterEvaluator create(ColumnFilterEvaluatorContext context) throws HyracksDataException {
+-        FilterAccessorProvider provider = context.getFilterAccessorProvider();
+-        IScalarEvaluator value = provider.createColumnAccessEvaluator(columnPath);
+-        List<IColumnValuesReader> readers = provider.getFilterColumnReaders();
+-        if (readers.isEmpty()) {
+-            // this component does not have the column
+-            return TrueColumnFilterEvaluator.INSTANCE;
+-        }
+-        provider.initializeFilterReaders();
+-        IHyracksTaskContext ctx = context.getTaskContext();
+-        PlaqueDistinctState state =
+-                PlaqueThresholdRegistry.INSTANCE.getOrCreateDistinctState(ctx.getJobletContext().getJobId(), handle,
+-                        ctx.getJobletContext().getServiceContext().getNodeId(), kind);
+-        IScalarEvaluator keep = dropSeen ? notSeen(value, state) : (tuple, result) -> result.set(TRUE, 0, TRUE.length);
+-        return new ColumnIterableFilterEvaluator(keep, readers);
+-    }
+-
+-    /** True for a value that is null, missing or not yet in the answer; false (and counted) for a seen one. */
+-    static IScalarEvaluator notSeen(IScalarEvaluator value, PlaqueDistinctState state) {
+-        IPointable v = new VoidPointable();
+-        return (tuple, result) -> {
+-            value.evaluate(tuple, v);
+-            byte tag = v.getByteArray()[v.getStartOffset()];
+-            if (tag != ATypeTag.SERIALIZED_MISSING_TYPE_TAG && tag != ATypeTag.SERIALIZED_NULL_TYPE_TAG
+-                    && state.contains(v.getByteArray(), v.getStartOffset(), v.getLength())) {
+-                state.scanRowsDropped.increment();
+-                result.set(FALSE, 0, FALSE.length);
+-            } else {
+-                result.set(TRUE, 0, TRUE.length);
+-            }
+-        };
+-    }
+-
+-    @Override
+-    public String toString() {
+-        return "PLAQUE_DISTINCT_ROW_FILTER(" + handle + (dropSeen ? ")" : ", keep all)");
+-    }
+-}
+--- a/asterixdb/asterix-column/src/test/java/org/apache/asterix/column/filter/iterable/evaluator/PlaqueDistinctColumnFilterTest.java
++++ b/asterixdb/asterix-column/src/test/java/org/apache/asterix/column/filter/iterable/evaluator/PlaqueDistinctColumnFilterTest.java
+@@ -113,7 +113,7 @@
+         PlaqueDistinctState state = state();
+         byte[][] current = new byte[1][];
+         IScalarEvaluator value = (tuple, result) -> result.set(current[0], 0, current[0].length);
+-        IScalarEvaluator notSeen = PlaqueDistinctIterableFilterEvaluatorFactory.notSeen(value, state);
++        IScalarEvaluator notSeen = PlaqueDistinctRowTest.notSeen(value, state);
+         state.add(bigint(7), 0, 9);
+         state.add(string("AIR"), 0, string("AIR").length);
+ 
+--- a/asterixdb/asterix-common/src/main/java/org/apache/asterix/common/config/CompilerProperties.java
++++ b/asterixdb/asterix-common/src/main/java/org/apache/asterix/common/config/CompilerProperties.java
+@@ -226,6 +226,10 @@
+                 BOOLEAN,
+                 AlgebricksConfig.PLAQUE_PUSH_THROUGH_JOIN_DEFAULT,
+                 "Push PLAQUE filter below hash-partition exchange through joins"),
++        COMPILER_PLAQUE_ROWFILTER(
++                BOOLEAN,
++                AlgebricksConfig.PLAQUE_ROW_FILTER_DEFAULT,
++                "PLAQUE MAX/MIN: drop rows that cannot beat the best value inside the scan"),
+         COMPILER_PLAQUE_EAGER_BATCH_SIZE(
+                 INTEGER,
+                 AlgebricksConfig.PLAQUE_EAGER_BATCH_SIZE_DEFAULT,
+@@ -363,6 +367,7 @@
+     public static final String COMPILER_PLAQUE_PROPAGATION_INTERVAL_KEY =
+             Option.COMPILER_PLAQUE_PROPAGATION_INTERVAL.ini();
+     public static final String COMPILER_PLAQUE_PUSH_THROUGH_JOIN_KEY = Option.COMPILER_PLAQUE_PUSH_THROUGH_JOIN.ini();
++    public static final String COMPILER_PLAQUE_ROW_FILTER_KEY = Option.COMPILER_PLAQUE_ROWFILTER.ini();
+     public static final String COMPILER_PLAQUE_EAGER_BATCH_SIZE_KEY = Option.COMPILER_PLAQUE_EAGER_BATCH_SIZE.ini();
+     public static final String COMPILER_PLAQUE_DISTINCT_SET_KEY = Option.COMPILER_PLAQUE_DISTINCT_SET.ini();
+     public static final String COMPILER_PLAQUE_DISTINCT_LEVEL_KEY = Option.COMPILER_PLAQUE_DISTINCT_LEVEL.ini();
+--- a/asterixdb/asterix-common/src/main/java/org/apache/asterix/common/config/OptimizationConfUtil.java
++++ b/asterixdb/asterix-common/src/main/java/org/apache/asterix/common/config/OptimizationConfUtil.java
+@@ -136,6 +136,8 @@
+                 getInt(querySpecificConfig, CompilerProperties.COMPILER_PLAQUE_PROPAGATION_INTERVAL_KEY, 5000);
+         boolean plaquePushThroughJoin = getBoolean(querySpecificConfig,
+                 CompilerProperties.COMPILER_PLAQUE_PUSH_THROUGH_JOIN_KEY, true, sourceLoc);
++        boolean plaqueRowFilter = getBoolean(querySpecificConfig, CompilerProperties.COMPILER_PLAQUE_ROW_FILTER_KEY,
++                AlgebricksConfig.PLAQUE_ROW_FILTER_DEFAULT, sourceLoc);
+         int plaqueEagerBatchSize =
+                 getInt(querySpecificConfig, CompilerProperties.COMPILER_PLAQUE_EAGER_BATCH_SIZE_KEY, 32);
+         String plaqueDistinctSet = getString(querySpecificConfig, CompilerProperties.COMPILER_PLAQUE_DISTINCT_SET_KEY,
+@@ -191,6 +193,7 @@
+         physOptConf.setPlaquePropagation(plaquePropagation);
+         physOptConf.setPlaquePropagationInterval(plaquePropagationInterval);
+         physOptConf.setPlaquePushThroughJoin(plaquePushThroughJoin);
++        physOptConf.setPlaqueRowFilter(plaqueRowFilter);
+         physOptConf.setPlaqueEagerBatchSize(plaqueEagerBatchSize);
+         physOptConf.setPlaqueDistinctSet(plaqueDistinctSet);
+         physOptConf.setPlaqueDistinctLevel(plaqueDistinctLevel);
+--- a/asterixdb/asterix-external-data/src/main/java/org/apache/asterix/external/input/record/reader/iceberg/IcebergFileRecordReader.java
++++ b/asterixdb/asterix-external-data/src/main/java/org/apache/asterix/external/input/record/reader/iceberg/IcebergFileRecordReader.java
+@@ -103,6 +103,7 @@
+     // PLAQUE runtime data skipping; null when the query has none for this scan
+     private PlaqueIcebergScanFilter plaqueScanFilter;
+     private PlaqueIcebergDistinctScanFilter plaqueDistinctFilter;
++    private PlaqueIcebergRowTest plaqueRowTest;
+     private int plaqueFilesSkipped;
+     private int plaqueFilesFiltered;
+ 
+@@ -178,6 +179,10 @@
+         this.plaqueDistinctFilter = plaqueDistinctFilter;
+     }
+ 
++    void setPlaqueRowTest(PlaqueIcebergRowTest plaqueRowTest) {
++        this.plaqueRowTest = plaqueRowTest;
++    }
++
+     private void initializeTable() throws CompilationException {
+         if (fileScanTasks.isEmpty()) {
+             return;
+@@ -269,6 +274,9 @@
+ 
+     @Override
+     public void close() throws IOException {
++        if (plaqueRowTest != null) {
++            plaqueRowTest.report(fileScanTasks.size());
++        }
+         if (plaqueScanFilter != null || plaqueDistinctFilter != null) {
+             LOGGER.info(
+                     "plaque iceberg scan: {} tasks, {} skipped by file bound, {} read with a row-group filter, "
+@@ -348,8 +356,8 @@
+             prunedRead = openPrunedReadIfEligible(readFileIo, inFile, task, schemaAtSnapshot, projectedSchema,
+                     variantProjectionPlan, variantProjectionPushdownWithDeletes, deleteCache, plaqueFilter);
+             if (prunedRead != null) {
+-                iterable = prunedRead;
+-                recordsIterator = prunedRead.iterator();
++                iterable = PlaqueIcebergRowTest.apply(plaqueRowTest, prunedRead);
++                recordsIterator = iterable.iterator();
+                 return;
+             }
+         } catch (Exception e) {
+@@ -365,6 +373,7 @@
+                 ? openDistinctRead(inFile, task, projectedSchema, plaqueDistinctFilter, plaqueFilter)
+                 : openStandardRead(readFileIo, inFile, task, schemaAtSnapshot, projectedSchema, deleteCache,
+                         plaqueFilter);
++        iterable = PlaqueIcebergRowTest.apply(plaqueRowTest, iterable);
+         recordsIterator = iterable.iterator();
+     }
+ 
+--- a/asterixdb/asterix-external-data/src/main/java/org/apache/asterix/external/input/record/reader/iceberg/IcebergParquetRecordReaderFactory.java
++++ b/asterixdb/asterix-external-data/src/main/java/org/apache/asterix/external/input/record/reader/iceberg/IcebergParquetRecordReaderFactory.java
+@@ -158,6 +158,8 @@
+             reader.setPlaqueScanFilter(plaqueScanFilter);
+             reader.setPlaqueDistinctFilter(PlaqueIcebergDistinctScanFilter.create(originalConfiguration,
+                     schemaAtSnapshot, context.getTaskContext()));
++            reader.setPlaqueRowTest(
++                    PlaqueIcebergRowTest.create(originalConfiguration, schemaAtSnapshot, context.getTaskContext()));
+             return reader;
+         } catch (Exception e) {
+             throw HyracksDataException.create(e);
+--- a/asterixdb/asterix-external-data/src/main/java/org/apache/asterix/external/util/ExternalDataConstants.java
++++ b/asterixdb/asterix-external-data/src/main/java/org/apache/asterix/external/util/ExternalDataConstants.java
+@@ -449,6 +449,10 @@
+         public static final String PLAQUE_SCAN_HANDLE = "plaqueScanHandle";
+         public static final String PLAQUE_SCAN_IS_MAX = "plaqueScanIsMax";
+         public static final String PLAQUE_SCAN_FIELD = "plaqueScanField";
++        // PLAQUE MAX/MIN row test inside the reader: threshold handle, direction and column, set by the compiler
++        public static final String PLAQUE_ROW_TEST_HANDLE = "plaqueRowTestHandle";
++        public static final String PLAQUE_ROW_TEST_IS_MAX = "plaqueRowTestIsMax";
++        public static final String PLAQUE_ROW_TEST_FIELD = "plaqueRowTestField";
+         // PLAQUE DISTINCT filter: seen-set handle, column, seen-set kind and level, set by the compiler per query;
+         // min and max are the column's bounds over the whole scan, added at scan planning when the manifests have them
+         public static final String PLAQUE_DISTINCT_HANDLE = "plaqueDistinctHandle";
+--- a/asterixdb/asterix-external-data/src/main/java/org/apache/asterix/external/util/ExternalDataUtils.java
++++ b/asterixdb/asterix-external-data/src/main/java/org/apache/asterix/external/util/ExternalDataUtils.java
+@@ -1192,6 +1192,14 @@
+                     String.valueOf(projectionInfo.isPlaqueScanIsMax()));
+             properties.put(ExternalDataConstants.IcebergOptions.PLAQUE_SCAN_FIELD, projectionInfo.getPlaqueScanField());
+         }
++        if (projectionInfo.getPlaqueRowTestHandle() != null) {
++            properties.put(ExternalDataConstants.IcebergOptions.PLAQUE_ROW_TEST_HANDLE,
++                    projectionInfo.getPlaqueRowTestHandle());
++            properties.put(ExternalDataConstants.IcebergOptions.PLAQUE_ROW_TEST_IS_MAX,
++                    String.valueOf(projectionInfo.isPlaqueRowTestIsMax()));
++            properties.put(ExternalDataConstants.IcebergOptions.PLAQUE_ROW_TEST_FIELD,
++                    projectionInfo.getPlaqueRowTestField());
++        }
+         if (projectionInfo.getPlaqueDistinctHandle() != null) {
+             properties.put(ExternalDataConstants.IcebergOptions.PLAQUE_DISTINCT_HANDLE,
+                     projectionInfo.getPlaqueDistinctHandle());
+--- a/asterixdb/asterix-metadata/src/main/java/org/apache/asterix/metadata/utils/IndexUtil.java
++++ b/asterixdb/asterix-metadata/src/main/java/org/apache/asterix/metadata/utils/IndexUtil.java
+@@ -24,6 +24,7 @@
+ import static org.apache.asterix.om.utils.ProjectionFiltrationTypeUtil.ALL_FIELDS_TYPE;
+ import static org.apache.hyracks.storage.am.common.dataflow.IndexDropOperatorDescriptor.DropOption;
+ 
++import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.EnumSet;
+ import java.util.List;
+@@ -32,6 +33,7 @@
+ 
+ import org.apache.asterix.column.filter.NoOpColumnFilterEvaluatorFactory;
+ import org.apache.asterix.column.filter.iterable.IColumnIterableFilterEvaluatorFactory;
++import org.apache.asterix.column.filter.iterable.evaluator.ColumnIterableFilterEvaluatorFactory;
+ import org.apache.asterix.column.filter.range.IColumnRangeFilterEvaluatorFactory;
+ import org.apache.asterix.column.operation.lsm.secondary.create.PrimaryScanColumnTupleProjectorFactory;
+ import org.apache.asterix.column.operation.lsm.secondary.upsert.UpsertPreviousColumnTupleProjectorFactory;
+@@ -78,6 +80,7 @@
+ import org.apache.hyracks.algebricks.core.algebra.functions.FunctionIdentifier;
+ import org.apache.hyracks.algebricks.core.algebra.metadata.IProjectionFiltrationInfo;
+ import org.apache.hyracks.algebricks.core.jobgen.impl.JobGenContext;
++import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
+ import org.apache.hyracks.api.dataflow.value.ITypeTraits;
+ import org.apache.hyracks.api.exceptions.SourceLocation;
+ import org.apache.hyracks.api.job.HyracksJobProperty;
+@@ -368,27 +371,49 @@
+         ColumnFilterBuilder columnFilterBuilder = new ColumnFilterBuilder(columnInfo, context, typeEnv);
+         IColumnIterableFilterEvaluatorFactory columnFilterEvaluatorFactory = columnFilterBuilder.build();
+ 
+-        // PLAQUE DISTINCT filter: drop rows with a seen value inside the reader (level 4 and up) and skip leaves whose
+-        // values are all seen (level 2 and up, BIGINT). The leaf skip needs a row filter on the scan: without one the
+-        // rows of a leaf that was not read come out as empty records.
++        // PLAQUE row tests inside the reader, combined with the query's own pushed-down WHERE: a row is kept only if
++        // it passes the WHERE and every test. MAX/MIN: a row that cannot beat the best value so far is dropped.
++        // DISTINCT: a row with a seen value is dropped (level 4 and up); leaves whose values are all seen are skipped
++        // (level 2 and up, BIGINT). The leaf skip needs a row filter on the scan: without one the rows of a leaf that
++        // was not read come out as empty records.
++        List<org.apache.asterix.column.filter.iterable.evaluator.IPlaqueRowTest> plaqueRowTests = new ArrayList<>();
++        if (columnInfo.getPlaqueRowTestPath() != null) {
++            plaqueRowTests.add(new org.apache.asterix.column.filter.iterable.evaluator.PlaqueMinMaxRowTest(
++                    columnInfo.getPlaqueRowTestHandle(), columnInfo.isPlaqueRowTestIsMax(),
++                    columnInfo.getPlaqueRowTestPath(), false));
++        } else if (columnInfo.getPlaqueHandle() != null && !columnInfo.isPlaqueGroupBy()
++                && columnInfo.getPlaqueCrossExprBuildHandle() == null) {
++            // page skip without a row test: a row filter that keeps every row, so skipped leaves give no empty records
++            plaqueRowTests.add(new org.apache.asterix.column.filter.iterable.evaluator.PlaqueMinMaxRowTest(
++                    columnInfo.getPlaqueHandle(), columnInfo.isPlaqueIsMax(), columnInfo.getPlaqueColumnPath(), true));
++        }
++        boolean distinctLeafSkip = false;
+         if (columnInfo.getPlaqueDistinctColumnHandle() != null) {
++            int level = columnInfo.getPlaqueDistinctColumnLevel();
++            distinctLeafSkip = level >= 2 && columnInfo.isPlaqueDistinctColumnBigint();
++            if (level >= 4 || distinctLeafSkip) {
++                plaqueRowTests.add(new org.apache.asterix.column.filter.iterable.evaluator.PlaqueDistinctRowTest(
++                        columnInfo.getPlaqueDistinctColumnHandle(), columnInfo.getPlaqueDistinctColumnSet(),
++                        columnInfo.getPlaqueDistinctColumnPath(), level >= 4));
++            }
++        }
++        if (!plaqueRowTests.isEmpty()) {
++            IScalarEvaluatorFactory where = columnFilterEvaluatorFactory instanceof ColumnIterableFilterEvaluatorFactory
++                    ? ((ColumnIterableFilterEvaluatorFactory) columnFilterEvaluatorFactory).getEvaluatorFactory()
++                    : null;
++            columnFilterEvaluatorFactory =
++                    new org.apache.asterix.column.filter.iterable.evaluator.PlaqueRowFilterEvaluatorFactory(where,
++                            plaqueRowTests);
++        }
++        if (distinctLeafSkip) {
+             String handle = columnInfo.getPlaqueDistinctColumnHandle();
+             String set = columnInfo.getPlaqueDistinctColumnSet();
+             ARecordType path = columnInfo.getPlaqueDistinctColumnPath();
+-            int level = columnInfo.getPlaqueDistinctColumnLevel();
+-            boolean leafSkip = level >= 2 && columnInfo.isPlaqueDistinctColumnBigint();
+-            if ((level >= 4 || leafSkip) && columnFilterEvaluatorFactory == NoOpColumnFilterEvaluatorFactory.INSTANCE) {
+-                columnFilterEvaluatorFactory =
+-                        new org.apache.asterix.column.filter.iterable.evaluator.PlaqueDistinctIterableFilterEvaluatorFactory(
+-                                handle, set, path, level >= 4);
+-            }
+-            if (leafSkip && columnFilterEvaluatorFactory != NoOpColumnFilterEvaluatorFactory.INSTANCE) {
+-                rangeFilterEvaluatorFactory =
+-                        new org.apache.asterix.column.filter.range.evaluator.ANDColumnFilterEvaluatorFactory(
+-                                rangeFilterEvaluatorFactory,
+-                                new org.apache.asterix.column.filter.range.evaluator.PlaqueDistinctColumnFilterEvaluatorFactory(
+-                                        handle, set, path));
+-            }
++            rangeFilterEvaluatorFactory =
++                    new org.apache.asterix.column.filter.range.evaluator.ANDColumnFilterEvaluatorFactory(
++                            rangeFilterEvaluatorFactory,
++                            new org.apache.asterix.column.filter.range.evaluator.PlaqueDistinctColumnFilterEvaluatorFactory(
++                                    handle, set, path));
+         }
+ 
+         return new QueryColumnTupleProjectorFactory(datasetType, metaItemType, numberOfPrimaryKeys, recordRequestedType,
+--- a/asterixdb/asterix-runtime/src/main/java/org/apache/asterix/runtime/operators/plaque/PlaqueFilterRuntimeFactory.java
++++ b/asterixdb/asterix-runtime/src/main/java/org/apache/asterix/runtime/operators/plaque/PlaqueFilterRuntimeFactory.java
+@@ -76,6 +76,7 @@
+             initAccessAppendRef(ctx);
+             jobId = ctx.getJobletContext().getJobId();
+             thresholdState = PlaqueThresholdRegistry.INSTANCE.getOrCreate(jobId, handle, isMax, strictComparison);
++            PlaqueThresholdRegistry.INSTANCE.openFilter(jobId);
+             threadLocalComparator =
+                     new AGenericAscBinaryComparatorFactory(BuiltinType.ANY, BuiltinType.ANY).createBinaryComparator();
+             super.open();
+@@ -126,17 +127,22 @@
+ 
+         @Override
+         public void close() throws HyracksDataException {
++            // The scan row-test counters live on the state that every partition of the job on this process shares;
++            // each partition reports and resets what has built up since the last report, so a job's lines add up.
+             LOGGER.warning(String.format(
+                     "PLAQUE_FILTER_STATS [job=%s, handle=%s, partition=%s] "
+                             + "total=%d, passed=%d, filtered=%d, nullPassed=%d, "
+-                            + "thresholdUninitTuples=%d, thresholdInitialized=%b, filterRate=%.4f%%",
++                            + "thresholdUninitTuples=%d, thresholdInitialized=%b, filterRate=%.4f%%, "
++                            + "scanRowsTested=%d, scanRowsDropped=%d, scanRowTestDeclines=%d",
+                     jobId, handle, ctx.getTaskAttemptId(), totalTuples, passedTuples, filteredTuples, nullPassedTuples,
+                     thresholdUninitializedTuples, thresholdState.isInitialized(),
+-                    totalTuples > 0 ? (100.0 * filteredTuples / totalTuples) : 0.0,));
++                    totalTuples > 0 ? (100.0 * filteredTuples / totalTuples) : 0.0,
++                    thresholdState.scanRowsTested.sumThenReset(), thresholdState.scanRowsDropped.sumThenReset(),
++                    thresholdState.scanRowTestDeclines.sumThenReset()));
+             try {
+                 super.close();
+             } finally {
+-                PlaqueThresholdRegistry.INSTANCE.removeJob(jobId);
++                PlaqueThresholdRegistry.INSTANCE.releaseFilter(jobId);
+             }
+         }
+ 
+--- a/asterixdb/asterix-runtime/src/main/java/org/apache/asterix/runtime/operators/plaque/PlaqueThresholdState.java
++++ b/asterixdb/asterix-runtime/src/main/java/org/apache/asterix/runtime/operators/plaque/PlaqueThresholdState.java
+@@ -1,6 +1,7 @@
+ package org.apache.asterix.runtime.operators.plaque;
+ 
+ import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.LongAdder;
+ 
+ import org.apache.asterix.dataflow.data.nontagged.comparators.AGenericAscBinaryComparatorFactory;
+ import org.apache.asterix.om.types.BuiltinType;
+@@ -16,6 +17,10 @@
+     private volatile int thresholdSnapshotLength;
+     private volatile boolean initialized;
+     private final AtomicBoolean dirty = new AtomicBoolean(false);
++    // row test inside the scan (MAX/MIN): rows asked, rows dropped, scans where the test could not be used
++    public final LongAdder scanRowsTested = new LongAdder();
++    public final LongAdder scanRowsDropped = new LongAdder();
++    public final LongAdder scanRowTestDeclines = new LongAdder();
+ 
+     public PlaqueThresholdState(boolean isMax) {
+         this(isMax, false);
+@@ -63,9 +68,10 @@
+         if (!initialized) {
+             return true;
+         }
++        // the array is always an exact-length copy; its own length, not the separate field, keeps value and length
++        // in step for a reader running while update() replaces them
+         byte[] snap = thresholdSnapshot;
+-        int snapLen = thresholdSnapshotLength;
+-        int cmp = threadLocalComparator.compare(data, start, len, snap, 0, snapLen);
++        int cmp = threadLocalComparator.compare(data, start, len, snap, 0, snap.length);
+         if (strictComparison) {
+             return isMax ? cmp > 0 : cmp < 0;
+         }
+--- a/asterixdb/asterix-runtime/src/main/java/org/apache/asterix/runtime/projection/ColumnDatasetProjectionFiltrationInfo.java
++++ b/asterixdb/asterix-runtime/src/main/java/org/apache/asterix/runtime/projection/ColumnDatasetProjectionFiltrationInfo.java
+@@ -57,6 +57,9 @@
+     private ARecordType plaqueDistinctColumnPath;
+     private boolean plaqueDistinctColumnIsBigint;
+ 
++    // PLAQUE MAX/MIN row test inside the scan: the column (nullable); handle and direction are kept by the base class
++    private ARecordType plaqueRowTestPath;
++
+     public ColumnDatasetProjectionFiltrationInfo(ARecordType recordRequestedType, ARecordType metaProjectedType,
+             Map<String, FunctionCallInformation> sourceInformationMap, Map<ILogicalExpression, ARecordType> filterPaths,
+             ILogicalExpression filterExpression, ILogicalExpression rangeFilterExpression) {
+@@ -83,6 +86,9 @@
+         plaqueDistinctColumnLevel = other.plaqueDistinctColumnLevel;
+         plaqueDistinctColumnPath = other.plaqueDistinctColumnPath;
+         plaqueDistinctColumnIsBigint = other.plaqueDistinctColumnIsBigint;
++        if (other.plaqueRowTestPath != null) {
++            setPlaqueRowTest(other.getPlaqueRowTestHandle(), other.isPlaqueRowTestIsMax(), other.plaqueRowTestPath);
++        }
+     }
+ 
+     @Override
+@@ -126,6 +132,11 @@
+             writer.append(" range-filter on: ");
+             writer.append(rangeFilterExpression.toString());
+         }
++
++        if (plaqueRowTestPath != null) {
++            writer.append(" plaque-row-test: ");
++            writer.append(plaqueRowTestString());
++        }
+     }
+ 
+     @Override
+@@ -150,6 +161,10 @@
+         if (rangeFilterExpression != null) {
+             generator.writeStringField("range-filter-on", rangeFilterExpression.toString());
+         }
++
++        if (plaqueRowTestPath != null) {
++            generator.writeStringField("plaque-row-test", plaqueRowTestString());
++        }
+     }
+ 
+     public ARecordType getMetaProjectedType() {
+@@ -223,6 +238,19 @@
+         return plaqueDistinctColumnPath;
+     }
+ 
++    public void setPlaqueRowTest(String handle, boolean isMax, ARecordType columnPath) {
++        setPlaqueScanRowTest(handle, isMax, columnPath.getFieldNames()[0]);
++        plaqueRowTestPath = columnPath;
++    }
++
++    public ARecordType getPlaqueRowTestPath() {
++        return plaqueRowTestPath;
++    }
++
++    private String plaqueRowTestString() {
++        return (isPlaqueRowTestIsMax() ? "MAX(" : "MIN(") + getPlaqueRowTestField() + "), " + getPlaqueRowTestHandle();
++    }
++
+     public boolean isPlaqueDistinctColumnBigint() {
+         return plaqueDistinctColumnIsBigint;
+     }
+--- a/asterixdb/asterix-runtime/src/main/java/org/apache/asterix/runtime/projection/ExternalDatasetProjectionFiltrationInfo.java
++++ b/asterixdb/asterix-runtime/src/main/java/org/apache/asterix/runtime/projection/ExternalDatasetProjectionFiltrationInfo.java
+@@ -57,6 +57,10 @@
+     private String plaqueDistinctSet;
+     private int plaqueDistinctLevel;
+     private int plaqueDistinctNotInMax;
++    // PLAQUE MAX/MIN row test inside the Iceberg reader: handle, direction, top-level field (nullable)
++    private String plaqueRowTestHandle;
++    private boolean plaqueRowTestIsMax;
++    private String plaqueRowTestField;
+ 
+     public ExternalDatasetProjectionFiltrationInfo(ARecordType projectedType,
+             Map<String, FunctionCallInformation> sourceInformationMap, Map<ILogicalExpression, ARecordType> filterPaths,
+@@ -97,6 +101,24 @@
+         plaqueDistinctNotInMax = notInMax;
+     }
+ 
++    public void setPlaqueScanRowTest(String handle, boolean isMax, String field) {
++        plaqueRowTestHandle = handle;
++        plaqueRowTestIsMax = isMax;
++        plaqueRowTestField = field;
++    }
++
++    public String getPlaqueRowTestHandle() {
++        return plaqueRowTestHandle;
++    }
++
++    public boolean isPlaqueRowTestIsMax() {
++        return plaqueRowTestIsMax;
++    }
++
++    public String getPlaqueRowTestField() {
++        return plaqueRowTestField;
++    }
++
+     public String getPlaqueDistinctHandle() {
+         return plaqueDistinctHandle;
+     }
+@@ -121,6 +143,7 @@
+         setPlaqueScanFilter(other.plaqueScanHandle, other.plaqueScanIsMax, other.plaqueScanField);
+         setPlaqueDistinctFilter(other.plaqueDistinctHandle, other.plaqueDistinctField, other.plaqueDistinctSet,
+                 other.plaqueDistinctLevel, other.plaqueDistinctNotInMax);
++        setPlaqueScanRowTest(other.plaqueRowTestHandle, other.plaqueRowTestIsMax, other.plaqueRowTestField);
+     }
+ 
+     public String getPlaqueScanHandle() {
+@@ -195,7 +218,10 @@
+                 && Objects.equals(plaqueDistinctField, otherInfo.plaqueDistinctField)
+                 && Objects.equals(plaqueDistinctSet, otherInfo.plaqueDistinctSet)
+                 && plaqueDistinctLevel == otherInfo.plaqueDistinctLevel
+-                && plaqueDistinctNotInMax == otherInfo.plaqueDistinctNotInMax;
++                && plaqueDistinctNotInMax == otherInfo.plaqueDistinctNotInMax
++                && Objects.equals(plaqueRowTestHandle, otherInfo.plaqueRowTestHandle)
++                && plaqueRowTestIsMax == otherInfo.plaqueRowTestIsMax
++                && Objects.equals(plaqueRowTestField, otherInfo.plaqueRowTestField);
+     }
+ 
+     @Override
+@@ -228,6 +254,10 @@
+             writer.append(" plaque-distinct-filter: ");
+             writer.append(plaqueDistinctFilterString());
+         }
++        if (plaqueRowTestHandle != null) {
++            writer.append(" plaque-row-test: ");
++            writer.append(plaqueRowTestString());
++        }
+     }
+ 
+     @Override
+@@ -255,6 +285,9 @@
+         if (plaqueDistinctHandle != null) {
+             generator.writeStringField("plaque-distinct-filter", plaqueDistinctFilterString());
+         }
++        if (plaqueRowTestHandle != null) {
++            generator.writeStringField("plaque-row-test", plaqueRowTestString());
++        }
+     }
+ 
+     private String plaqueDistinctFilterString() {
+@@ -262,6 +295,10 @@
+                 + ", not-in max " + plaqueDistinctNotInMax + ", " + plaqueDistinctHandle;
+     }
+ 
++    private String plaqueRowTestString() {
++        return (plaqueRowTestIsMax ? "MAX(" : "MIN(") + plaqueRowTestField + "), " + plaqueRowTestHandle;
++    }
++
+     private String plaqueScanFilterString() {
+         return (plaqueScanIsMax ? "MAX(" : "MIN(") + plaqueScanField + "), " + plaqueScanHandle;
+     }
+--- a/hyracks-fullstack/algebricks/algebricks-core/src/main/java/org/apache/hyracks/algebricks/core/config/AlgebricksConfig.java
++++ b/hyracks-fullstack/algebricks/algebricks-core/src/main/java/org/apache/hyracks/algebricks/core/config/AlgebricksConfig.java
+@@ -69,6 +69,8 @@
+     public static final boolean PLAQUE_PROPAGATION_DEFAULT = true;
+     public static final int PLAQUE_PROPAGATION_INTERVAL_DEFAULT = 5000;
+     public static final boolean PLAQUE_PUSH_THROUGH_JOIN_DEFAULT = true;
++    // MAX/MIN: drop a row that cannot beat the best value inside the scan
++    public static final boolean PLAQUE_ROW_FILTER_DEFAULT = true;
+     public static final int PLAQUE_EAGER_BATCH_SIZE_DEFAULT = 32;
+     // seen-set of the DISTINCT filter: hash | flat | roaring
+     public static final String PLAQUE_DISTINCT_SET_DEFAULT = "roaring";
+--- a/hyracks-fullstack/algebricks/algebricks-core/src/main/java/org/apache/hyracks/algebricks/core/rewriter/base/PhysicalOptimizationConfig.java
++++ b/hyracks-fullstack/algebricks/algebricks-core/src/main/java/org/apache/hyracks/algebricks/core/rewriter/base/PhysicalOptimizationConfig.java
+@@ -79,6 +79,7 @@
+     private static final String PLAQUE_PROPAGATION = "PLAQUE_PROPAGATION";
+     private static final String PLAQUE_PROPAGATION_INTERVAL = "PLAQUE_PROPAGATION_INTERVAL";
+     private static final String PLAQUE_PUSH_THROUGH_JOIN = "PLAQUE_PUSH_THROUGH_JOIN";
++    private static final String PLAQUE_ROW_FILTER = "PLAQUE_ROW_FILTER";
+     private static final String PLAQUE_EAGER_BATCH_SIZE = "PLAQUE_EAGER_BATCH_SIZE";
+     private static final String PLAQUE_DISTINCT_SET = "PLAQUE_DISTINCT_SET";
+     private static final String PLAQUE_DISTINCT_LEVEL = "PLAQUE_DISTINCT_LEVEL";
+@@ -570,6 +571,14 @@
+         setBoolean(PLAQUE_PUSH_THROUGH_JOIN, v);
+     }
+ 
++    public boolean getPlaqueRowFilter() {
++        return getBoolean(PLAQUE_ROW_FILTER, AlgebricksConfig.PLAQUE_ROW_FILTER_DEFAULT);
++    }
++
++    public void setPlaqueRowFilter(boolean v) {
++        setBoolean(PLAQUE_ROW_FILTER, v);
++    }
++
+     public int getPlaqueEagerBatchSize() {
+         return getInt(PLAQUE_EAGER_BATCH_SIZE, AlgebricksConfig.PLAQUE_EAGER_BATCH_SIZE_DEFAULT);
+     }
+--- a/hyracks-fullstack/algebricks/algebricks-rewriter/src/main/java/org/apache/hyracks/algebricks/rewriter/rules/ConsolidateSelectsRule.java
++++ b/hyracks-fullstack/algebricks/algebricks-rewriter/src/main/java/org/apache/hyracks/algebricks/rewriter/rules/ConsolidateSelectsRule.java
+@@ -55,9 +55,7 @@
+             return false;
+         }
+         SelectOperator firstSelect = (SelectOperator) op;
+-        if (Boolean.TRUE.equals(firstSelect.getAnnotations().get("plaque-filter"))
+-                || Boolean.TRUE.equals(firstSelect.getAnnotations().get("plaque-group-filter"))
+-                || Boolean.TRUE.equals(firstSelect.getAnnotations().get("plaque-distinct"))) {
++        if (isPlaque(firstSelect)) {
+             return false;
+         }
+ 
+@@ -74,8 +72,8 @@
+                 nextSelect = (AbstractLogicalOperator) selectParent.getInputs().get(0).getValue();
+             } while (nextSelect.getOperatorTag() == LogicalOperatorTag.ASSIGN && OperatorPropertiesUtil
+                     .isMovable(nextSelect) /* Select cannot be pushed through un-movable operators.*/);
+-            // Stop if the child op is not a select.
+-            if (nextSelect.getOperatorTag() != LogicalOperatorTag.SELECT) {
++            // Stop if the child op is not a select, or is a PLAQUE operator (which must stay a select of its own).
++            if (nextSelect.getOperatorTag() != LogicalOperatorTag.SELECT || isPlaque(nextSelect)) {
+                 break;
+             }
+             // Remember the top-most op that we are not removing.
+@@ -91,17 +89,11 @@
+ 
+             // Consolidate all following selects.
+             do {
+-                SelectOperator selectOp = (SelectOperator) nextSelect;
+-                if (Boolean.TRUE.equals(selectOp.getAnnotations().get("plaque-filter"))
+-                        || Boolean.TRUE.equals(selectOp.getAnnotations().get("plaque-group-filter"))
+-                        || Boolean.TRUE.equals(selectOp.getAnnotations().get("plaque-distinct"))) {
+-                    break;
+-                }
+                 // Add the condition nextSelect to the new list of conjuncts.
+                 conj.getArguments().add(((SelectOperator) nextSelect).getCondition());
+                 selectParent = nextSelect;
+                 nextSelect = (AbstractLogicalOperator) nextSelect.getInputs().get(0).getValue();
+-            } while (nextSelect.getOperatorTag() == LogicalOperatorTag.SELECT);
++            } while (nextSelect.getOperatorTag() == LogicalOperatorTag.SELECT && !isPlaque(nextSelect));
+ 
+             // Hook up the input of the top-most remaining op if necessary.
+             if (topMostOp.getOperatorTag() == LogicalOperatorTag.ASSIGN || topMostOp == firstSelect) {
+@@ -122,4 +114,10 @@
+         context.computeAndSetTypeEnvironmentForOperator(firstSelect);
+         return true;
+     }
++
++    private static boolean isPlaque(AbstractLogicalOperator select) {
++        return Boolean.TRUE.equals(select.getAnnotations().get("plaque-filter"))
++                || Boolean.TRUE.equals(select.getAnnotations().get("plaque-group-filter"))
++                || Boolean.TRUE.equals(select.getAnnotations().get("plaque-distinct"));
++    }
+ }
+--- /dev/null
++++ b/asterixdb/asterix-algebra/src/test/java/org/apache/asterix/optimizer/rules/ConsolidateSelectsPlaqueTest.java
+@@ -0,0 +1,87 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.asterix.optimizer.rules;
++
++import java.lang.reflect.Proxy;
++
++import org.apache.commons.lang3.mutable.Mutable;
++import org.apache.commons.lang3.mutable.MutableObject;
++import org.apache.hyracks.algebricks.core.algebra.base.ILogicalOperator;
++import org.apache.hyracks.algebricks.core.algebra.base.IOptimizationContext;
++import org.apache.hyracks.algebricks.core.algebra.base.LogicalVariable;
++import org.apache.hyracks.algebricks.core.algebra.expressions.ConstantExpression;
++import org.apache.hyracks.algebricks.core.algebra.functions.AlgebricksBuiltinFunctions;
++import org.apache.hyracks.algebricks.core.algebra.functions.IFunctionInfo;
++import org.apache.hyracks.algebricks.core.algebra.metadata.IMetadataProvider;
++import org.apache.hyracks.algebricks.core.algebra.operators.logical.AssignOperator;
++import org.apache.hyracks.algebricks.core.algebra.operators.logical.EmptyTupleSourceOperator;
++import org.apache.hyracks.algebricks.core.algebra.operators.logical.SelectOperator;
++import org.apache.hyracks.algebricks.rewriter.rules.ConsolidateSelectsRule;
++import org.junit.Assert;
++import org.junit.Test;
++
++/**
++ * A WHERE select directly above a PLAQUE select (the DISTINCT tuple filter sits below the query's WHERE) must leave
++ * both in place and must terminate; before the fix the rule looped forever on this shape.
++ */
++public class ConsolidateSelectsPlaqueTest {
++
++    @Test(timeout = 10_000)
++    public void aWhereAboveAPlaqueSelectIsLeftAloneAndTheRuleStops() throws Exception {
++        SelectOperator plaque = select(new EmptyTupleSourceOperator(), "plaque-distinct");
++        SelectOperator where = select(plaque, null);
++        Mutable<ILogicalOperator> ref = new MutableObject<>(where);
++        Assert.assertFalse(new ConsolidateSelectsRule().rewritePre(ref, context()));
++        Assert.assertSame(plaque, where.getInputs().get(0).getValue());
++    }
++
++    @Test(timeout = 10_000)
++    public void anAssignBetweenTheWhereAndThePlaqueSelectToo() throws Exception {
++        SelectOperator plaque = select(new EmptyTupleSourceOperator(), "plaque-filter");
++        AssignOperator assign =
++                new AssignOperator(new LogicalVariable(1), new MutableObject<>(ConstantExpression.TRUE));
++        assign.getInputs().add(new MutableObject<>(plaque));
++        SelectOperator where = select(assign, null);
++        Assert.assertFalse(new ConsolidateSelectsRule().rewritePre(new MutableObject<>(where), context()));
++        Assert.assertSame(plaque, assign.getInputs().get(0).getValue());
++    }
++
++    /** Only the AND function is looked up, and nothing is consolidated here. */
++    private static IOptimizationContext context() {
++        IFunctionInfo and = (IFunctionInfo) Proxy.newProxyInstance(IFunctionInfo.class.getClassLoader(),
++                new Class<?>[] { IFunctionInfo.class },
++                (o, m, a) -> m.getName().equals("getFunctionIdentifier") ? AlgebricksBuiltinFunctions.AND : null);
++        IMetadataProvider<?, ?> mp =
++                (IMetadataProvider<?, ?>) Proxy.newProxyInstance(IMetadataProvider.class.getClassLoader(),
++                        new Class<?>[] { IMetadataProvider.class },
++                        (o, m, a) -> m.getName().equals("lookupFunction") ? and : null);
++        return (IOptimizationContext) Proxy.newProxyInstance(IOptimizationContext.class.getClassLoader(),
++                new Class<?>[] { IOptimizationContext.class },
++                (o, m, a) -> m.getName().equals("getMetadataProvider") ? mp : null);
++    }
++
++    private static SelectOperator select(ILogicalOperator input, String plaqueAnnotation) {
++        SelectOperator s = new SelectOperator(new MutableObject<>(ConstantExpression.TRUE));
++        s.getInputs().add(new MutableObject<>(input));
++        if (plaqueAnnotation != null) {
++            s.getAnnotations().put(plaqueAnnotation, true);
++        }
++        return s;
++    }
++}
+--- /dev/null
++++ b/asterixdb/asterix-column/src/main/java/org/apache/asterix/column/filter/iterable/evaluator/IPlaqueRowTest.java
+@@ -0,0 +1,40 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.asterix.column.filter.iterable.evaluator;
++
++import java.io.Serializable;
++
++import org.apache.asterix.column.filter.FilterAccessorProvider;
++import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
++import org.apache.hyracks.api.context.IHyracksTaskContext;
++import org.apache.hyracks.api.exceptions.HyracksDataException;
++
++/**
++ * One PLAQUE test that a native columnar scan applies to each row, inside {@link PlaqueRowFilterEvaluatorFactory}
++ * and after the query's own pushed-down WHERE.
++ */
++public interface IPlaqueRowTest extends Serializable {
++    /**
++     * @param ctx the scan's task context, {@code null} where the scan has none
++     * @return an evaluator that writes boolean true to keep the current row and false to drop it, or {@code null}
++     *         when the test cannot be used on this component (every row is then kept); the columns it reads are
++     *         registered with the provider
++     */
++    IScalarEvaluator create(FilterAccessorProvider provider, IHyracksTaskContext ctx) throws HyracksDataException;
++}
+--- /dev/null
++++ b/asterixdb/asterix-column/src/main/java/org/apache/asterix/column/filter/iterable/evaluator/PlaqueRowFilterEvaluatorFactory.java
+@@ -0,0 +1,113 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.asterix.column.filter.iterable.evaluator;
++
++import java.util.ArrayList;
++import java.util.List;
++
++import org.apache.asterix.column.filter.FilterAccessorProvider;
++import org.apache.asterix.column.filter.TrueColumnFilterEvaluator;
++import org.apache.asterix.column.filter.iterable.ColumnFilterEvaluatorContext;
++import org.apache.asterix.column.filter.iterable.IColumnIterableFilterEvaluator;
++import org.apache.asterix.column.filter.iterable.IColumnIterableFilterEvaluatorFactory;
++import org.apache.asterix.column.values.IColumnValuesReader;
++import org.apache.asterix.formats.nontagged.BinaryBooleanInspector;
++import org.apache.asterix.om.types.ATypeTag;
++import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
++import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
++import org.apache.hyracks.api.exceptions.HyracksDataException;
++import org.apache.hyracks.data.std.api.IPointable;
++import org.apache.hyracks.data.std.primitive.VoidPointable;
++
++/**
++ * The row filter of a native columnar scan when PLAQUE has a test for it: a row is kept only if it passes the query's
++ * own pushed-down WHERE (when there is one) and every PLAQUE test. The WHERE is asked first, so a test's counter
++ * counts only rows the WHERE would have kept. All parts read their columns through one set of filter readers, the
++ * same mechanism as {@link ColumnIterableFilterEvaluatorFactory}.
++ */
++public class PlaqueRowFilterEvaluatorFactory implements IColumnIterableFilterEvaluatorFactory {
++    private static final long serialVersionUID = 1L;
++    private static final byte[] TRUE = { ATypeTag.SERIALIZED_BOOLEAN_TYPE_TAG, 1 };
++    private static final byte[] FALSE = { ATypeTag.SERIALIZED_BOOLEAN_TYPE_TAG, 0 };
++    private final IScalarEvaluatorFactory where;
++    private final List<IPlaqueRowTest> tests;
++
++    /** @param where the query's pushed-down WHERE, {@code null} for none */
++    public PlaqueRowFilterEvaluatorFactory(IScalarEvaluatorFactory where, List<IPlaqueRowTest> tests) {
++        this.where = where;
++        this.tests = tests;
++    }
++
++    @Override
++    public IColumnIterableFilterEvaluator create(ColumnFilterEvaluatorContext context) throws HyracksDataException {
++        FilterAccessorProvider provider = context.getFilterAccessorProvider();
++        IScalarEvaluator whereEval = where == null ? null : where.createScalarEvaluator(context);
++        List<IScalarEvaluator> active = new ArrayList<>();
++        for (IPlaqueRowTest test : tests) {
++            IScalarEvaluator e = test.create(provider, context.getTaskContext());
++            if (e != null) {
++                active.add(e);
++            }
++        }
++        List<IColumnValuesReader> readers = provider.getFilterColumnReaders();
++        if (readers.isEmpty() || whereEval == null && active.isEmpty()) {
++            // this component has none of the columns, or nothing is left to test on it
++            return TrueColumnFilterEvaluator.INSTANCE;
++        }
++        IScalarEvaluator[] testEvals = active.toArray(new IScalarEvaluator[0]);
++        provider.initializeFilterReaders();
++        IScalarEvaluator all = and(whereEval, testEvals);
++        if (readers.stream().anyMatch(IColumnValuesReader::isRepeated)) {
++            return new ColumnarRepeatedIterableFilterEvaluator(all, readers);
++        }
++        return new ColumnIterableFilterEvaluator(all, readers);
++    }
++
++    /** True when where (if any) is true and every test is true; stops at the first part that is not. */
++    static IScalarEvaluator and(IScalarEvaluator where, IScalarEvaluator[] tests) {
++        IPointable r = new VoidPointable();
++        return (tuple, result) -> {
++            if (where != null) {
++                where.evaluate(tuple, r);
++                if (!BinaryBooleanInspector.getBooleanValue(r.getByteArray(), r.getStartOffset(), r.getLength())) {
++                    result.set(FALSE, 0, FALSE.length);
++                    return;
++                }
++            }
++            for (IScalarEvaluator test : tests) {
++                test.evaluate(tuple, r);
++                if (r.getByteArray()[r.getStartOffset() + 1] == 0) {
++                    result.set(FALSE, 0, FALSE.length);
++                    return;
++                }
++            }
++            result.set(TRUE, 0, TRUE.length);
++        };
++    }
++
++    static void keep(IPointable result, boolean keep) {
++        byte[] b = keep ? TRUE : FALSE;
++        result.set(b, 0, b.length);
++    }
++
++    @Override
++    public String toString() {
++        return "PLAQUE_ROW_FILTER(" + (where == null ? "" : "WHERE, ") + tests + ")";
++    }
++}
+--- /dev/null
++++ b/asterixdb/asterix-column/src/main/java/org/apache/asterix/column/filter/iterable/evaluator/PlaqueMinMaxRowTest.java
+@@ -0,0 +1,108 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.asterix.column.filter.iterable.evaluator;
++
++import org.apache.asterix.column.filter.FilterAccessorProvider;
++import org.apache.asterix.column.values.IColumnValuesReader;
++import org.apache.asterix.dataflow.data.nontagged.comparators.AGenericAscBinaryComparatorFactory;
++import org.apache.asterix.om.types.ARecordType;
++import org.apache.asterix.om.types.ATypeTag;
++import org.apache.asterix.om.types.BuiltinType;
++import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdRegistry;
++import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdState;
++import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
++import org.apache.hyracks.api.context.IHyracksTaskContext;
++import org.apache.hyracks.api.dataflow.value.IBinaryComparator;
++import org.apache.hyracks.api.exceptions.HyracksDataException;
++import org.apache.hyracks.data.std.api.IPointable;
++import org.apache.hyracks.data.std.primitive.VoidPointable;
++
++/**
++ * PLAQUE scalar MAX / MIN inside a native columnar scan: a row whose value cannot beat the best value found so far is
++ * dropped. This is the test of the PLAQUE tuple filter above the scan (same state, same comparator, an equal value
++ * dropped), asked before the row is assembled. Null and missing values are kept.
++ * <p>
++ * Where the column holds arrays in this component, the reader hands out one value per array element, not the row's
++ * value; the test is then not used on that component and counts a decline.
++ * <p>
++ * With {@code keepAll} it keeps every row. It goes with the native MAX/MIN page skip when the row test is switched
++ * off: a scan without a row filter returns the rows of a leaf it did not read as empty records, and only a scan with
++ * a row filter leaves them out (the same reason as for the DISTINCT leaf skip).
++ */
++public class PlaqueMinMaxRowTest implements IPlaqueRowTest {
++    private static final long serialVersionUID = 1L;
++    private final String handle;
++    private final boolean isMax;
++    private final ARecordType columnPath;
++    private final boolean keepAll;
++
++    public PlaqueMinMaxRowTest(String handle, boolean isMax, ARecordType columnPath, boolean keepAll) {
++        this.handle = handle;
++        this.isMax = isMax;
++        this.columnPath = columnPath;
++        this.keepAll = keepAll;
++    }
++
++    @Override
++    public IScalarEvaluator create(FilterAccessorProvider provider, IHyracksTaskContext ctx)
++            throws HyracksDataException {
++        boolean repeated =
++                provider.getOrCreateColumnReaders(columnPath).stream().anyMatch(IColumnValuesReader::isRepeated);
++        IScalarEvaluator value = provider.createColumnAccessEvaluator(columnPath);
++        if (keepAll) {
++            return (tuple, result) -> PlaqueRowFilterEvaluatorFactory.keep(result, true);
++        }
++        if (ctx == null) {
++            return null;
++        }
++        PlaqueThresholdState state =
++                PlaqueThresholdRegistry.INSTANCE.getOrCreate(ctx.getJobletContext().getJobId(), handle, isMax);
++        if (repeated) {
++            state.scanRowTestDeclines.increment();
++            return null;
++        }
++        return canBeat(value, state);
++    }
++
++    /** True for a null or missing value or one that beats the state's best value; false (and counted) otherwise. */
++    static IScalarEvaluator canBeat(IScalarEvaluator value, PlaqueThresholdState state) {
++        IPointable v = new VoidPointable();
++        IBinaryComparator cmp =
++                new AGenericAscBinaryComparatorFactory(BuiltinType.ANY, BuiltinType.ANY).createBinaryComparator();
++        return (tuple, result) -> {
++            value.evaluate(tuple, v);
++            byte tag = v.getByteArray()[v.getStartOffset()];
++            if (tag == ATypeTag.SERIALIZED_MISSING_TYPE_TAG || tag == ATypeTag.SERIALIZED_NULL_TYPE_TAG) {
++                PlaqueRowFilterEvaluatorFactory.keep(result, true);
++                return;
++            }
++            state.scanRowsTested.increment();
++            boolean keep = state.passes(v.getByteArray(), v.getStartOffset(), v.getLength(), cmp, true);
++            if (!keep) {
++                state.scanRowsDropped.increment();
++            }
++            PlaqueRowFilterEvaluatorFactory.keep(result, keep);
++        };
++    }
++
++    @Override
++    public String toString() {
++        return (isMax ? "MAX(" : "MIN(") + handle + (keepAll ? ", keep all)" : ")");
++    }
++}
+--- /dev/null
++++ b/asterixdb/asterix-column/src/test/java/org/apache/asterix/column/filter/iterable/evaluator/PlaqueRowFilterTest.java
+@@ -0,0 +1,292 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.asterix.column.filter.iterable.evaluator;
++
++import java.nio.ByteBuffer;
++import java.util.Collections;
++import java.util.List;
++
++import org.apache.asterix.column.filter.FilterAccessorProvider;
++import org.apache.asterix.column.filter.TrueColumnFilterEvaluator;
++import org.apache.asterix.column.filter.iterable.ColumnFilterEvaluatorContext;
++import org.apache.asterix.column.filter.iterable.IColumnIterableFilterEvaluator;
++import org.apache.asterix.column.values.IColumnValuesReader;
++import org.apache.asterix.om.types.ARecordType;
++import org.apache.asterix.om.types.ATypeTag;
++import org.apache.asterix.om.types.BuiltinType;
++import org.apache.asterix.om.types.IAType;
++import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdRegistry;
++import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdState;
++import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluator;
++import org.apache.hyracks.algebricks.runtime.base.IScalarEvaluatorFactory;
++import org.apache.hyracks.api.context.IHyracksTaskContext;
++import org.apache.hyracks.api.job.JobId;
++import org.apache.hyracks.data.std.api.IPointable;
++import org.apache.hyracks.data.std.primitive.VoidPointable;
++import org.apache.hyracks.util.string.UTF8StringUtil;
++import org.junit.After;
++import org.junit.Assert;
++import org.junit.Test;
++import org.mockito.Mockito;
++
++/** The combined PLAQUE row filter of a native columnar scan and its MAX / MIN row test. */
++public class PlaqueRowFilterTest {
++
++    private static final ARecordType PATH =
++            new ARecordType("p", new String[] { "x" }, new IAType[] { BuiltinType.ANY }, false);
++    private static final String HANDLE = "h";
++    private static final JobId JOB = new JobId(987654331L);
++    private static final byte[] TRUE = { ATypeTag.SERIALIZED_BOOLEAN_TYPE_TAG, 1 };
++    private static final byte[] FALSE = { ATypeTag.SERIALIZED_BOOLEAN_TYPE_TAG, 0 };
++    private static final byte[] NULL = { ATypeTag.SERIALIZED_NULL_TYPE_TAG };
++    private static final byte[] MISSING = { ATypeTag.SERIALIZED_MISSING_TYPE_TAG };
++
++    @After
++    public void cleanUp() {
++        PlaqueThresholdRegistry.INSTANCE.removeJob(JOB);
++    }
++
++    // ---- combining the WHERE with the tests ----
++
++    @Test
++    public void aRowIsKeptOnlyWhenTheWhereAndEveryTestKeepIt() throws Exception {
++        byte[][] where = new byte[1][];
++        boolean[] t1 = new boolean[1];
++        boolean[] t2 = new boolean[1];
++        int[] asked = new int[1];
++        IScalarEvaluator all = PlaqueRowFilterEvaluatorFactory.and(constant(where),
++                new IScalarEvaluator[] { counting(t1, asked), counting(t2, asked) });
++
++        where[0] = TRUE;
++        t1[0] = true;
++        t2[0] = true;
++        Assert.assertTrue(eval(all));
++        t2[0] = false;
++        Assert.assertFalse("second test drops", eval(all));
++        t1[0] = false;
++        asked[0] = 0;
++        Assert.assertFalse("first test drops", eval(all));
++        Assert.assertEquals("stops at the first test that drops", 1, asked[0]);
++
++        t1[0] = true;
++        t2[0] = true;
++        asked[0] = 0;
++        where[0] = FALSE;
++        Assert.assertFalse("WHERE false drops", eval(all));
++        where[0] = NULL;
++        Assert.assertFalse("WHERE null drops", eval(all));
++        where[0] = MISSING;
++        Assert.assertFalse("WHERE missing drops", eval(all));
++        Assert.assertEquals("no test is asked for a row the WHERE drops", 0, asked[0]);
++    }
++
++    @Test
++    public void withoutAWhereOnlyTheTestsDecide() throws Exception {
++        boolean[] t = { true };
++        IScalarEvaluator all =
++                PlaqueRowFilterEvaluatorFactory.and(null, new IScalarEvaluator[] { counting(t, new int[1]) });
++        Assert.assertTrue(eval(all));
++        t[0] = false;
++        Assert.assertFalse(eval(all));
++    }
++
++    @Test
++    public void theEvaluatorFollowsTheReaders() throws Exception {
++        IColumnValuesReader flat = reader(false);
++        IColumnValuesReader repeated = reader(true);
++        IPlaqueRowTest keepAll = (p, c) -> (tuple, r) -> PlaqueRowFilterEvaluatorFactory.keep(r, true);
++        Assert.assertSame("component without the columns", TrueColumnFilterEvaluator.INSTANCE,
++                create(Collections.emptyList(), keepAll));
++        Assert.assertTrue(create(List.of(flat), keepAll) instanceof ColumnIterableFilterEvaluator);
++        Assert.assertTrue(create(List.of(flat, repeated), keepAll) instanceof ColumnarRepeatedIterableFilterEvaluator);
++    }
++
++    @Test
++    public void theWhereIsBuiltFromTheSameContext() throws Exception {
++        IScalarEvaluatorFactory where = Mockito.mock(IScalarEvaluatorFactory.class);
++        ColumnFilterEvaluatorContext context = context(List.of(reader(false)));
++        Mockito.when(where.createScalarEvaluator(context)).thenReturn(constant(new byte[][] { TRUE }));
++        new PlaqueRowFilterEvaluatorFactory(where, List.of()).create(context);
++        Mockito.verify(where).createScalarEvaluator(context);
++    }
++
++    // ---- MAX / MIN row test ----
++
++    @Test
++    public void maxDropsEqualAndWorseValuesAndKeepsBetterOnes() throws Exception {
++        PlaqueThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreate(JOB, HANDLE, true);
++        byte[][] current = new byte[1][];
++        IScalarEvaluator test = PlaqueMinMaxRowTest.canBeat(constant(current), state);
++
++        current[0] = bigint(5);
++        Assert.assertTrue("no best value yet", eval(test));
++        state.update(bigint(10), 0, 9);
++        Assert.assertFalse("worse", eval(test));
++        current[0] = bigint(10);
++        Assert.assertFalse("equal", eval(test));
++        current[0] = bigint(11);
++        Assert.assertTrue("better", eval(test));
++        current[0] = NULL;
++        Assert.assertTrue("null kept", eval(test));
++        current[0] = MISSING;
++        Assert.assertTrue("missing kept", eval(test));
++        current[0] = dbl(10.5);
++        Assert.assertTrue("a double beating a bigint best value", eval(test));
++        current[0] = dbl(9.5);
++        Assert.assertFalse(eval(test));
++
++        state.update(bigint(20), 0, 9);
++        current[0] = bigint(11);
++        Assert.assertFalse("dropped once the best value moves past it", eval(test));
++        Assert.assertEquals(7, state.scanRowsTested.sum());
++        Assert.assertEquals(4, state.scanRowsDropped.sum());
++    }
++
++    @Test
++    public void minDropsEqualAndWorseValuesAndKeepsBetterOnes() throws Exception {
++        PlaqueThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreate(JOB, HANDLE, false);
++        byte[][] current = new byte[1][];
++        IScalarEvaluator test = PlaqueMinMaxRowTest.canBeat(constant(current), state);
++        state.update(string("MAIL"), 0, string("MAIL").length);
++        current[0] = string("AIR");
++        Assert.assertTrue("better", eval(test));
++        current[0] = string("MAIL");
++        Assert.assertFalse("equal", eval(test));
++        current[0] = string("TRUCK");
++        Assert.assertFalse("worse", eval(test));
++    }
++
++    @Test
++    public void aColumnHoldingArraysKeepsEveryRowAndCountsADecline() throws Exception {
++        PlaqueThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreate(JOB, HANDLE, true);
++        state.update(bigint(10), 0, 9);
++        FilterAccessorProvider provider = Mockito.mock(FilterAccessorProvider.class);
++        List<IColumnValuesReader> readers = List.of(reader(true));
++        Mockito.when(provider.getOrCreateColumnReaders(PATH)).thenReturn(readers);
++        Mockito.when(provider.createColumnAccessEvaluator(PATH)).thenReturn(constant(new byte[][] { bigint(1) }));
++        Assert.assertNull("not used on this component",
++                new PlaqueMinMaxRowTest(HANDLE, true, PATH, false).create(provider, taskContext()));
++        Assert.assertEquals(1, state.scanRowTestDeclines.sum());
++        Assert.assertEquals(0, state.scanRowsDropped.sum());
++    }
++
++    @Test
++    public void withoutATaskContextTheTestIsNotUsed() throws Exception {
++        FilterAccessorProvider provider = Mockito.mock(FilterAccessorProvider.class);
++        List<IColumnValuesReader> readers = List.of(reader(false));
++        Mockito.when(provider.getOrCreateColumnReaders(PATH)).thenReturn(readers);
++        Mockito.when(provider.createColumnAccessEvaluator(PATH)).thenReturn(constant(new byte[][] { bigint(1) }));
++        Assert.assertNull(new PlaqueMinMaxRowTest(HANDLE, true, PATH, false).create(provider, null));
++    }
++
++    @Test
++    public void aFlatColumnUsesTheSharedBestValue() throws Exception {
++        PlaqueThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreate(JOB, HANDLE, true);
++        state.update(bigint(10), 0, 9);
++        FilterAccessorProvider provider = Mockito.mock(FilterAccessorProvider.class);
++        List<IColumnValuesReader> readers = List.of(reader(false));
++        Mockito.when(provider.getOrCreateColumnReaders(PATH)).thenReturn(readers);
++        Mockito.when(provider.createColumnAccessEvaluator(PATH)).thenReturn(constant(new byte[][] { bigint(3) }));
++        Assert.assertFalse(eval(new PlaqueMinMaxRowTest(HANDLE, true, PATH, false).create(provider, taskContext())));
++        Assert.assertTrue("keep all, next to a page skip with the row test off",
++                eval(new PlaqueMinMaxRowTest(HANDLE, true, PATH, true).create(provider, taskContext())));
++        Mockito.verify(provider, Mockito.times(2)).createColumnAccessEvaluator(PATH);
++    }
++
++    @Test
++    public void withNoWhereAndNoTestLeftThereIsNoRowFilter() throws Exception {
++        IPlaqueRowTest declined = (p, c) -> null;
++        Assert.assertSame(TrueColumnFilterEvaluator.INSTANCE, create(List.of(reader(true)), declined));
++        ColumnFilterEvaluatorContext context = context(List.of(reader(false)));
++        IScalarEvaluatorFactory where = Mockito.mock(IScalarEvaluatorFactory.class);
++        Mockito.when(where.createScalarEvaluator(context)).thenReturn(constant(new byte[][] { TRUE }));
++        Assert.assertTrue("a WHERE still needs its filter",
++                new PlaqueRowFilterEvaluatorFactory(where, List.of(declined))
++                        .create(context) instanceof ColumnIterableFilterEvaluator);
++    }
++
++    @Test
++    public void theJobStateStaysUntilTheLastTupleFilterCloses() {
++        PlaqueThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreate(JOB, HANDLE, true);
++        PlaqueThresholdRegistry.INSTANCE.openFilter(JOB);
++        PlaqueThresholdRegistry.INSTANCE.openFilter(JOB);
++        PlaqueThresholdRegistry.INSTANCE.releaseFilter(JOB);
++        Assert.assertSame("one filter still open", state, PlaqueThresholdRegistry.INSTANCE.get(JOB, HANDLE));
++        PlaqueThresholdRegistry.INSTANCE.releaseFilter(JOB);
++        Assert.assertNull("last filter closed", PlaqueThresholdRegistry.INSTANCE.get(JOB, HANDLE));
++    }
++
++    // ---- helpers ----
++
++    private static IColumnIterableFilterEvaluator create(List<IColumnValuesReader> readers, IPlaqueRowTest test)
++            throws Exception {
++        return new PlaqueRowFilterEvaluatorFactory(null, List.of(test)).create(context(readers));
++    }
++
++    private static ColumnFilterEvaluatorContext context(List<IColumnValuesReader> readers) {
++        FilterAccessorProvider provider = Mockito.mock(FilterAccessorProvider.class);
++        Mockito.when(provider.getFilterColumnReaders()).thenReturn(readers);
++        ColumnFilterEvaluatorContext context = Mockito.mock(ColumnFilterEvaluatorContext.class);
++        Mockito.when(context.getFilterAccessorProvider()).thenReturn(provider);
++        return context;
++    }
++
++    private static IColumnValuesReader reader(boolean repeated) {
++        IColumnValuesReader r = Mockito.mock(IColumnValuesReader.class);
++        Mockito.when(r.isRepeated()).thenReturn(repeated);
++        return r;
++    }
++
++    private static IHyracksTaskContext taskContext() {
++        IHyracksTaskContext ctx = Mockito.mock(IHyracksTaskContext.class, Mockito.RETURNS_DEEP_STUBS);
++        Mockito.when(ctx.getJobletContext().getJobId()).thenReturn(JOB);
++        return ctx;
++    }
++
++    private static IScalarEvaluator constant(byte[][] value) {
++        return (tuple, result) -> result.set(value[0], 0, value[0].length);
++    }
++
++    private static IScalarEvaluator counting(boolean[] keep, int[] asked) {
++        return (tuple, result) -> {
++            asked[0]++;
++            PlaqueRowFilterEvaluatorFactory.keep(result, keep[0]);
++        };
++    }
++
++    private static boolean eval(IScalarEvaluator e) throws Exception {
++        IPointable r = new VoidPointable();
++        e.evaluate(null, r);
++        Assert.assertEquals(ATypeTag.SERIALIZED_BOOLEAN_TYPE_TAG, r.getByteArray()[r.getStartOffset()]);
++        return r.getByteArray()[r.getStartOffset() + 1] != 0;
++    }
++
++    private static byte[] bigint(long v) {
++        return ByteBuffer.allocate(9).put(ATypeTag.SERIALIZED_INT64_TYPE_TAG).putLong(v).array();
++    }
++
++    private static byte[] dbl(double v) {
++        return ByteBuffer.allocate(9).put(ATypeTag.SERIALIZED_DOUBLE_TYPE_TAG).putDouble(v).array();
++    }
++
++    private static byte[] string(String v) {
++        byte[] utf8 = UTF8StringUtil.writeStringToBytes(v);
++        return ByteBuffer.allocate(utf8.length + 1).put(ATypeTag.SERIALIZED_STRING_TYPE_TAG).put(utf8).array();
++    }
++}
+--- /dev/null
++++ b/asterixdb/asterix-external-data/src/main/java/org/apache/asterix/external/input/record/reader/iceberg/PlaqueIcebergRowTest.java
+@@ -0,0 +1,156 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.asterix.external.input.record.reader.iceberg;
++
++import java.util.Map;
++
++import org.apache.asterix.dataflow.data.nontagged.comparators.AGenericAscBinaryComparatorFactory;
++import org.apache.asterix.external.util.ExternalDataConstants.IcebergOptions;
++import org.apache.asterix.om.types.ATypeTag;
++import org.apache.asterix.om.types.BuiltinType;
++import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdRegistry;
++import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdState;
++import org.apache.hyracks.api.context.IHyracksTaskContext;
++import org.apache.hyracks.api.dataflow.value.IBinaryComparator;
++import org.apache.hyracks.api.exceptions.HyracksDataException;
++import org.apache.iceberg.Schema;
++import org.apache.iceberg.data.Record;
++import org.apache.iceberg.io.CloseableIterable;
++import org.apache.iceberg.types.Type;
++import org.apache.iceberg.types.Types;
++import org.apache.logging.log4j.LogManager;
++import org.apache.logging.log4j.Logger;
++
++/**
++ * PLAQUE scalar MAX / MIN inside an Iceberg reader: after Iceberg has read a row and before AsterixDB converts it,
++ * a row whose value cannot beat the best value found so far is dropped. The value is written as the AsterixDB value
++ * the parser would make of it (int and long as BIGINT, float as FLOAT, double as DOUBLE) and compared by the PLAQUE
++ * tuple filter's own test (same state, same comparator, an equal value dropped). Null values are kept.
++ * <p>
++ * Only top-level int, long, float and double columns; for any other column {@link #create} returns {@code null}
++ * and says so in the log.
++ */
++final class PlaqueIcebergRowTest {
++    private static final Logger LOGGER = LogManager.getLogger();
++    private final PlaqueThresholdState state;
++    private final String field;
++    private final Type.TypeID type;
++    private final IBinaryComparator comparator =
++            new AGenericAscBinaryComparatorFactory(BuiltinType.ANY, BuiltinType.ANY).createBinaryComparator();
++    private final byte[] value = new byte[9];
++    private long tested;
++    private long dropped;
++
++    PlaqueIcebergRowTest(PlaqueThresholdState state, String field, Type.TypeID type) {
++        this.state = state;
++        this.field = field;
++        this.type = type;
++    }
++
++    /** @return the reader's row test, or {@code null} when the query has none or the column is not supported */
++    static PlaqueIcebergRowTest create(Map<String, String> configuration, Schema schema, IHyracksTaskContext ctx) {
++        String handle = configuration.get(IcebergOptions.PLAQUE_ROW_TEST_HANDLE);
++        String name = configuration.get(IcebergOptions.PLAQUE_ROW_TEST_FIELD);
++        if (handle == null || name == null) {
++            return null;
++        }
++        Types.NestedField f = schema.asStruct().field(name);
++        Type.TypeID id = f == null ? null : f.type().typeId();
++        if (id != Type.TypeID.INTEGER && id != Type.TypeID.LONG && id != Type.TypeID.FLOAT
++                && id != Type.TypeID.DOUBLE) {
++            LOGGER.info("plaque iceberg row test off: column {} has type {}", name, f == null ? "none" : f.type());
++            return null;
++        }
++        boolean isMax = Boolean.parseBoolean(configuration.get(IcebergOptions.PLAQUE_ROW_TEST_IS_MAX));
++        return new PlaqueIcebergRowTest(
++                PlaqueThresholdRegistry.INSTANCE.getOrCreate(ctx.getJobletContext().getJobId(), handle, isMax), name,
++                id);
++    }
++
++    /** The rows of one file with this test applied; {@code rows} itself when test is {@code null}. */
++    static CloseableIterable<Record> apply(PlaqueIcebergRowTest test, CloseableIterable<Record> rows) {
++        return test == null ? rows : CloseableIterable.filter(rows, test::keep);
++    }
++
++    boolean keep(Record r) {
++        Object v = r.getField(field);
++        if (v == null) {
++            return true;
++        }
++        tested++;
++        int len = write(v);
++        boolean keep;
++        try {
++            keep = state.passes(value, 0, len, comparator, true);
++        } catch (HyracksDataException e) {
++            throw new IllegalStateException(e);
++        }
++        if (!keep) {
++            dropped++;
++        }
++        return keep;
++    }
++
++    /** Writes v into value as the AsterixDB value the Iceberg parser makes of it; returns its length. */
++    int write(Object v) {
++        switch (type) {
++            case INTEGER:
++                return putLong(ATypeTag.SERIALIZED_INT64_TYPE_TAG, (Integer) v);
++            case LONG:
++                return putLong(ATypeTag.SERIALIZED_INT64_TYPE_TAG, (Long) v);
++            case DOUBLE:
++                return putLong(ATypeTag.SERIALIZED_DOUBLE_TYPE_TAG, Double.doubleToLongBits((Double) v));
++            default: // FLOAT
++                int bits = Float.floatToIntBits((Float) v);
++                value[0] = ATypeTag.SERIALIZED_FLOAT_TYPE_TAG;
++                for (int i = 0; i < 4; i++) {
++                    value[1 + i] = (byte) (bits >>> (24 - 8 * i));
++                }
++                return 5;
++        }
++    }
++
++    byte[] value() {
++        return value;
++    }
++
++    private int putLong(byte tag, long bits) {
++        value[0] = tag;
++        for (int i = 0; i < 8; i++) {
++            value[1 + i] = (byte) (bits >>> (56 - 8 * i));
++        }
++        return 9;
++    }
++
++    long tested() {
++        return tested;
++    }
++
++    long dropped() {
++        return dropped;
++    }
++
++    /** Logs this reader's counts and adds them to the job's counters. */
++    void report(int tasks) {
++        LOGGER.info("plaque iceberg row test: {} tasks, {} rows dropped of {} tested on column {}", tasks, dropped,
++                tested, field);
++        state.scanRowsTested.add(tested);
++        state.scanRowsDropped.add(dropped);
++    }
++}
+--- /dev/null
++++ b/asterixdb/asterix-external-data/src/test/java/org/apache/asterix/external/input/record/reader/iceberg/PlaqueIcebergRowTestTest.java
+@@ -0,0 +1,259 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.asterix.external.input.record.reader.iceberg;
++
++import java.io.ByteArrayOutputStream;
++import java.io.DataOutputStream;
++import java.io.File;
++import java.nio.file.Files;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++
++import org.apache.asterix.dataflow.data.nontagged.serde.ADoubleSerializerDeserializer;
++import org.apache.asterix.dataflow.data.nontagged.serde.AFloatSerializerDeserializer;
++import org.apache.asterix.dataflow.data.nontagged.serde.AInt64SerializerDeserializer;
++import org.apache.asterix.external.util.ExternalDataConstants.IcebergOptions;
++import org.apache.asterix.om.base.ADouble;
++import org.apache.asterix.om.base.AFloat;
++import org.apache.asterix.om.base.AInt64;
++import org.apache.asterix.om.types.ATypeTag;
++import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdRegistry;
++import org.apache.asterix.runtime.operators.plaque.PlaqueThresholdState;
++import org.apache.hyracks.api.context.IHyracksTaskContext;
++import org.apache.hyracks.api.job.JobId;
++import org.apache.iceberg.FileScanTask;
++import org.apache.iceberg.Schema;
++import org.apache.iceberg.data.GenericRecord;
++import org.apache.iceberg.data.Record;
++import org.apache.iceberg.data.parquet.GenericParquetWriter;
++import org.apache.iceberg.expressions.Expressions;
++import org.apache.iceberg.io.CloseableIterable;
++import org.apache.iceberg.io.FileAppender;
++import org.apache.iceberg.parquet.Parquet;
++import org.apache.iceberg.types.Types;
++import org.junit.After;
++import org.junit.Assert;
++import org.junit.Test;
++import org.mockito.Mockito;
++
++/** The PLAQUE MAX / MIN row test inside the Iceberg reader. */
++public class PlaqueIcebergRowTestTest {
++
++    private static final Schema SCHEMA = new Schema(Types.NestedField.required(1, "k", Types.LongType.get()),
++            Types.NestedField.optional(2, "i", Types.IntegerType.get()),
++            Types.NestedField.optional(3, "f", Types.FloatType.get()),
++            Types.NestedField.optional(4, "d", Types.DoubleType.get()),
++            Types.NestedField.optional(5, "s", Types.StringType.get()));
++    private static final int ROWS = 20_000;
++    private static final String HANDLE = "h";
++    private static final JobId JOB = new JobId(987654332L);
++
++    @After
++    public void cleanUp() {
++        PlaqueThresholdRegistry.INSTANCE.removeJob(JOB);
++    }
++
++    @Test
++    public void noRowTestForAQueryWithoutOneOrAnUnsupportedColumn() {
++        Assert.assertNull(PlaqueIcebergRowTest.create(new HashMap<>(), SCHEMA, ctx()));
++        Assert.assertNull(PlaqueIcebergRowTest.create(config("s", true), SCHEMA, ctx()));
++        Assert.assertNull(PlaqueIcebergRowTest.create(config("nope", true), SCHEMA, ctx()));
++        for (String c : new String[] { "k", "i", "f", "d" }) {
++            Assert.assertNotNull(c, PlaqueIcebergRowTest.create(config(c, true), SCHEMA, ctx()));
++        }
++    }
++
++    @Test
++    public void theValueIsWrittenAsTheParserWouldWriteIt() throws Exception {
++        PlaqueIcebergRowTest k = PlaqueIcebergRowTest.create(config("k", true), SCHEMA, ctx());
++        PlaqueIcebergRowTest i = PlaqueIcebergRowTest.create(config("i", true), SCHEMA, ctx());
++        PlaqueIcebergRowTest f = PlaqueIcebergRowTest.create(config("f", true), SCHEMA, ctx());
++        PlaqueIcebergRowTest d = PlaqueIcebergRowTest.create(config("d", true), SCHEMA, ctx());
++        for (long v : new long[] { 0, -1, 42, Long.MIN_VALUE, Long.MAX_VALUE }) {
++            Assert.assertArrayEquals(int64(v), Arrays.copyOf(k.value(), k.write(v)));
++        }
++        for (int v : new int[] { 0, -7, Integer.MAX_VALUE }) {
++            Assert.assertArrayEquals("int is read as BIGINT", int64(v), Arrays.copyOf(i.value(), i.write(v)));
++        }
++        for (float v : new float[] { 0f, -0f, 1.5f, Float.NaN, Float.NEGATIVE_INFINITY }) {
++            ByteArrayOutputStream bos = new ByteArrayOutputStream();
++            DataOutputStream out = new DataOutputStream(bos);
++            out.writeByte(ATypeTag.SERIALIZED_FLOAT_TYPE_TAG);
++            AFloatSerializerDeserializer.INSTANCE.serialize(new AFloat(v), out);
++            Assert.assertArrayEquals(bos.toByteArray(), Arrays.copyOf(f.value(), f.write(v)));
++        }
++        for (double v : new double[] { 0d, -0d, 2.25, Double.NaN, Double.MAX_VALUE }) {
++            ByteArrayOutputStream bos = new ByteArrayOutputStream();
++            DataOutputStream out = new DataOutputStream(bos);
++            out.writeByte(ATypeTag.SERIALIZED_DOUBLE_TYPE_TAG);
++            ADoubleSerializerDeserializer.INSTANCE.serialize(new ADouble(v), out);
++            Assert.assertArrayEquals(bos.toByteArray(), Arrays.copyOf(d.value(), d.write(v)));
++        }
++    }
++
++    @Test
++    public void maxDropsEqualAndWorseRowsAndKeepsBetterAndNullOnes() throws Exception {
++        PlaqueThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreate(JOB, HANDLE, true);
++        PlaqueIcebergRowTest t = PlaqueIcebergRowTest.create(config("d", true), SCHEMA, ctx());
++        Assert.assertTrue("no best value yet", t.keep(row(1, 1.0)));
++        state.update(dbl(10.0), 0, 9);
++        Assert.assertFalse("worse", t.keep(row(2, 9.0)));
++        Assert.assertFalse("equal", t.keep(row(3, 10.0)));
++        Assert.assertTrue("better", t.keep(row(4, 10.5)));
++        Assert.assertTrue("null", t.keep(row(5, null)));
++        Assert.assertEquals(4, t.tested());
++        Assert.assertEquals(2, t.dropped());
++    }
++
++    @Test
++    public void minOnAnIntColumnComparesWithTheBigintBestValue() throws Exception {
++        PlaqueThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreate(JOB, HANDLE, false);
++        PlaqueIcebergRowTest t = PlaqueIcebergRowTest.create(config("i", false), SCHEMA, ctx());
++        state.update(int64(100), 0, 9);
++        GenericRecord r = GenericRecord.create(SCHEMA);
++        r.setField("i", 99);
++        Assert.assertTrue(t.keep(r));
++        r.setField("i", 100);
++        Assert.assertFalse(t.keep(r));
++        r.setField("i", 101);
++        Assert.assertFalse(t.keep(r));
++    }
++
++    @Test
++    public void aFileReadThroughTheReaderKeepsExactlyTheRowsThatCanWinWithAllColumns() throws Exception {
++        File dir = Files.createTempDirectory("plaque-row-test").toFile();
++        try {
++            File file = write(dir);
++            PlaqueThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreate(JOB, HANDLE, true);
++            state.update(int64(ROWS - 100), 0, 9);
++            PlaqueIcebergRowTest t = PlaqueIcebergRowTest.create(config("k", true), SCHEMA, ctx());
++            List<Record> rows = new ArrayList<>();
++            try (CloseableIterable<Record> it =
++                    PlaqueIcebergRowTest.apply(t, IcebergFileRecordReader.openStandardRead(null,
++                            org.apache.iceberg.Files.localInput(file), task(file), SCHEMA, SCHEMA, null, null))) {
++                it.forEach(rows::add);
++            }
++            Assert.assertEquals(99, rows.size());
++            for (Record r : rows) {
++                long k = (Long) r.getField("k");
++                Assert.assertTrue(k > ROWS - 100);
++                Assert.assertEquals((int) k, r.getField("i"));
++                Assert.assertEquals("v" + k, r.getField("s"));
++            }
++            Assert.assertEquals(ROWS - 99, t.dropped());
++        } finally {
++            for (File f : dir.listFiles()) {
++                f.delete();
++            }
++            dir.delete();
++        }
++    }
++
++    @Test
++    public void aBestValueFoundWhileTheFileIsReadIsUsedForTheNextRows() throws Exception {
++        File dir = Files.createTempDirectory("plaque-row-test").toFile();
++        try {
++            File file = write(dir);
++            PlaqueThresholdState state = PlaqueThresholdRegistry.INSTANCE.getOrCreate(JOB, HANDLE, false);
++            PlaqueIcebergRowTest t = PlaqueIcebergRowTest.create(config("k", false), SCHEMA, ctx());
++            int kept = 0;
++            try (CloseableIterable<Record> it =
++                    PlaqueIcebergRowTest.apply(t, IcebergFileRecordReader.openStandardRead(null,
++                            org.apache.iceberg.Files.localInput(file), task(file), SCHEMA, SCHEMA, null, null))) {
++                for (Record r : it) {
++                    kept++;
++                    // what the MIN aggregate does with the first row it sees: k = 0
++                    state.update(int64((Long) r.getField("k")), 0, 9);
++                }
++            }
++            Assert.assertEquals("every row after k = 0 is dropped", 1, kept);
++        } finally {
++            for (File f : dir.listFiles()) {
++                f.delete();
++            }
++            dir.delete();
++        }
++    }
++
++    private static File write(File dir) throws Exception {
++        File file = new File(dir, "data.parquet");
++        FileAppender<Record> appender = Parquet.write(org.apache.iceberg.Files.localOutput(file)).schema(SCHEMA)
++                .createWriterFunc(GenericParquetWriter::create).overwrite().build();
++        try (FileAppender<Record> writer = appender) {
++            for (long k = 0; k < ROWS; k++) {
++                GenericRecord r = GenericRecord.create(SCHEMA);
++                r.setField("k", k);
++                r.setField("i", (int) k);
++                r.setField("f", (float) k);
++                r.setField("d", (double) k);
++                r.setField("s", "v" + k);
++                writer.add(r);
++            }
++        }
++        return file;
++    }
++
++    private static FileScanTask task(File file) {
++        FileScanTask task = Mockito.mock(FileScanTask.class);
++        Mockito.when(task.start()).thenReturn(0L);
++        Mockito.when(task.length()).thenReturn(file.length());
++        Mockito.when(task.residual()).thenReturn(Expressions.alwaysTrue());
++        return task;
++    }
++
++    private static Record row(long k, Double d) {
++        GenericRecord r = GenericRecord.create(SCHEMA);
++        r.setField("k", k);
++        r.setField("d", d);
++        return r;
++    }
++
++    private static Map<String, String> config(String field, boolean isMax) {
++        Map<String, String> c = new HashMap<>();
++        c.put(IcebergOptions.PLAQUE_ROW_TEST_HANDLE, HANDLE);
++        c.put(IcebergOptions.PLAQUE_ROW_TEST_IS_MAX, String.valueOf(isMax));
++        c.put(IcebergOptions.PLAQUE_ROW_TEST_FIELD, field);
++        return c;
++    }
++
++    private static IHyracksTaskContext ctx() {
++        IHyracksTaskContext ctx = Mockito.mock(IHyracksTaskContext.class, Mockito.RETURNS_DEEP_STUBS);
++        Mockito.when(ctx.getJobletContext().getJobId()).thenReturn(JOB);
++        return ctx;
++    }
++
++    private static byte[] int64(long v) throws Exception {
++        ByteArrayOutputStream bos = new ByteArrayOutputStream();
++        DataOutputStream out = new DataOutputStream(bos);
++        out.writeByte(ATypeTag.SERIALIZED_INT64_TYPE_TAG);
++        AInt64SerializerDeserializer.INSTANCE.serialize(new AInt64(v), out);
++        return bos.toByteArray();
++    }
++
++    private static byte[] dbl(double v) throws Exception {
++        ByteArrayOutputStream bos = new ByteArrayOutputStream();
++        DataOutputStream out = new DataOutputStream(bos);
++        out.writeByte(ATypeTag.SERIALIZED_DOUBLE_TYPE_TAG);
++        ADoubleSerializerDeserializer.INSTANCE.serialize(new ADouble(v), out);
++        return bos.toByteArray();
++    }
++}
