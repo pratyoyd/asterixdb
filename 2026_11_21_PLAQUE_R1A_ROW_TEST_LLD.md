@@ -184,8 +184,59 @@ The rule and the reader wiring cannot be unit tested without the harness; they a
 | Overhead when little is dropped (D8) | Worst-case query, row test on versus off |
 | Unit-level logic | Tests of section 8 |
 
+## 10. Amendment 2026-11-22: the scan sends what it kept early (agreed with the user 2026-11-22)
+
+**Why.** Benchmark of 2026-11-22 (`2026_11_22_PLAQUE_R1A_RESULTS.md`): with the row test on, page and file
+skipping got much worse (N1: rows past page skipping 40,000 to 2-9M; I1: files skipped 26 to 1-22), and the row
+test was slower than page skip alone on N1, N2, I1, I2. The scan sends its output frame only when it is full or
+the scan ends; with the row test keeping about 1 row in 400, the rows that would raise the best value wait in
+that frame, and every skip decision uses an old value. The tuple filter's early send does not help: the rows
+have not reached it. Same problem as the DISTINCT early flush of 2026-11-17 (filter `f`, join `j`), one operator
+lower: before R1a nothing dropped rows inside the scan.
+
+**What.** When the scan's own row filter has a test that drops rows (MAX/MIN row test, DISTINCT level 4), the
+scan hands on its output frame, if it holds any row, right before each skip decision:
+
+| Format | When | Where the decision is made |
+|---|---|---|
+| Native | At the start of every leaf, before the page filter is asked whether to skip it (skipped leaves included) | `QueryColumnTupleReference.startNewPage` |
+| Iceberg | Before each file task after the first is opened (file skip and row-group filter are decided at open) | `IcebergFileRecordReader.setNextRecordsIterator` |
+
+At most one extra frame per leaf or file, and only when it holds a row. Iceberg does not send inside a file:
+nothing inside a file reads the best value except the row test itself, which already reads it live per row.
+
+**Plumbing.**
+
+- Native: `ITupleProjector` (hyracks storage-common) gets `default void setEarlyFlush(HyracksThrowingAction)`,
+  no-op. `IndexSearchOperatorNodePushable` passes "hand on the frame if it has a row, and count it" after
+  creating its projector. `QueryColumnTupleProjector` keeps it only when its row filter is a
+  `PlaqueRowFilterEvaluatorFactory` that asks for it, and hands it to each component's `QueryColumnMetadata`;
+  `QueryColumnTupleReference.startNewPage` calls it first. The call happens inside the cursor's `hasNext`, when
+  the scan is not in the middle of writing a row.
+- Iceberg: the reader gets `setEarlyFlush(HyracksThrowingAction)`; `RecordDataFlowController` passes the tuple
+  forwarder's flush, guarded by "frame not empty".
+- Setting `compiler.plaque.scanflush` (default true). The rule stores it on the scan info where it attaches the
+  row test or DISTINCT level 4 (native and Iceberg); `IndexUtil` passes it to `PlaqueRowFilterEvaluatorFactory`;
+  `ExternalDataUtils` copies it to the reader's properties. Off: behaviour as before this amendment.
+- Not for the keep-all test (row test off) or DISTINCT levels 2-3: they drop nothing in the scan, frames fill as
+  before.
+
+**Seen.** Each scan that sent early logs one line at close, `plaque scan early sends: <n> (...)`, native and
+Iceberg alike; the benchmark sums them. A scan that sends nothing logs nothing. (The Iceberg reader is told by
+a `Callable<Boolean>` whether rows were handed on, so it counts sends, not calls.)
+
+**Tests.** The projector keeps the callback only for a row filter that asks (not for keep-all, not with the
+setting off); the Iceberg reader calls it before every task after the first. The leaf call in
+`QueryColumnTupleReference` needs a real leaf and is checked on the server through the log counter.
+
+**Expected.** N1, N2, I1, I2, I5: rows past page skipping and files skipped back near the "row test off" level,
+time at or below it. N3, N4, N6, I3, I6: no change. I4 (sorted): frames fill anyway, little change.
+
 ## Decisions made without asking
 
+- Amendment 10: a separate setting `compiler.plaque.scanflush` instead of a letter in
+  `compiler.plaque.distinct.flush` (which I had mentioned): the MAX/MIN filter does not read the DISTINCT setting.
+- Amendment 10: Iceberg sends per file task, not per row group (reason in section 10).
 - Separate row-test fields on the scan info, instead of reusing the page / file skip fields.
 - Left outer join crossed on both sides for MAX/MIN.
 - With a WHERE at DISTINCT levels 2 and 3 the always-true DISTINCT test is still added.
