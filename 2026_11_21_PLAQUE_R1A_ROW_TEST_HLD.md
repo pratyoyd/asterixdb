@@ -138,6 +138,7 @@ changed; the Baleen rule only adds to what it left.
 | D4 | Iceberg column types | Basic types / all comparable types | Basic types first: long, int, double, float | Decided by user 2026-11-21 |
 | D5 | DISTINCT | Fix the WHERE case only / also lift its other limits | WHERE case only | Decided by user 2026-11-21 |
 | D6 | Switch for measurement | New on/off setting / levels like DISTINCT | On/off setting, default on | Decided by user 2026-11-21 |
+| D8 | Overhead when the row test drops little | Measure first, with a worst-case query in the benchmark / build a self switch-off now (stop testing for a while on a page that drops almost nothing, like the DISTINCT reader) | Measure first; the switch-off saves only the comparison on native, not the second column read, unless the reader is changed further | Open, proposed by me |
 | D7 | Shape of the combined test | A list of Baleen tests / one test only | A list, so later row tests (R1b to R1d) plug in | Decided by user 2026-11-21 |
 
 ## 8. Expected effect and how it will be tested
@@ -153,13 +154,24 @@ Expectations, not measurements:
   DISTINCT without a WHERE.
 - **No difference:** data sorted on `x` (page skip already removes almost everything); a WHERE that already
   removes nearly all rows.
-- **Could be slower:** one comparison per row that the tuple filter would also have done; it replaces the
-  tuple filter's work rather than adding to it, so the cost should be close to zero.
+- **Could be slower** (corrected 2026-11-21 after the user asked about overhead; the first version said "close
+  to zero", which was wrong). The row test costs something on every row, also when it drops nothing:
+  - native, query without a WHERE: today the scan has no row test; with R1a the reader reads the MAX column a
+    second time through the row test's own column reader (separate from the one that builds the row; read in
+    the code), plus one comparison and the skip bookkeeping per row. Largest case; size unknown;
+  - native, query with a WHERE: one more column reader and one comparison;
+  - Iceberg: one field lookup and one comparison per row;
+  - all: rows that are kept are still compared again by the tuple filter.
+  It is wasted where little is dropped: before a best value exists, on data where new maxima keep coming, and
+  when page skipping already removed almost everything.
 - **Configurations:** Baleen off; Baleen on with the row test off (page / file skip only); Baleen on with the
   row test on. Each query with and without a WHERE on the same table. Native and Iceberg. Counters: rows
   dropped in the scan, rows reaching the tuple filter.
+- **Worst case in the benchmark:** a query where the row test drops little (for example data sorted on `x`,
+  where page skipping leaves only rows that can win), row test on versus off, native without a WHERE.
 - **The design is wrong if:** results differ from Baleen off; the row test is on but rows dropped in the scan
-  stay near zero on unsorted data; or Baleen on with the row test is slower than with it off.
+  stay near zero on unsorted data; or Baleen on with the row test is slower than with it off on the queries it
+  should help. On the worst-case query, a clear slowdown means D8 must be revisited.
 
 ## 9. Limits and risks
 
