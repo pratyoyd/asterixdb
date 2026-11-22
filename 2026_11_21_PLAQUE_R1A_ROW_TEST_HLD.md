@@ -94,9 +94,23 @@ aggregate MAX ──writes best value──┐
         [NEW] Iceberg row check ◄──┘ reads   Iceberg: after the row is read, before it is converted
 ```
 
-When does the best value arrive? The aggregate updates it as rows reach it, on the same node, through the
-existing shared state. The tuple filter already sends rows up after every frame (early send), so the scan
-sees an improving value while it runs. Across nodes the existing propagation is used.
+**When each layer runs.** The page skip runs first, once per page, with the best value it has when the page
+starts. On a page that is read, the row test runs once per row, before the row is built, and reads the best
+value again for every row.
+
+| Format | 1. Before the unit is read | 2. On each row of a unit that is read |
+|---|---|---|
+| Native | Leaf (page) skipped if its stored max (min) cannot win, with the best value at that moment | Row dropped if it cannot win, with the latest best value |
+| Iceberg | File skipped by its bound; row groups skipped by a filter built from the best value at file open | Row dropped right after Iceberg reads it, with the latest best value |
+
+The best value improves while a page is read, so a page that passes step 1 can still lose most of its rows in
+step 2. On Iceberg the row-group filter keeps the value from file open for all row groups of the file; the row
+test uses the newer one.
+
+**When does the best value arrive?** The aggregate updates it as rows reach it, on the same node, through the
+existing shared state. Between the scan and the aggregate the only buffering is the frame; the tuple filter
+already sends rows up after every frame (early send), so the scan sees an improving value while it runs. Across
+nodes the existing propagation is used.
 
 ## 6. What exists and what is new
 
@@ -169,6 +183,21 @@ Where exactly the combined test is assembled; how the counters are reported; the
 read; how the Iceberg check is applied on each read path (standard, with deletes, variant-pruned, DISTINCT
 level 4); how a declined case shows up in the plan and log; the unit tests.
 
+## The ten questions of the hld skill
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | When does the information arrive where it is used? | Section 5: page skip once per page, row test once per row with the latest value; only the frame buffers between scan and aggregate, flushed per frame |
+| 2 | Is the plan what we think? | Both plans taken from the running server on 2026-11-21 (section 2) |
+| 3 | What else rewrites this part of the plan? | WHERE pushdown runs before the Baleen page-filter rule and is not changed. Whether any later rule (for example one that clones the plan) strips the scan's Baleen fields was not checked: listed below as not verified |
+| 4 | On which data does it help? | Unsorted on `x`: helps. Sorted: page skip already does the work (section 8) |
+| 5 | How is the gain told apart from side effects? | Baleen on with the row test off versus on; same plan otherwise (D6) |
+| 6 | Every format? | Native: leaf min/max, row test binding (row removed). Iceberg: file bounds and row-group statistics, row test binding. Both in scope |
+| 7 | What does the test setup hide? | Nodes on one machine share the best value; multi-node relies on existing propagation (section 9) |
+| 8 | Limits? | No caps: the state is one value. Unsupported column: test not attached, everything as today |
+| 9 | Which decision rests on an estimate? | D3: that on Iceberg AsterixDB's conversion is the main cost per row. The benchmark measures it; if Iceberg gains little, option (c) is reconsidered |
+| 10 | Source of the idea? | User's R1 item, 2026-11-21; `2026_11_20_PLAQUE_ROW_LEVEL_SKIPPING.md` section 9 |
+
 ## Decisions made without asking
 
 - D3 option (a), after the user said the options were too detailed.
@@ -180,3 +209,4 @@ level 4); how a declined case shows up in the plan and log; the unit tests.
 - How AsterixDB maps Iceberg `int` and `float` columns: not checked.
 - The type of `l_shipdate` on Iceberg: not checked.
 - The expected gains in section 8 are carried over from the DISTINCT numbers.
+- That no later optimizer rule removes or copies away the Baleen fields set on the scan (question 3).
