@@ -8,6 +8,9 @@ Plan item R1a in `2026_11_21_PLAQUE_LONG_TERM_FILTER_PLAN.md`. Builds on `2026_1
 
 - **What is added.** For `MAX(x)` and `MIN(x)`, the scan itself drops a row whose `x` cannot beat the best value
   found so far. Native columnar and Iceberg.
+- **Page skipping stays as it is and still runs first.** A page (native) or a file or row group (Iceberg) that
+  cannot beat the best value is not read at all, exactly as today. The row test is a second layer: it only acts
+  on the pages that page skipping had to read, and drops the rows in them that cannot win.
 - **The idea.** Baleen already does this test one step above the scan (the "tuple filter"). We move the same
   test into the scan, so a row that will be thrown away is never built.
 - **The fix that comes with it.** On native, the scan has one slot for a row test, and the query's own WHERE
@@ -31,17 +34,30 @@ What the server does today (plans taken from the running server on 2026-11-21):
 aggregate MAX                        <- learns the best value so far
   Baleen tuple filter                <- drops rows with value <= best so far
     SELECT l_shipmode = "AIR"        <- the WHERE
-      scan  (native: WHERE also runs inside the scan as its row test;
+      scan  Baleen page skip: pages (native) / files and row groups (Iceberg)
+            that cannot beat the best value are not read
+            (native: WHERE also runs inside the scan as its row test;
              Iceberg: WHERE only used to skip row groups)
 ```
 
-`l_extendedprice` is not sorted, so almost no page can be skipped. Every "AIR" row is read, built into a full
-record, passed up, and then dropped by the tuple filter because it is below the best value. That building and
-passing is the wasted work.
+Page skipping decides per page: a page is skipped only if *no* row on it can win. `l_extendedprice` is not
+sorted, so nearly every page holds at least one large value and has to be read, although most of its rows are
+below the best value. Every "AIR" row on such a page is built into a full record, passed up, and then dropped by
+the tuple filter. That building and passing is the wasted work the row test removes. On a column that is sorted,
+page skipping already removes most pages and the row test has little left to do; both layers stay on in every
+case.
 
 ## 3. The idea
 
-The scan asks, for each row: "does this row's `x` beat the best value so far?" If not, the row is dropped there.
+Two layers in the scan, both asking "can this beat the best value so far?":
+
+| Layer | Unit | State |
+|---|---|---|
+| Page skip | Whole page (native), file or row group (Iceberg); not read at all | Exists, unchanged |
+| Row test | One row on a page that was read; not built | New |
+
+For the row test, the scan asks for each row on a page it reads: "does this row's `x` beat the best value so
+far?" If not, the row is dropped there.
 
 - **Native.** The scan's single row-test slot gets a combined test: the WHERE first, then the Baleen test. Both
   must pass. The same combined test carries the DISTINCT test ("value already seen?") when the query is a
@@ -72,6 +88,8 @@ aggregate MAX ──writes best value──┐
   tuple filter (unchanged) ◄──reads┤
     SELECT (WHERE, unchanged)      │
       scan                         │
+        page / file / row-group skip (unchanged) ◄── reads
+          then, on each page that is read:
         [NEW] combined row test ◄──┘ reads   native: WHERE AND Baleen, one test per row
         [NEW] Iceberg row check ◄──┘ reads   Iceberg: after the row is read, before it is converted
 ```
