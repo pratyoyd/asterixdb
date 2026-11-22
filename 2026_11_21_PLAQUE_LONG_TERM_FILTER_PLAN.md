@@ -43,6 +43,34 @@ Sources: `BALEEN_keynote.pdf` (115 slides, read in full), `2026_11_21_PLAQUE_BAL
 
 The order inside the S block (steps 7 to 11) is a proposal; the user said "then all the S ones possibly".
 
+## Row-level test inside the scan for every filter (R1, added by the user 2026-11-21)
+
+User: "all existing filters can benefit from the row wise test on the columns like distinct on native
+columnar". Marked "also important"; its position in the order above is not set yet.
+
+What exists: only DISTINCT drops rows inside the reader (level 4: Iceberg strings through
+`PlaqueDistinctDictionaryReader`; native BIGINT and strings through `PlaqueDistinctIterableFilterEvaluatorFactory`).
+Every other filter has the page / file skip and a tuple filter above the scan. See
+`2026_11_20_PLAQUE_ROW_LEVEL_SKIPPING.md`, section 9.
+
+| Id | Filter | Row test inside the scan | State |
+|---|---|---|---|
+| R1a | Scalar MAX / MIN (E1) | Value cannot beat the bound: drop | Not built |
+| R1b | Cross-table `a ± b` (E2, E3) | `a` cannot beat bound adjusted by the build-side extreme: drop | Not built |
+| R1c | Theta join (E4) | Value fails against the learned extreme: drop | Not built |
+| R1d | GROUP BY MAX / MIN (E5) | Value cannot beat the bound of the row's group (two columns per row): drop | Not built |
+| R1e | DISTINCT (E6) | Value already seen: drop | Built; Iceberg covers strings only |
+
+Every new filter in the order above (G1 to S4) gets its row-level test as part of its own work, under "pushed
+as far down as it can go".
+
+Known limits carried over from the DISTINCT implementation: native needs the column declared and not
+nullable; the row drop is not attached when the query has its own filter pushed into the same scan; a leaf
+skip must always come with a row filter (wrong result found and fixed on 2026-11-20).
+
+Proposed position (not confirmed): R1a first, before G1, because plain Top-K reuses the scalar bound and its
+scan filter and would get the row test for free; R1b with G3; R1c and R1d after I2.
+
 Not ordered yet:
 
 | Id | Filter |
