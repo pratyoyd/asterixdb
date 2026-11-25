@@ -44,8 +44,8 @@ From the theory notes (`2026_11_21_PLAQUE_BALEEN_THEORY.pdf`, glossary in append
 The implementation notes use plainer words for the same things: "best value so far" (the bound), "page skip",
 "file skip", "row test", "tuple filter".
 
-**(to confirm)** The desktop Project mentioned terminology rules ("advancing bound", "saturation", avoid
-"order"). I could not check these from the repo. The user should correct this section once.
+The writing rules for these terms (for example: always "advancing bound", never "order" in TPC-H or
+grouping text) are in section 9.1.
 
 ## 3. What is built
 
@@ -101,11 +101,16 @@ Iceberg, all experiments of 15 to 22 November (`2026_11_23_PLAQUE_ICEBERG_EXPERI
 
 The last two rows are where Baleen does little on Iceberg today.
 
-## 5. Known wrong results and open defects
+## 5. Defects found in query shapes not run before
+
+Every result in section 4 and in the dated notes is valid: each Baleen-on run was checked against Baleen off.
+The items below were found on 2026-11-23 by code review and by trying shapes and data that no benchmark had
+used (negative doubles, `a + b`, `b - a`, null group keys, a second aggregate). They limit which new queries
+can be run today, not what was measured.
 
 | Item | State |
 |---|---|
-| GROUP BY MAX/MIN next to another aggregate (`MAX(v), COUNT(*)`): the other aggregate sees filtered rows | **Confirmed wrong result, not fixed** |
+| GROUP BY MAX/MIN next to another aggregate (`MAX(v), COUNT(*)`): the other aggregate sees filtered rows | Wrong result for the other aggregate; not fixed. Not a shape that was benchmarked |
 | Cross-table MIN can track a maximum (shared state created with `isMax = true`) | Results correct, filtering lost; cause read from code only |
 | Cross-table bound: rounding in the last digit, bound taken over only some build partitions, Long extremes | Open from the review |
 | Double columns compared by bit pattern in the page filters (wrong skip on negatives) | Fixed, committed `c3cf0e088b` |
@@ -167,17 +172,136 @@ user), implementation and unit tests, experiment plan approved before running, b
 | Latest day notes | `2026_11_22_PLAQUE_R1A_PROGRESS.md`, the two `2026_11_23_*` fix notes |
 | Summer milestones (M1 to M3, theta join, clustered layout) | undated `PLAQUE_*.md` files; older than the upstream merge |
 
-## 9. Ideation half (to be written by the desktop Project)
+## 9. Ideation half (written by the desktop Project, 2026-11-24)
 
-Empty so far. Claude Code has no source for any of this:
+Sources: the desktop Project's stored notes, the project docs (`baleen_theory.pdf`, the theory `.tex` sections,
+`TPCH_PREDICATE_GAP.md`, the "Where BALEEN wins" report, the BALEEN keynote deck) and chats from October and
+November. Anything marked **(to confirm)** may be out of date. Implementation numbers from my notes are
+dropped; sections 3 to 5 are the reference for those.
 
-- Theory: current framing and terms, and what changed since the theory notes of 2026-11-21 (correct section 2
-  if it is out of date)
-- Paper: venue, framing, section status, schedule, where the source lives
-- The DuckDB stopping-scan experiments in section 18 of the theory notes (TPC-DS Q37, Q82): where that code is
-  and whether it continues
-- Ideas and decisions from chat that never reached a file in this folder, including ones that were rejected
-- Anything in sections 1 to 8 that contradicts what the Project knows: list it here, do not edit it there
+Two sentences were reworded by Claude Code on the user's instruction (2026-11-24), in 9.2 "Safety" and 9.6
+item 4: the measured results are valid, and the defects in section 5 are in query shapes that had not been run.
+
+### 9.1 Terms and writing rules
+
+Section 2 matches what I have. Additions and rules the user set in chat:
+
+| Term or rule | Meaning |
+|---|---|
+| Advancing bound | Always this phrase. Never "order bound" |
+| Saturation, saturated | The only word for a group or answer that can no longer change. Not "settled" or "complete" |
+| Invalidated | The other reason an input is vestigial: it cannot beat the bound |
+| Floor τ | The advancing bound itself; τ_g per group |
+| Static ceiling source | Zone maps and build-side per-key extrema. Fixed once the build finishes; only τ moves |
+| Granule tree | Granules nest (tuple, page, superpage, component, file, relation) |
+| T(Γ) | The set of outputs granule Γ can contribute to |
+| L_q, U_q | Rank-q bounds computed by walking the envelopes |
+| Observer / filter | Observer is where the bound is learned; filter is the skip point that uses it. The observer is not always at the pipeline root (counterexample: LIMIT under a filter) |
+| INLJ | The per-row lookup in the rewritten Q18 plan. Not "probe" |
+
+Writing rules: never use "order" in TPC-H or grouping text (it can mean the `orders` table, a group or a sort);
+say "group", "l_orderkey value", "sorted by". Draw plans as trees with tables at the leaves, hash join build on
+the right. Use real attribute names (`cs_item_sk`, not "the item key"). Benchmarks: median of warm runs.
+
+### 9.2 Theory framing
+
+- **One idea:** an input is *vestigial* when it can no longer change the answer. That happens in two ways,
+  invalidation (cannot beat τ) and saturation (its group is already fixed). Every Baleen filter is one of the two.
+- **General theorem (in progress, to confirm current form):** top-k over a monotone SPJ expression, lineage sets
+  T(r), per-group floor τ_g, page test against the minimum τ_g over the groups a page can touch. `MAX(R)` =
+  `MAX` over pages of `MAX(page)` is the base case. Rank join (Ilyas, HRJN / NRA-RJ) is this page test on a
+  fully sorted layout, where skipping becomes stopping.
+- **Classification used in the advisor deck (late October):** reason (saturation vs. invalidation), target
+  (within groups, on group keys, on the aggregate of groups), placement (where the filter can sit, including
+  whether a plan change is needed). A 12-axis version was rejected as unworkable.
+- **Helper structure** was argued down as a separate formal concept: "reach" and "ceiling" already cover it
+  **(to confirm)**. Section 6 still uses the word for the implementation scope, which is fine as plain language.
+- **SIP from finished pipelines** (the advisor's objection): resolved by keeping the existing "pipeline answer"
+  definition; outputs of finished pipelines count as inputs the current pipeline has already observed.
+- **Safety:** stale bounds and loose ceilings only under-prune, never wrongly prune; no synchronization beyond
+  eventual delivery. Section 5 lists the defects found so far in query shapes outside the benchmarks.
+- **Governing variables:** how extreme the threshold is within the column, and how well the layout lines up with
+  it. For MAX, a layout sorted ascending on the aggregate column is the worst case.
+- **Set aside:** exact quantiles via two-pass zone maps (late October). Still wanted in the formalism later:
+  hierarchical zone maps, GROUP BY through a join (key on build side, aggregate on probe side).
+
+### 9.3 Paper state
+
+- **Venue:** full paper, PVLDB, Feb 1, 2027 deadline **(to confirm)**. DOLAP 2027 short paper is dropped; the
+  advisor abandoned it.
+- **Framing (October):** Baleen as a way for the optimizer to reason about plans in terms of ranking and
+  saturation opportunities, and to cost them. Planned sections: filters by kind of ranking, cost functions for
+  ranking in the optimizer, new rewrite rules. Earlier framing (advancing bounds, broken feedback loops in
+  parallel block-oriented engines, distributed propagation) is now background, not the lead.
+- **Motivating examples** (R small ⋈ S large, filter on S): (1) GROUP BY key + ORDER BY key LIMIT, needs a plan
+  change to an R-driven INLJ; (2) ORDER BY SUM over R's column, eager aggregation as a ceiling source;
+  (3) saturation, DISTINCT finishing early instead of at the end. Each with the conditions under which the Baleen
+  plan wins.
+- **Section status, source location:** I don't know. The plan and sections are provisional and change with the
+  advisor; the latest Overleaf is the reference. **The user should fill in where the source lives.**
+- **Strongest claims so far (from chat):** cross-table `a ± b` bound reduced to a one-column predicate; keyed
+  per-group bounds through the build side driving page skips (no prior work found that combines all four parts);
+  saturation stopping a fact scan, which no engine documents.
+- **Not to be used as a headline:** the 21.8x theta-join page skip (a ceiling case). Any summer number from before
+  the upstream merge should be rerun before it is quoted.
+
+### 9.4 DuckDB experiments
+
+- **Stopping scan, TPC-DS Q37 and Q82 (theory notes section 18):** DuckDB 2.0, 2 threads, warm median of runs 2
+  to 4. The stopping scan is *emulated*: the query gets only the first N fact rows in stored order, where N is
+  where the last candidate item first matches; the answer equals DuckDB's. Results: 1 row group read vs. 13 to
+  235; 1.3x to 2.9x over DuckDB with predicate transfer on; the margin grows with scale factor. There is no real
+  operator; the harness ran in a chat sandbox and **is not in any repo that I know of (to confirm)**.
+- **DISTINCT over a join (same section):** 1,000 groups saturated by row 23,410 of 20 million (0.12%), matching
+  the coupon-collector estimate.
+- **TPC-H predicate gap (`TPCH_PREDICATE_GAP.md`, DuckDB 1.5.6, SF1 and SF10):** DuckDB does 6.5 to 7.6x the
+  minimum work. 10 of 22 queries have a gap only an operator-induced bound can close (Q2, Q3, Q10, Q11, Q15, Q17,
+  Q18, Q20, Q21, Q22), and top-k gaps grow about 10x from SF1 to SF10. Code: `ladder.py` plus one module per
+  query, delivered as a zip in chat, not in the repo.
+- **Does DuckDB work continue?** Open. In early November the user was weighing AsterixDB against DuckDB as the
+  engine. Findings then: DuckDB can take injected plans (`OptimizerExtension`, `LogicalExtensionOperator`) but
+  still picks join algorithms itself; `PhysicalTopN` already does zone-map dynamic filtering for one sort key;
+  no INLJ operator. AsterixDB accepts hand-built job specs and has join hints. **No decision recorded.**
+
+### 9.5 Decisions and ideas from chat not in any file
+
+Kept:
+- Q18 is the main TPC-H case: groupjoin / INLJ rewrite starting from `orders`, zone-map floor on `o_totalprice`
+  skips 3,407 of 3,663 `orders` pages. Q3 and Q10 are weak: Q3's gain is join work only, not page I/O, because
+  its group finishes only after full aggregation. Q15 and Q21 were left to check.
+- Top-k through a dimension sort key (TPC-DS Q7, `i_item_id`): apply Baleen after predicate transfer has run, as
+  a further Yannakakis-style pass. The user thinks this is unproposed and wants to state it as a theorem.
+- Positioning: Snowflake's pruning (Zimmerer et al.) is equivalent on overlapping query classes; use it as
+  evidence of production value, not as something Baleen beats. Baleen's edge is per-group and through-join bounds
+  and saturation. Oracle's duplicate-elimination patent is the narrower case of saturation (it needs post-join
+  references to be join keys). Rank join needs sorted inputs; Baleen doesn't, but it still visits every page's
+  metadata.
+- Showcase beyond TPC: semantic / LLM operators (SemBench `DISTINCT city ... WHERE AI.IF(...)`), where saturation
+  cuts LLM calls, and remote Iceberg, measured in bytes and dollars.
+- Patent: the user considered filing on saturation (DISTINCT over hash join) before publishing **(to confirm)**.
+
+Rejected:
+- DOLAP short paper (advisor dropped it); an Iceberg + DISTINCT experiments paper (too narrow).
+- Helper structure as a separate formal concept (see 9.2).
+- Framing Baleen as generally beating Snowflake.
+- Leading with the theta-join 21.8x number.
+
+### 9.6 Where this disagrees with sections 1 to 8
+
+1. **Scope vs. paper.** Section 6 says no plan changes and no helper structures for now. The paper's distinctive
+   claims (Q18 INLJ rewrite, the cost model, the saturation stopping scan on Q37/Q82) all need a plan change or a
+   probe that stops. With the deadline on Feb 1, either the paper leads with what is built (E1 to E6 on native and
+   Iceberg), or one plan change gets built before then. This needs a decision.
+2. **Engine.** My notes say paper experiments stay on AsterixDB, but the theory notes' saturation evidence is
+   DuckDB-only and emulated. The paper can't mix the two without saying so.
+3. **Theta-join and summer results.** My notes had 3x NLJ tuple reduction and 9.3x at SF100 (cross-node
+   propagation). Section 8 says those predate the upstream merge. Treat them as not current until rerun.
+4. **GROUP BY.** My notes had 6.3x clustered / 1.4x normal from the summer (before the upstream merge, see
+   item 3). The measured GROUP BY results are valid. A second aggregate next to MAX/MIN (`MAX(v), COUNT(*)`) is
+   not supported yet (section 5). The 2026-11-23 change removes page skipping for string group keys longer than
+   3 characters, so the clustered number needs a rerun if its group key is such a string.
+5. **Distributed propagation.** It was the lead of the old framing; every result in section 4 is one machine,
+   4 NCs in one JVM. If the paper still claims anything about propagation, it needs a multi-node run.
 
 ## 10. Keeping this file current
 
